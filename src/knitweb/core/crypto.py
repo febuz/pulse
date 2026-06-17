@@ -6,7 +6,10 @@ curve with ECDSA signatures over SHA-256 — implemented on the standard
 
 Public keys are serialized as 33-byte compressed SEC1 points (hex). Private keys
 are 32-byte scalars (hex). Signatures are DER-encoded (hex). An FBR address is a
-short, content-addressed fingerprint of the public key.
+short, content-addressed fingerprint of the public key, prefixed with a 1-byte
+*scheme version* so the signature algorithm an address commits to is explicit and
+a post-quantum scheme can be added later by soft-fork (see
+``docs/CRYPTO_CORPUS_STUDY.md`` §3).
 """
 
 from __future__ import annotations
@@ -28,10 +31,36 @@ __all__ = [
     "sha256_hex",
     "merkle_root",
     "address",
+    "decode_address",
+    "address_scheme",
+    "is_valid_address",
     "is_valid_hex",
+    "SCHEME_SECP256K1_ECDSA",
+    "KNOWN_SCHEMES",
+    "ADDRESS_HRP",
 ]
 
 _CURVE = ec.SECP256K1()
+
+# ---------------------------------------------------------------------------
+# Address scheme registry
+# ---------------------------------------------------------------------------
+#
+# Every PLS address commits to the signature scheme of the key behind it via a
+# leading version byte. secp256k1-ECDSA is Shor-breakable once a pubkey is
+# revealed, so it is a *deprecation-track* primitive: reserving the byte now lets
+# a stateless post-quantum scheme (prefer SPHINCS+ / ML-DSA — never stateful XMSS
+# for user keys) occupy a distinct value via soft-fork without re-deriving any
+# existing address.
+
+ADDRESS_HRP = "pls1"
+
+SCHEME_SECP256K1_ECDSA = 0   # current/only blessed scheme
+# Reserved (not yet blessed): 1 = SPHINCS+ , 2 = ML-DSA , 3 = hybrid co-sign.
+KNOWN_SCHEMES = frozenset({SCHEME_SECP256K1_ECDSA})
+
+_FINGERPRINT_LEN = 20            # bytes of double-SHA-256 kept (cf. Bitcoin hash160)
+_ADDR_PAYLOAD_LEN = 1 + _FINGERPRINT_LEN  # scheme byte + fingerprint
 
 
 # ---------------------------------------------------------------------------
@@ -140,17 +169,69 @@ def _base32_lower_nopad(data: bytes) -> str:
     return base64.b32encode(data).decode("ascii").lower().rstrip("=")
 
 
-def address(pub_hex: str) -> str:
-    """Derive a short PLS address from a public key.
+def _base32_decode_nopad(text: str) -> bytes:
+    """Inverse of :func:`_base32_lower_nopad`. Raises ValueError on bad input."""
+    up = text.upper()
+    pad = (-len(up)) % 8
+    return base64.b32decode(up + ("=" * pad))
 
-    address = "pls1" + base32( sha256(sha256(pubkey))[:20] )
+
+def address(pub_hex: str, scheme: int = SCHEME_SECP256K1_ECDSA) -> str:
+    """Derive a short, versioned PLS address from a public key.
+
+    address = "pls1" + base32( scheme_byte || sha256(sha256(pubkey))[:20] )
 
     Double-SHA-256 mirrors Bitcoin's hash160 step without depending on RIPEMD-160
-    (which is disabled in some OpenSSL 3 builds).
+    (which is disabled in some OpenSSL 3 builds). The leading ``scheme`` byte makes
+    the signature algorithm explicit so a post-quantum scheme can be added by
+    soft-fork. Only schemes in :data:`KNOWN_SCHEMES` may be minted today.
     """
+    if scheme not in KNOWN_SCHEMES:
+        raise ValueError(f"unknown address scheme: {scheme}")
+    if not 0 <= scheme <= 255:
+        raise ValueError("scheme must be a single byte (0..255)")
     pub_bytes = bytes.fromhex(pub_hex)
-    fingerprint = sha256(sha256(pub_bytes))[:20]
-    return "pls1" + _base32_lower_nopad(fingerprint)
+    fingerprint = sha256(sha256(pub_bytes))[:_FINGERPRINT_LEN]
+    payload = bytes([scheme]) + fingerprint
+    return ADDRESS_HRP + _base32_lower_nopad(payload)
+
+
+def decode_address(addr: str) -> tuple[int, bytes]:
+    """Decode a PLS address into ``(scheme, fingerprint_bytes)``.
+
+    Raises ValueError if the human-readable prefix is wrong, the base32 body is
+    malformed, or the payload is not exactly ``scheme || 20-byte fingerprint``.
+    The scheme is returned even when unknown, so callers can reject an
+    unrecognised scheme deliberately rather than misread the fingerprint.
+    """
+    if not isinstance(addr, str) or not addr.startswith(ADDRESS_HRP):
+        raise ValueError("address must start with the pls1 prefix")
+    body = addr[len(ADDRESS_HRP):]
+    if not body:
+        raise ValueError("address has no payload")
+    try:
+        payload = _base32_decode_nopad(body)
+    except (ValueError, base64.binascii.Error) as exc:  # type: ignore[attr-defined]
+        raise ValueError(f"address body is not valid base32: {exc}") from exc
+    if len(payload) != _ADDR_PAYLOAD_LEN:
+        raise ValueError(
+            f"address payload must be {_ADDR_PAYLOAD_LEN} bytes, got {len(payload)}"
+        )
+    return payload[0], payload[1:]
+
+
+def address_scheme(addr: str) -> int:
+    """Return the scheme version byte of ``addr`` (raises ValueError if malformed)."""
+    return decode_address(addr)[0]
+
+
+def is_valid_address(addr: str) -> bool:
+    """True iff ``addr`` is well-formed *and* carries a blessed (known) scheme."""
+    try:
+        scheme, _ = decode_address(addr)
+    except ValueError:
+        return False
+    return scheme in KNOWN_SCHEMES
 
 
 def is_valid_hex(value: str, n_bytes: int | None = None) -> bool:
