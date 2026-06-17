@@ -63,11 +63,23 @@ class LedgerEntry:
 
     ``memo`` is a human-readable description; it is part of the signed record so
     changing it changes the CID. All postings must use the same currency.
+
+    ``settles`` is an optional, order-independent set of content ids (CIDs) that
+    this entry settles — typically the ``operational-allocation`` record that
+    proved capacity feasibility and/or the priced ``ResourceItem`` offer that
+    proved the PLS obligation. This is the audit link that closes the
+    allocation → priced-offer → settlement loop: a peer can follow the CIDs from
+    a finance entry back to the exact work and price it pays for, without the
+    finance loom having to re-model capacity or pricing. It is purely a
+    reference (CIDs are content hashes, not amounts), so the integer-only signed
+    path is unchanged. Entries with no references emit no ``settles`` key and so
+    keep the same CID as a plain balanced entry.
     """
 
     postings: tuple[Posting, ...]
     memo: str
     actor: str  # PLS address of the signing entity
+    settles: tuple[str, ...] = ()  # CIDs of the records this entry settles
 
     def __post_init__(self) -> None:
         if not self.postings:
@@ -79,6 +91,9 @@ class LedgerEntry:
             raise ValueError(
                 f"all postings in one entry must share a currency; got {currencies}"
             )
+        for ref in self.settles:
+            if not isinstance(ref, str) or not ref:
+                raise TypeError("each settles reference must be a non-empty CID string")
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +147,10 @@ class FinanceLoom:
             "actor": self.address,
             "balanced": True,
         }
+        if entry.settles:
+            # Deduplicated + sorted so the same set of references in any order
+            # yields one content id (matching the posting-order discipline).
+            record["settles"] = sorted(set(entry.settles))
         canonical.encode(record)  # fail fast on any non-canonical content
         return record
 

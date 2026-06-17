@@ -21,9 +21,12 @@ It deliberately carries no pricing. Per-unit price and the provider/consumer pay
 obligation live in the priced ``ResourceItem`` (``fabric/items.py``) and settle through
 the finance loom + PoUW escrow. So a peer audits *"capacity was not oversubscribed"*
 from this record, and *"this capacity was the priced PLS obligation"* against the
-linked ResourceItem / settlement record. Binding an allocation to a specific priced
-offer via an explicit reference field is a deliberate future increment, not part of
-the feasibility record itself.
+linked ResourceItem / settlement record. The binding that closes this loop lives on
+the *settlement* side, not here: a finance ``LedgerEntry`` carries an optional
+``settles`` set of CIDs citing the ``operational-allocation`` record and/or the
+priced ``ResourceItem`` offer it pays for (see ``looms/finance``). Keeping the
+reference on the finance entry — rather than baking an offer pointer into this
+feasibility record — lets capacity feasibility stay a standalone, reusable proof.
 """
 
 from __future__ import annotations

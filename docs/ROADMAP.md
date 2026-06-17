@@ -16,7 +16,7 @@ PR per increment, off the current `main`, in a disjoint lane.
 | L2 p2p | `p2p/{node,wire}.py` | ✅ stdlib-`asyncio` MVP |
 | L3 fabric | `fabric/{web,items,feed,attest,spatial}.py` | ✅ signed feed + attestation |
 | L4 pouw | `pouw/{job,escrow,digest,challenge}.py` | 🟡 determinism foundations done; economics next |
-| L5 looms | `looms/` | 🟡 chemistry + supply-chain + operational shipped; finance pending |
+| L5 looms | `looms/` | ✅ chemistry + supply-chain + operational + finance shipped (finance entries carry a `settles` CID link closing the allocation → priced-offer → settlement loop) |
 | L6 token | `token/mint.py` | 🟡 demand-gated bounded mint shipped (#17); per-epoch cap + access payment pending |
 | app | `app/cli.py` | ✅ `knitweb` CLI + node daemon (#19) |
 | store | `store.py` | ✅ durable node persistence (#18) |
@@ -36,6 +36,8 @@ repo has no CI):
 | [#20](https://github.com/febuz/pulse/pull/20) | M5 demo | `examples/mvp_demo.py` — end-to-end acceptance |
 | [#25](https://github.com/febuz/pulse/pull/25) | L5 operational | `looms/operational` — signed capacity allocations |
 | [#28](https://github.com/febuz/pulse/pull/28) | anchors | `anchor/` — notary-signed checkpoint receipts |
+| [#30](https://github.com/febuz/pulse/pull/30) | L5 finance | `looms/finance` — signed double-entry ledger entries |
+| _this PR_ | L5 finance settlement link | `LedgerEntry.settles` — CID audit link: settlement ↔ allocation ↔ priced offer |
 
 ## Consolidated backlog
 
