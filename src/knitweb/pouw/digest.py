@@ -40,6 +40,8 @@ def quantize(value: float, eps: float) -> int:
     """
     if not isinstance(eps, (int, float)) or isinstance(eps, bool):
         raise TypeError("eps must be a real number")
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise TypeError("value must be a real number")
     if not math.isfinite(eps) or eps <= 0:
         raise ValueError("eps must be finite and positive")
     if not math.isfinite(value):

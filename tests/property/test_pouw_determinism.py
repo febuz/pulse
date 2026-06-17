@@ -42,6 +42,9 @@ def test_quantize_returns_int_and_rejects_bad_eps():
     for bad in (0, -1.0):
         with pytest.raises(ValueError):
             digest.quantize(1.0, bad)
+    for bad in (True, "1.0"):
+        with pytest.raises(TypeError):
+            digest.quantize(bad, 1.0)
 
 
 @pytest.mark.property
@@ -133,6 +136,14 @@ def test_sample_indices_deterministic_distinct_and_bounded():
 def test_commit_rejects_empty_output():
     with pytest.raises(ValueError):
         challenge.commit([])
+
+
+@pytest.mark.property
+def test_respond_rejects_empty_output():
+    # Public API guard: without this, the internal level builder would never
+    # terminate for an empty leaf list.
+    with pytest.raises(ValueError):
+        challenge.respond([], challenge.new_salt(), k=1)
 
 
 @pytest.mark.property

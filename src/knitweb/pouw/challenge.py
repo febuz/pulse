@@ -154,6 +154,8 @@ def respond(blocks: list[bytes], salt: bytes, k: int) -> list[Reveal]:
     The reveals are returned in :func:`sample_indices` order; keep them in that
     order for :func:`verify_response` (which compares the index list positionally).
     """
+    if not blocks:
+        raise ValueError("cannot respond for an empty output")
     levels = _build_levels([_leaf(b) for b in blocks])
     reveals: list[Reveal] = []
     for i in sample_indices(salt, len(blocks), k):
