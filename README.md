@@ -1,8 +1,11 @@
 # Knitweb
 
-A peer-to-peer crypto network with native token **FBR**. Knitweb is a
-credibly-neutral DePIN where p2p web-workers ("spiders") sell **verifiable GPU
-compute** and weave a knowledge + resource **fabric**. It complements
+A peer-to-peer crypto **web** with native token **FBR** (coin: *Fiber*). Knitweb
+is a credibly-neutral DePIN where p2p web-workers ("spiders") sell **verifiable
+GPU compute** and weave a knowledge + resource **fabric** — a *Synaptic Web* whose
+verified relations compile to edge-executable bytecode (see
+[`docs/SYNAPTIC_WEB.md`](docs/SYNAPTIC_WEB.md)). Vocabulary is **Web · Loom · Knit
+· Pulse · Fiber** — never "network"/"net". It complements
 [OriginTrail](https://github.com/origintrail)'s Decentralised Knowledge Graph and
 anchors/bridges to the major blockchains.
 
