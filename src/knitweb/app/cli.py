@@ -24,13 +24,28 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import time
 
-from .. import store
+from .. import sdk, store
 from ..ledger.node import AccountNode
 from ..p2p.node import AsyncioP2PNode, PeerAddress
 
-__all__ = ["main", "cmd_wallet_new", "cmd_address", "cmd_balance", "cmd_pay", "run_node"]
+__all__ = [
+    "main", "cmd_wallet_new", "cmd_address", "cmd_balance", "cmd_pay", "run_node",
+    "cmd_compile", "cmd_verify_bundle",
+]
+
+
+def _read_key(key_arg: str) -> str:
+    """A private key given inline as hex, or as a path to a wallet/hex file."""
+    import os
+    if os.path.isfile(key_arg):
+        try:
+            return store.load_node(key_arg).priv      # a persisted wallet
+        except Exception:
+            return open(key_arg).read().strip()        # a raw hex file
+    return key_arg.strip()
 
 
 def _parse_addr(s: str) -> tuple[str, int]:
@@ -147,6 +162,31 @@ async def run_node(
 # argparse wiring
 # ---------------------------------------------------------------------------
 
+def cmd_compile(asset_path: str, originator_priv: str, out_path: str) -> tuple[str, str]:
+    """Resolve an OriginTrail asset JSON and compile it to *signed* edge bytecode.
+
+    Writes the bytecode to ``out_path`` and the originator signature to
+    ``out_path + ".sig"``. Returns ``(digest_hex, signature_hex)``. This is the
+    synaptic-compiler USP exposed for scripting: provenance-verified knowledge in,
+    ultralight signed bytecode out for an edge device.
+    """
+    with open(asset_path) as fh:
+        asset = json.load(fh)
+    data, sig = sdk.compile_asset(asset, originator_priv)
+    with open(out_path, "wb") as fh:
+        fh.write(data)
+    with open(out_path + ".sig", "w") as fh:
+        fh.write(sig)
+    return sdk.decode_bundle(data)["asset_cid"], sig
+
+
+def cmd_verify_bundle(bundle_path: str, sig_hex: str, originator_pub: str) -> bool:
+    """Verify a signed bytecode bundle against the claimed originator key (offline)."""
+    with open(bundle_path, "rb") as fh:
+        data = fh.read()
+    return sdk.verify_bundle(originator_pub, data, sig_hex)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="knitweb", description="Knitweb node + PLS wallet")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -173,6 +213,16 @@ def _build_parser() -> argparse.ArgumentParser:
     pay.add_argument("--to", required=True, help="recipient public-key hex")
     pay.add_argument("--amount", type=int, required=True)
     pay.add_argument("--symbol", default="PLS")
+
+    c = sub.add_parser("compile", help="compile an OriginTrail asset to signed edge bytecode")
+    c.add_argument("--asset", required=True, help="path to the OriginTrail asset JSON")
+    c.add_argument("--key", required=True, help="originator private key (hex or wallet/hex file)")
+    c.add_argument("--out", required=True, help="output path for the bytecode bundle")
+
+    v = sub.add_parser("verify-bundle", help="verify a signed bytecode bundle offline")
+    v.add_argument("--bundle", required=True)
+    v.add_argument("--sig", required=True, help="originator signature hex")
+    v.add_argument("--originator", required=True, help="originator public-key hex")
     return p
 
 
@@ -193,6 +243,13 @@ def main(argv: list[str] | None = None) -> int:
             cmd_pay(args.wallet, _parse_addr(args.peer), args.to, args.amount, args.symbol)
         )
         print(f"paid; knit {knit_id}")
+    elif args.cmd == "compile":
+        asset_cid, sig = cmd_compile(args.asset, _read_key(args.key), args.out)
+        print(f"compiled asset {asset_cid}\n  bundle: {args.out}\n  signature: {args.out}.sig")
+    elif args.cmd == "verify-bundle":
+        ok = cmd_verify_bundle(args.bundle, args.sig, args.originator)
+        print("valid" if ok else "INVALID")
+        return 0 if ok else 1
     return 0
 
 
