@@ -265,3 +265,26 @@ def test_empty_or_nonstring_settles_reference_is_rejected():
             actor="pls1whatever",
             settles=(123,),  # type: ignore[arg-type]
         )
+
+
+@pytest.mark.loom
+def test_malformed_cid_reference_is_rejected():
+    # A non-CID string (wrong prefix / non-base32 chars / too short) is caught at
+    # write time rather than left dangling. Real CIDs (b... base32-lower) pass.
+    good = canonical.cid({"r": "ok"})
+    assert good.startswith("b")
+    for bad in ("not-a-cid", "Qm" + "a" * 44, "b", "babc", "b!!!notbase32!!!xxxx"):
+        with pytest.raises(ValueError, match="CIDv1"):
+            LedgerEntry(
+                postings=(Posting(_cash(), 100), Posting(_revenue(), -100)),
+                memo="bad",
+                actor="pls1whatever",
+                settles=(bad,),
+            )
+    # a genuine CID is accepted (actor mismatch is checked later, at emit time)
+    LedgerEntry(
+        postings=(Posting(_cash(), 100), Posting(_revenue(), -100)),
+        memo="ok",
+        actor="pls1whatever",
+        settles=(good,),
+    )

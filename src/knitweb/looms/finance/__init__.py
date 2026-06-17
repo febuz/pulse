@@ -29,6 +29,22 @@ __all__ = [
     "is_balanced",
 ]
 
+# A CIDv1 in this fabric is multibase base32-lower: a "b" prefix followed by
+# RFC-4648 base32 (a-z, 2-7) — see core.canonical.cid. The shape check below is
+# deliberately light (prefix + charset + a conservative minimum length) so a
+# typo'd or non-CID reference is rejected at write time, while staying tolerant
+# of other codecs/lengths the same multibase could carry later.
+_B32_LOWER = frozenset("abcdefghijklmnopqrstuvwxyz234567")
+_MIN_CID_LEN = 16  # well under a real dag-cbor/sha256 CID (59), but catches garbage
+
+
+def _looks_like_cid(ref: str) -> bool:
+    return (
+        len(ref) >= _MIN_CID_LEN
+        and ref[0] == "b"
+        and all(ch in _B32_LOWER for ch in ref[1:])
+    )
+
 
 @dataclass(frozen=True)
 class Account:
@@ -94,6 +110,10 @@ class LedgerEntry:
         for ref in self.settles:
             if not isinstance(ref, str) or not ref:
                 raise TypeError("each settles reference must be a non-empty CID string")
+            if not _looks_like_cid(ref):
+                raise ValueError(
+                    f"settles reference is not a CIDv1 base32 string (b...): {ref!r}"
+                )
 
 
 # ---------------------------------------------------------------------------
