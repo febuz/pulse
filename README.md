@@ -49,17 +49,18 @@ work is paid in **PLS**). Workers are **spiders**.
 Phase 0 (core crypto + canonical encoding + Pulse + Web) is implemented and
 property-tested. Phase 3 has a stdlib-`asyncio` MVP for signed feed replication,
 conflict quarantine, and two-party Knit handshakes over canonical-CBOR frames.
-See [`docs/`](docs/) for the language-architecture decisions,
+See [`docs/`](docs/) for the language-architecture decisions and
 [`docs/research/08-knitweb.md`](docs/research/08-knitweb.md) for the KnitWeb concept
 paper (knitweb beside blockchain/hashgraph; the pulses/draft compute layer; the
-blockchain + hashgraph + knitweb cooperation; the OriginTrail interlock), and
-[`docs/LOC_BY_LANGUAGE.md`](docs/LOC_BY_LANGUAGE.md) for the per-language record.
+blockchain + hashgraph + knitweb cooperation; the OriginTrail interlock). Run
+`python3 tools/loc_report.py` for the per-language LOC record (generated on demand,
+not version-controlled).
 
 ## Develop
 
 ```bash
 PYTHONPATH=src python3 -m pytest tests/property -q   # fast core proofs
-python3 tools/loc_report.py                          # refresh the LOC record
+python3 tools/loc_report.py                          # print the LOC record (untracked)
 ```
 
 Requires Python ≥ 3.12 and `cryptography`. The hash-critical canonical encoder is

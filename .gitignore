@@ -14,3 +14,6 @@ experiments/*.sqlite
 experiments/*.sqlite-wal
 experiments/*.sqlite-shm
 mlruns/
+
+# Generated on demand, not version-controlled (run tools/loc_report.py to view)
+docs/LOC_BY_LANGUAGE.md
