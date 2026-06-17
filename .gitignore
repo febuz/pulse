@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Local experiment databases (not public-OSS artifacts)
+experiments/*.sqlite
+experiments/*.sqlite-wal
+experiments/*.sqlite-shm
+mlruns/

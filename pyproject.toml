@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "knitweb"
+version = "0.0.1"
+description = "A peer-to-peer crypto network with native token FBR: verifiable GPU compute + a knowledge/resource fabric woven by p2p spiders."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Knitweb" }]
+keywords = ["p2p", "crypto", "depin", "knowledge-graph", "webgpu", "fbr"]
+
+# Runtime deps deliberately minimal for the credibly-neutral core.
+# `cryptography` provides secp256k1 ECDSA + SHA-256; canonical CBOR is hand-rolled
+# (see knitweb.core.canonical) so the hash-critical path has zero external surface.
+dependencies = [
+    "cryptography>=42",
+]
+
+[project.optional-dependencies]
+# Heavier layers, installed per role. The base ledger never needs these.
+p2p = ["py-libp2p"]
+compute = ["wgpu", "juliacall"]
+data = ["polars", "pyarrow"]
+experiments = ["mlflow"]
+dev = ["pytest>=8"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/knitweb"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+markers = [
+    "property: deterministic property/parity tests for the core (fast)",
+    "interop: two-node networked tests (Phase 3+)",
+    "loom: domain-loom tests (Phase 5+)",
+]
+
+# Target free-threaded CPython 3.14 once dependency wheels are stable; the I/O-bound
+# core runs unchanged on the GIL build (3.12+) in the meantime.
