@@ -80,6 +80,14 @@ class AllocationEvent:
             raise ValueError("an allocation event needs at least one resource")
         if not self.claims:
             raise ValueError("an allocation event needs at least one claim")
+        seen: set[str] = set()
+        duplicates: set[str] = set()
+        for resource in self.resources:
+            if resource.name in seen:
+                duplicates.add(resource.name)
+            seen.add(resource.name)
+        if duplicates:
+            raise ValueError(f"duplicate resource names: {duplicates}")
         declared = {r.name for r in self.resources}
         unknown = {c.resource_name for c in self.claims} - declared
         if unknown:
@@ -116,7 +124,7 @@ def _sorted_resources(resources: tuple[Resource, ...]) -> list[Resource]:
 
 
 def _sorted_claims(claims: tuple[Claim, ...]) -> list[Claim]:
-    return sorted(claims, key=lambda c: (c.resource_name, c.task))
+    return sorted(claims, key=lambda c: (c.resource_name, c.task, c.units))
 
 
 class OperationalLoom:
@@ -131,6 +139,8 @@ class OperationalLoom:
 
     def to_record(self, event: AllocationEvent) -> dict:
         """Build the integer-only, canonical-encodable record for an allocation event."""
+        if event.actor != self.address:
+            raise ValueError("allocation actor does not match signing key")
         record = {
             "kind": self.KIND,
             "resources": [

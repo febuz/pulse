@@ -117,6 +117,8 @@ class FinanceLoom:
 
     def to_record(self, entry: LedgerEntry) -> dict:
         """Build the integer-only, canonical-encodable record for a ledger entry."""
+        if entry.actor != self.address:
+            raise ValueError("ledger entry actor does not match signing key")
         currency = entry.postings[0].account.currency
         postings = _sorted_postings(entry.postings)
         record = {

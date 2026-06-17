@@ -146,6 +146,17 @@ def test_tampered_signed_entry_fails_verification():
 
 
 @pytest.mark.loom
+def test_entry_actor_must_match_signing_key():
+    priv, _ = crypto.generate_keypair()
+    other_priv, _ = crypto.generate_keypair()
+    loom = FinanceLoom(priv)
+    other = FinanceLoom(other_priv)
+    entry = _balanced_entry(other.address)
+    with pytest.raises(ValueError, match="actor"):
+        loom.emit(entry)
+
+
+@pytest.mark.loom
 def test_zero_amount_posting_is_rejected():
     with pytest.raises(ValueError, match="non-zero"):
         Posting(_cash(), 0)

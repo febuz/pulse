@@ -133,6 +133,24 @@ def test_claim_order_does_not_change_content_id():
 
 
 @pytest.mark.loom
+def test_duplicate_claim_units_do_not_change_content_id():
+    priv, _ = crypto.generate_keypair()
+    loom = OperationalLoom(priv)
+    e1 = AllocationEvent(
+        resources=(_gpu_pool(),),
+        claims=(Claim("gpu-pool", "task-A", 2), Claim("gpu-pool", "task-A", 1)),
+        actor=loom.address,
+    )
+    e2 = AllocationEvent(
+        resources=(_gpu_pool(),),
+        claims=(Claim("gpu-pool", "task-A", 1), Claim("gpu-pool", "task-A", 2)),
+        actor=loom.address,
+    )
+    assert loom.to_record(e1) == loom.to_record(e2)
+    assert canonical.cid(loom.to_record(e1)) == canonical.cid(loom.to_record(e2))
+
+
+@pytest.mark.loom
 def test_weave_into_web_is_content_addressed_and_idempotent():
     priv, _ = crypto.generate_keypair()
     loom = OperationalLoom(priv)
@@ -156,6 +174,17 @@ def test_tampered_signed_event_fails_verification():
 
 
 @pytest.mark.loom
+def test_event_actor_must_match_signing_key():
+    priv, _ = crypto.generate_keypair()
+    other_priv, _ = crypto.generate_keypair()
+    loom = OperationalLoom(priv)
+    other = OperationalLoom(other_priv)
+    event = _feasible_event(other.address)
+    with pytest.raises(ValueError, match="actor"):
+        loom.emit(event)
+
+
+@pytest.mark.loom
 def test_claim_references_undeclared_resource_is_rejected():
     priv, _ = crypto.generate_keypair()
     loom = OperationalLoom(priv)
@@ -163,6 +192,18 @@ def test_claim_references_undeclared_resource_is_rejected():
         AllocationEvent(
             resources=(_gpu_pool(),),
             claims=(Claim("cpu-pool", "task-A", 1),),  # "cpu-pool" not in resources
+            actor=loom.address,
+        )
+
+
+@pytest.mark.loom
+def test_duplicate_resource_names_are_rejected():
+    priv, _ = crypto.generate_keypair()
+    loom = OperationalLoom(priv)
+    with pytest.raises(ValueError, match="duplicate"):
+        AllocationEvent(
+            resources=(Resource("gpu-pool", 8), Resource("gpu-pool", 16)),
+            claims=(Claim("gpu-pool", "task-A", 1),),
             actor=loom.address,
         )
 
