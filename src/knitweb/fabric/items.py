@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from ..core import canonical, crypto
+from ..core.pulse import Beat
 from .web import Web
 
 __all__ = [
@@ -163,7 +164,7 @@ def web_state_root(web: Web) -> str:
     return crypto.merkle_root(leaves).hex()
 
 
-def checkpoint(web: Web, beat: "Beat") -> FabricCheckpoint:  # noqa: F821
+def checkpoint(web: Web, beat: Beat) -> FabricCheckpoint:
     """Create a FabricCheckpoint from the current *web* state, anchored to *beat*."""
     root = web_state_root(web)
     n, e = web.size

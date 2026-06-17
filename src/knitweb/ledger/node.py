@@ -13,7 +13,7 @@ from ..core import crypto
 from . import loom
 from .braid import Braid
 from .fiber import genesis_fiber
-from .knit import Knit, build, sign_from, sign_to
+from .knit import MAINNET, Knit, build, sign_from, sign_to
 
 __all__ = ["AccountNode"]
 
@@ -24,11 +24,13 @@ class AccountNode:
         priv: str | None = None,
         pub: str | None = None,
         genesis_balances: dict[str, int] | None = None,
+        network: int = MAINNET,
     ) -> None:
         if priv is None or pub is None:
             priv, pub = crypto.generate_keypair()
         self.priv = priv
         self.pub = pub
+        self.network = network
         self.address = crypto.address(pub)
         self.braid = Braid(genesis_fiber(pub, genesis_balances))
 
@@ -44,8 +46,9 @@ class AccountNode:
     # -- the two-party transfer handshake ---------------------------------
 
     def propose(self, to_pub: str, symbol: str, amount: int, timestamp: int) -> Knit:
-        """Build and sender-sign a Knit using this node's current nonce."""
-        knit = build(self.pub, to_pub, symbol, amount, self.nonce, timestamp)
+        """Build and sender-sign a Knit using this node's current nonce + network."""
+        knit = build(self.pub, to_pub, symbol, amount, self.nonce, timestamp,
+                     network=self.network)
         return sign_from(knit, self.priv)
 
     def accept(self, knit: Knit) -> Knit:
@@ -58,12 +61,12 @@ class AccountNode:
 
     def apply_sent(self, knit: Knit) -> None:
         """Apply an outgoing Knit to this (sender) node's Braid."""
-        next_fiber = loom.apply_to_sender(self.braid.head, knit)
+        next_fiber = loom.apply_to_sender(self.braid.head, knit, self.network)
         self.braid.weave(next_fiber)
 
     def apply_received(self, knit: Knit) -> None:
         """Apply an incoming Knit to this (receiver) node's Braid."""
-        next_fiber = loom.apply_to_receiver(self.braid.head, knit)
+        next_fiber = loom.apply_to_receiver(self.braid.head, knit, self.network)
         self.braid.weave(next_fiber)
 
     # -- convenience: full transfer between two local nodes ---------------
@@ -72,9 +75,13 @@ class AccountNode:
         self, receiver: "AccountNode", symbol: str, amount: int, timestamp: int
     ) -> Knit:
         """Complete a transfer to ``receiver`` (both nodes local). Returns the Knit."""
+        if receiver.network != self.network:
+            raise ValueError(
+                f"network mismatch: sender {self.network} != receiver {receiver.network}"
+            )
         proposed = self.propose(receiver.pub, symbol, amount, timestamp)
         signed = receiver.accept(proposed)
-        ok, reason = loom.validate_knit(signed)
+        ok, reason = loom.validate_knit(signed, self.network)
         if not ok:
             raise ValueError(f"refusing to apply invalid knit: {reason}")
         self.apply_sent(signed)
