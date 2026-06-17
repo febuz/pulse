@@ -60,9 +60,11 @@ links across the looms, per-epoch mint wiring, partial-range Merkle proofs, opti
 - `docs/migration/PR_CHANGELOG.md` — plain per-PR changelog (#1–#48) with the reason/decision/
   context for each, including superseded/closed PRs. Read this to understand *why* the code is shaped
   the way it is.
-- `docs/migration/ARCHIVED_BRANCHES.md` — the story of every file in the 11 numbered `archive/NN-*`
-  branches (the non-merged, data-safety-pushed branch refs); flags `archive/11-token-loomtoken` as the
-  one owner-rejected, never-merged branch.
+- `docs/migration/ARCHIVED_BRANCHES.md` — the story of every file in the 12 numbered `archive/NN-*`
+  branches (the non-merged, data-safety-pushed branch refs); flags `archive/11-token-loomtoken` and
+  `archive/12-knitweb-init-package` as the owner-rejected / superseded never-merged branches.
+- `docs/migration/RENAME_RUNBOOK.md` — the ready-to-apply, signed-record-gate-proven recipe for the
+  `loom→knitweb` rename (PR #2): exact `git mv` + ordered `sed` map + the CID-invariant verification gate.
 - `docs/migration/MIGRATION.md` + `MIGRATION_PLAN.md` — this migration.
 - `docs/ROADMAP.md` — backlog, layer status, the `loom→knitweb` rename mandate.
 - `docs/CRYPTO_CORPUS_STUDY.md` — design lessons (PoUW economics, append-only feeds, encoding/PQ).
