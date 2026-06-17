@@ -98,6 +98,28 @@ def test_tampered_braid_snapshot_fails_on_load(tmp_path):
 
 
 @pytest.mark.property
+def test_double_spend_guard_survives_restart(tmp_path):
+    # A p2p node's in-memory nonce cache is lost on restart, so the persisted braid
+    # must carry the double-spend protection: load_braid rebuilds the spent-knit set
+    # from the saved Fibers, so replaying an already-applied knit after a restart is
+    # still rejected.
+    a = AccountNode(genesis_balances={"PLS": 100})
+    b = AccountNode()
+    knit = b.accept(a.propose(b.pub, "PLS", 30, timestamp=1))
+    a.apply_sent(knit)
+    b.apply_received(knit)
+    p = str(tmp_path / "b.cbor")
+    store.save_node(b, p)
+
+    b2 = store.load_node(p)
+    assert b2.balance("PLS") == 30
+    from knitweb.ledger.braid import BraidError
+    with pytest.raises(BraidError):       # replay of the same knit after restart
+        b2.apply_received(knit)
+    assert b2.balance("PLS") == 30        # state unchanged
+
+
+@pytest.mark.property
 def test_wrong_kind_and_owner_mismatch_rejected(tmp_path):
     p = str(tmp_path / "x.cbor")
     from knitweb.core import canonical
