@@ -1,7 +1,7 @@
 """
-Risk-Knot staking — FBR locked on uncertain knowledge claims (Python layer).
+Risk-Knot staking — PLS locked on uncertain knowledge claims (Python layer).
 
-A risk knot represents an uncertain claim.  Fibers stake FBR on YES or NO.
+A risk knot represents an uncertain claim.  Fibers stake PLS on YES or NO.
 Stakes are locked (not burned) while the knot is open.
 
 Resolution fires when:
@@ -9,9 +9,9 @@ Resolution fires when:
   - one side holds ≥ RISK_CONSENSUS_FRACTION of the vote count
 
 Lock levels:
-  L1 =    5 µFBR
-  L2 =   50 µFBR
-  L3 =  500 µFBR
+  L1 =    5 µPLS
+  L2 =   50 µPLS
+  L3 =  500 µPLS
 """
 
 from __future__ import annotations
@@ -21,14 +21,14 @@ import hashlib
 from dataclasses import dataclass, field
 from typing import Dict, List, Literal, Optional, Tuple
 
-from .fbr import FBRLedger, VALIDATORS_REQUIRED
+from .pulse import PulseLedger, VALIDATORS_REQUIRED
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
-RISK_SCHEMA            = "vpc.risk-knot-fbr/1"
+RISK_SCHEMA            = "vpc.risk-knot/1"
 
 LOCK_LEVELS: Dict[int, int] = {
-    1:   5,    # µFBR
+    1:   5,    # µPLS
     2:  50,
     3: 500,
 }
@@ -83,10 +83,10 @@ class RiskKnot:
 
 class RiskKnotLedger:
     """
-    Manages risk-knot staking on the FBR (silk) layer.
+    Manages risk-knot staking on the PLS (silk) layer.
     """
 
-    def __init__(self, ledger: FBRLedger) -> None:
+    def __init__(self, ledger: PulseLedger) -> None:
         self._ledger = ledger
         self._knots: Dict[str, RiskKnot] = {}
         self._locks: Dict[Tuple[str, str], int] = {}
@@ -108,7 +108,7 @@ class RiskKnotLedger:
         amount = LOCK_LEVELS[level]
         w = self._ledger.wallet(opened_by)
         if w.balance < amount:
-            return False, f"insufficient balance — L{level} requires {amount} µFBR"
+            return False, f"insufficient balance — L{level} requires {amount} µPLS"
 
         opened_at = _now_iso()
         rid = _risk_id(knot_addr, opened_at)
@@ -146,7 +146,7 @@ class RiskKnotLedger:
         amount = LOCK_LEVELS[level]
         w = self._ledger.wallet(staker_did)
         if w.balance < amount:
-            return False, f"insufficient balance — L{level} requires {amount} µFBR"
+            return False, f"insufficient balance — L{level} requires {amount} µPLS"
 
         w.balance -= amount
         self._locks[(staker_did, risk_id)] = \
@@ -158,7 +158,7 @@ class RiskKnotLedger:
         else:
             rk.no_pool += amount
 
-        return True, f"{amount} µFBR locked on {position}"
+        return True, f"{amount} µPLS locked on {position}"
 
     def vote(
         self,
@@ -254,7 +254,7 @@ class RiskKnotLedger:
             "schema":         RISK_SCHEMA,
             "open":           open_count,
             "resolved":       resolved_count,
-            "total_staked_micro_fbr": total_staked,
+            "total_staked_micro_pls": total_staked,
             "lock_levels":    LOCK_LEVELS,
             "vote_threshold": RISK_VOTE_THRESHOLD,
             "consensus_frac": RISK_CONSENSUS_FRACTION,

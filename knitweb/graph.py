@@ -1,7 +1,7 @@
 """
 KnitweaveGraph — the full 3D graph of fibers, dots, and knots.
 
-Brings together FiberRegistry, DotRegistry, KnotRegistry and FBRLedger
+Brings together FiberRegistry, DotRegistry, KnotRegistry and PulseLedger
 into a single coordinated object.  This is the entry point for the Python
 knitweb service.
 """
@@ -14,7 +14,7 @@ from .addressing import addr256
 from .fiber import Fiber, FiberRegistry
 from .dot import Dot, DotRegistry, DotType
 from .knot import Knot, KnotRegistry, compute_knot_addr
-from .fbr import FBRLedger
+from .pulse import PulseLedger
 from .market import MarketCap
 
 
@@ -25,7 +25,7 @@ class KnitweaveGraph:
     Public interface mirrors the REST API that will wrap it:
       register_fiber    — spider joins or heartbeats
       post_knot         — spider posts a 2-line knot
-      validate_knot     — spider votes a knot valid (may trigger FBR mint)
+      validate_knot     — spider votes a knot valid (may trigger PLS mint)
       get_knot          — look up a knot by address
       stats             — combined statistics
     """
@@ -34,7 +34,7 @@ class KnitweaveGraph:
         self.fibers   = FiberRegistry()
         self.dots     = DotRegistry()
         self.knots    = KnotRegistry()
-        self.ledger   = FBRLedger()
+        self.ledger   = PulseLedger()
         self.market   = MarketCap()
 
     # ── Fiber ─────────────────────────────────────────────────────────────────
@@ -78,8 +78,8 @@ class KnitweaveGraph:
     ) -> dict:
         """
         Spider validates a knot.  On confirmation (3rd unique validator):
-          - Poster earns FBR_POSTER_REWARD µFBR
-          - Each validator earns FBR_VALIDATOR_REWARD µFBR
+          - Poster earns PULSE_POSTER_REWARD µPLS
+          - Each validator earns PULSE_VALIDATOR_REWARD µPLS
           - A VALIDATES dot is added from validator fiber to knot
           - Knot confirmation_count is updated
         """
@@ -123,10 +123,10 @@ class KnitweaveGraph:
     def list_knots(self, limit: int = 50, offset: int = 0) -> list[Knot]:
         return self.knots.list(limit=limit, offset=offset)
 
-    # ── Stats ─────────────────────────────────────────────────────────────────
+    # ── Stats ───────────────────────────────────────────────────────────────
 
     def stats(self) -> dict:
-        fbr  = self.ledger.stats()
+        pulse = self.ledger.stats()
         util = self.market.utilisation(
             fibers=len(self.fibers),
             dots=len(self.dots),
@@ -138,7 +138,7 @@ class KnitweaveGraph:
                 "dots":   len(self.dots),
                 "knots":  len(self.knots),
             },
-            "fbr": fbr,
+            "pulse": pulse,
             "market": self.market.summary(),
             "utilisation": {
                 "fibers": util["fiber_utilisation"],

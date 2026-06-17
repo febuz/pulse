@@ -2,7 +2,7 @@
 Fiber — node in the knitweb graph (graph-theory: vertex / node).
 
 A fiber is a spider (participant) in the knitweb.  Its 256-bit address is
-derived from the participant's DID.  Fibers with an FBR balance > 0 are
+derived from the participant's DID.  Fibers with a PLS balance > 0 are
 voting-eligible; silk fibers start non-voting.
 """
 
