@@ -1,7 +1,7 @@
 # Knitweb
 
 A peer-to-peer crypto **web** whose pay-token is **PLS** ("pulses") and whose value
-unit is the coin **Fiber**. (The ticker **FBR** is reserved for a possible later
+unit of connections is counted with **Fiber**. (The ticker **FBR** is reserved for a possible later
 regional token — it is not the active token.) Knitweb is a credibly-neutral DePIN
 where p2p web-workers ("spiders") sell **verifiable GPU compute** and weave a
 knowledge + resource **fabric** — a *Synaptic Web* whose
