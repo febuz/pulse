@@ -185,9 +185,17 @@ def load_node(path: str) -> AccountNode:
     rec = _read(path)
     if not isinstance(rec, dict) or rec.get("kind") != "node-snapshot":
         raise StoreError("not a node snapshot")
-    if crypto.public_from_private(rec["priv"]) != rec["pub"]:
+    try:
+        priv, pub = rec["priv"], rec["pub"]
+    except KeyError as exc:
+        raise StoreError(f"malformed node key record: {exc}") from exc
+    try:
+        derived_pub = crypto.public_from_private(priv)
+    except ValueError as exc:
+        raise StoreError("malformed node private key") from exc
+    if derived_pub != pub:
         raise StoreError("snapshot public key does not match private key")
-    node = AccountNode(priv=rec["priv"], pub=rec["pub"], network=rec.get("network", 1))
+    node = AccountNode(priv=priv, pub=pub, network=rec.get("network", 1))
     fibers = rec.get("fibers") or []
     if not fibers:
         raise StoreError("node snapshot has no genesis fiber")
