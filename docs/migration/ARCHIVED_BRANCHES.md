@@ -30,9 +30,11 @@ preserved online.
 | `archive/09-test-canonical-fuzz` | #39 | MERGED | ✅ yes |
 | `archive/10-test-origintrail-symbiosis` | #42 | MERGED | ✅ yes |
 | `archive/11-token-loomtoken` | — | **NEVER MERGED** | ❌ **no — owner-rejected** |
+| `archive/12-knitweb-init-package` | #21-lineage | **NEVER MERGED** | ❌ **no — superseded early experiment** |
 
-The only branch whose code is **not** on `main` is `archive/11-token-loomtoken` (see below);
-it is the genuine "kept for the record but deliberately not shipped" branch.
+Two branches hold code that is **not** on `main`: `archive/11-token-loomtoken` (owner-rejected)
+and `archive/12-knitweb-init-package` (the superseded early package experiment). Both are kept
+for the record, deliberately not shipped.
 
 ---
 
@@ -150,6 +152,31 @@ product, and the name collides with the `loom→knitweb` rename anyway (it would
 implementation* aren't lost — if a user-token primitive is ever wanted, this is the starting
 point — but it must **not** be revived under the `LoomToken` name. The native pay-token
 **PLS** (#17) is the only token on `main`.
+
+## archive/12-knitweb-init-package → #21-lineage (**NEVER MERGED — superseded**)
+
+The early "knitweb Python package" experiment (the lineage of the closed PR #21,
+*Fiber/Dot/Knot/FBR/Risk graph layer*), captured here at its **latest local state** — 5 commits
+that the local clone carried but the remote namesake branch never received. It uses a **separate,
+top-level `knitweb/` package layout** (not the canonical `src/knitweb/` tree on `main`), so none
+of these files exist on `main`. Pushed purely so the working code isn't lost if the disk is
+discarded; it is **not** a revival path — the canonical primitives + PLS pivot won instead.
+
+- **`knitweb/__init__.py`, `addressing.py`** — package surface + an early address scheme.
+- **`knitweb/fiber.py`, `dot.py`, `knot.py`, `graph.py`** — the early primitive experiment
+  (`Fiber`/`Dot`/`Knot` over a graph layer) that the canonical
+  `Blob`/`Fiber`/`Loom`/`Knit`/`Braid`/`Web`/`Pulse` set replaced.
+- **`knitweb/pulse.py`** — the Pulse/PLS denomination logic; the last 3 commits re-denominated
+  the "Silk tier" from **FBR → PLS** and **removed `fbr.py`** (aligning with the PLS pivot).
+- **`knitweb/market.py`, `risk.py`** — a market/risk graph layer ported from virtualpc (the
+  origin of this code, per the first commit message).
+- **`requirements.txt`** — its standalone dependency pin.
+- **`tests/python/test_knitweb.py` (463 lines), `test_risk.py` (228 lines)** — a 96-test suite
+  for the experiment (Python only; the original TypeScript integrations were dropped).
+
+**Why archived not merged:** PR #21 was closed because this layout/naming was superseded by the
+canonical primitives and the `src/knitweb/` package. The code is kept for reference (the risk/
+market graph ideas in particular) but is not a migration target.
 
 ---
 
