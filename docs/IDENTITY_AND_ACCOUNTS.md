@@ -63,5 +63,15 @@ when a real boundary exists.
 > org only when governance, legal, or community structure actually demands it.**
 
 This keeps the door open to all three end-states while paying the lowest cost today
-— the "accept what is possible, split when justified" path. *Final call is the
-project owner's; this is a recommendation, not a commitment.*
+— the "accept what is possible, split when justified" path.
+
+## Decision (owner-confirmed, 2026-06-17)
+
+**DECIDED: build under `knitweb` now, reserve `pulse` + `fiber`, split to a separate
+token/foundation org only when governance/legal/community structure demands it.**
+
+The project owner confirmed the recommendation above. Concrete follow-ups:
+- Engineering home stays/becomes the `knitweb` org (currently `github.com/febuz/knitweb`).
+- Reserve the `pulse` and `fiber` handles (GitHub org + domains + socials) defensively.
+- Token/app repos live *under* `knitweb` (`knitweb/pls-*`, `knitweb/fiber-*`) until a
+  real boundary (legal entity, independent governance, distinct community) appears.
