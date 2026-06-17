@@ -14,6 +14,16 @@ applied to capacity scheduling.
 All capacities and units are integers; records round-trip through canonical CBOR.
 A feasible event becomes a signed, content-addressed ``operational-allocation``
 record woven into the Web by the scheduling actor.
+
+Separation of concerns (vs the earlier priced-lease design): this loom proves only
+**capacity feasibility** — that an actor did not over-subscribe its declared pools.
+It deliberately carries no pricing. Per-unit price and the provider/consumer payment
+obligation live in the priced ``ResourceItem`` (``fabric/items.py``) and settle through
+the finance loom + PoUW escrow. So a peer audits *"capacity was not oversubscribed"*
+from this record, and *"this capacity was the priced PLS obligation"* against the
+linked ResourceItem / settlement record. Binding an allocation to a specific priced
+offer via an explicit reference field is a deliberate future increment, not part of
+the feasibility record itself.
 """
 
 from __future__ import annotations
