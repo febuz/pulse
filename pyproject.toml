@@ -5,12 +5,15 @@ build-backend = "hatchling.build"
 [project]
 name = "knitweb"
 version = "0.0.1"
-description = "A peer-to-peer crypto network with native token FBR: verifiable GPU compute + a knowledge/resource fabric woven by p2p spiders."
+description = "Knitweb: a pure-Python peer-to-peer crypto web with native token PLS — verifiable compute + a knowledge/resource fabric woven by p2p spiders."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Knitweb" }]
-keywords = ["p2p", "crypto", "depin", "knowledge-graph", "webgpu", "fbr"]
+keywords = ["p2p", "crypto", "depin", "knowledge-graph", "webgpu", "pls"]
+
+[project.scripts]
+knitweb = "knitweb.app.cli:main"
 
 # Runtime deps deliberately minimal for the credibly-neutral core.
 # `cryptography` provides secp256k1 ECDSA + SHA-256; canonical CBOR is hand-rolled
