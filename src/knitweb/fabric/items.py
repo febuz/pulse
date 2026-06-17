@@ -32,6 +32,11 @@ __all__ = [
 ]
 
 
+def _require_int(name: str, value: int) -> None:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError(f"{name} must be int")
+
+
 # ---------------------------------------------------------------------------
 # KnowledgeItem
 # ---------------------------------------------------------------------------
@@ -85,6 +90,8 @@ class ResourceItem:
     provider: str        # PLS address of the offering spider
 
     def __post_init__(self) -> None:
+        _require_int("capacity", self.capacity)
+        _require_int("price_per_epoch", self.price_per_epoch)
         if self.capacity < 0:
             raise ValueError("capacity must be non-negative")
         if self.price_per_epoch < 0:
@@ -126,6 +133,11 @@ class FabricCheckpoint:
     state_root: str # Merkle root of sorted Web node CIDs (hex)
     node_count: int
     edge_count: int
+
+    def __post_init__(self) -> None:
+        _require_int("epoch", self.epoch)
+        _require_int("node_count", self.node_count)
+        _require_int("edge_count", self.edge_count)
 
     def to_record(self) -> dict:
         return {

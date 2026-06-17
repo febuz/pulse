@@ -2,7 +2,7 @@
 
 import pytest
 
-from knitweb.core.pulse import Pulse
+from knitweb.core.pulse import Beat, Pulse
 from knitweb.fabric.web import Web
 
 
@@ -39,6 +39,32 @@ def test_pulse_beat_cid_is_deterministic():
     p1 = Pulse(10, 0)
     p2 = Pulse(10, 0)
     assert p1.beat(0, "root").cid == p2.beat(0, "root").cid
+
+
+@pytest.mark.property
+def test_pulse_rejects_bool_and_float_timing_fields():
+    for bad in (True, 1.5):
+        with pytest.raises(TypeError, match="interval_s"):
+            Pulse(bad, 0)  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="genesis_ts"):
+            Pulse(10, bad)  # type: ignore[arg-type]
+
+    pulse = Pulse(10, 0)
+    for bad in (True, 1.5):
+        with pytest.raises(TypeError, match="timestamp"):
+            pulse.epoch_at(bad)  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="timestamp"):
+            pulse.beat(bad, "root")  # type: ignore[arg-type]
+
+
+@pytest.mark.property
+def test_beat_rejects_bool_epoch_and_non_string_roots():
+    with pytest.raises(TypeError, match="epoch"):
+        Beat(epoch=True, timestamp=0, state_root="root", prev_beat=None)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="state_root"):
+        Beat(epoch=0, timestamp=0, state_root=123, prev_beat=None)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="prev_beat"):
+        Beat(epoch=0, timestamp=0, state_root="root", prev_beat=123)  # type: ignore[arg-type]
 
 
 # --- Web ------------------------------------------------------------------
