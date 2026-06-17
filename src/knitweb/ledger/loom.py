@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from . import blob
 from .fiber import Fiber
-from .knit import Knit
+from .knit import MAINNET, Knit
 
 __all__ = [
     "validate_knit",
@@ -32,14 +32,22 @@ class LoomError(ValueError):
     """Raised when a state transition violates a Loom invariant."""
 
 
-def validate_knit(knit: Knit) -> tuple[bool, str]:
-    """Validate a fully-signed Knit. Returns (ok, reason). ``ok`` implies reason ''."""
+def validate_knit(knit: Knit, expected_network: int = MAINNET) -> tuple[bool, str]:
+    """Validate a fully-signed Knit. Returns (ok, reason). ``ok`` implies reason ''.
+
+    ``expected_network`` is the validating web's own network id; a Knit bound to a
+    different network is refused, so a signed transfer from one PLS web can never
+    be replayed on another (EIP-155-style anti-replay). The network id is inside
+    the signed bytes, so it cannot be altered without invalidating the signatures.
+    """
     from ..core import crypto  # local import keeps the core import graph acyclic
 
     if not isinstance(knit.amount, int) or isinstance(knit.amount, bool):
         return False, "amount must be int"
     if knit.amount <= 0:
         return False, "amount must be positive"
+    if knit.network != expected_network:
+        return False, f"wrong network: knit {knit.network} != expected {expected_network}"
     if knit.from_pub == knit.to_pub:
         return False, "sender and receiver must differ"
     if knit.from_nonce < 0:
@@ -53,11 +61,11 @@ def validate_knit(knit: Knit) -> tuple[bool, str]:
     return True, ""
 
 
-def apply_to_sender(prev: Fiber, knit: Knit) -> Fiber:
+def apply_to_sender(prev: Fiber, knit: Knit, expected_network: int = MAINNET) -> Fiber:
     """Produce the sender's next Fiber after sending ``knit``. Raises on violation."""
     if knit.from_pub != prev.owner:
         raise LoomError("knit sender does not match fiber owner")
-    ok, reason = validate_knit(knit)
+    ok, reason = validate_knit(knit, expected_network)
     if not ok:
         raise LoomError(f"invalid knit: {reason}")
     if knit.from_nonce != prev.nonce:
@@ -75,11 +83,11 @@ def apply_to_sender(prev: Fiber, knit: Knit) -> Fiber:
     )
 
 
-def apply_to_receiver(prev: Fiber, knit: Knit) -> Fiber:
+def apply_to_receiver(prev: Fiber, knit: Knit, expected_network: int = MAINNET) -> Fiber:
     """Produce the receiver's next Fiber after receiving ``knit``. Raises on violation."""
     if knit.to_pub != prev.owner:
         raise LoomError("knit receiver does not match fiber owner")
-    ok, reason = validate_knit(knit)
+    ok, reason = validate_knit(knit, expected_network)
     if not ok:
         raise LoomError(f"invalid knit: {reason}")
     new_balances = blob.credit(prev.balances, knit.symbol, knit.amount)

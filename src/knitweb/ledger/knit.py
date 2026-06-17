@@ -6,6 +6,13 @@ canonical record, so a transfer is mutually agreed and non-repudiable. The
 sender's ``from_nonce`` pins the transfer to a specific account state, preventing
 replay/double-spend.
 
+The signed record also binds a ``network`` id: a Knit signed for one network can
+never be replayed on another, because the network id is inside the signed bytes
+(tampering breaks the signature) and a validator only accepts Knits bearing its
+own network id. This is the EIP-155 anti-replay guarantee (see the encoding/ledger
+study in ``docs/CRYPTO_CORPUS_STUDY.md``), letting testnet and mainnet — or any
+two PLS webs — coexist without cross-submission of signed transfers.
+
 A Knit is *settlement data*, not application logic: it carries no floats and no
 free-form fields beyond what the Loom validates.
 """
@@ -16,7 +23,11 @@ from dataclasses import dataclass, replace
 
 from ..core import canonical, crypto
 
-__all__ = ["Knit", "build", "sign_from", "sign_to"]
+__all__ = ["Knit", "build", "sign_from", "sign_to", "MAINNET"]
+
+# Network ids bound into every signed Knit. 1 = the PLS mainnet; pick a distinct
+# id per testnet / private web so signed transfers cannot cross between them.
+MAINNET = 1
 
 
 @dataclass(frozen=True)
@@ -27,6 +38,7 @@ class Knit:
     amount: int
     from_nonce: int
     timestamp: int
+    network: int = MAINNET
     from_sig: str | None = None
     to_sig: str | None = None
 
@@ -40,6 +52,7 @@ class Knit:
             "amount": self.amount,
             "from_nonce": self.from_nonce,
             "timestamp": self.timestamp,
+            "network": self.network,
         }
 
     @property
@@ -59,10 +72,13 @@ def build(
     amount: int,
     from_nonce: int,
     timestamp: int,
+    network: int = MAINNET,
 ) -> Knit:
-    """Construct an unsigned Knit."""
+    """Construct an unsigned Knit bound to ``network`` (defaults to PLS mainnet)."""
     if not isinstance(amount, int) or isinstance(amount, bool):
         raise TypeError("amount must be int")
+    if not isinstance(network, int) or isinstance(network, bool):
+        raise TypeError("network must be int")
     return Knit(
         from_pub=from_pub,
         to_pub=to_pub,
@@ -70,6 +86,7 @@ def build(
         amount=amount,
         from_nonce=from_nonce,
         timestamp=timestamp,
+        network=network,
     )
 
 
