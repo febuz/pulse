@@ -74,6 +74,26 @@ def test_line_order_does_not_change_content_id():
 
 
 @pytest.mark.loom
+def test_duplicate_sku_lines_do_not_change_content_id():
+    priv, _ = crypto.generate_keypair()
+    loom = SupplyChainLoom(priv)
+    a = Item("A", 100)
+    out = Item("OUT", 300)
+    e1 = ProcessEvent(
+        inputs=(Line(a, 2), Line(a, 1)),
+        outputs=(Line(out, 1),),
+        actor=loom.address,
+    )
+    e2 = ProcessEvent(
+        inputs=(Line(a, 1), Line(a, 2)),
+        outputs=(Line(out, 1),),
+        actor=loom.address,
+    )
+    assert loom.to_record(e1) == loom.to_record(e2)
+    assert canonical.cid(loom.to_record(e1)) == canonical.cid(loom.to_record(e2))
+
+
+@pytest.mark.loom
 def test_weave_is_content_addressed_and_idempotent():
     priv, _ = crypto.generate_keypair()
     loom = SupplyChainLoom(priv)
@@ -97,3 +117,38 @@ def test_tampered_record_fails_verification():
     att = loom.emit(_repackaging_for(loom))
     forged = dict(att.record, total_mass_g=999999)
     assert not verify_record(forged, att.author_pub, att.sig, "actor")
+
+
+@pytest.mark.loom
+def test_event_actor_must_match_signing_key():
+    priv, _ = crypto.generate_keypair()
+    other_priv, _ = crypto.generate_keypair()
+    loom = SupplyChainLoom(priv)
+    other = SupplyChainLoom(other_priv)
+    event = _repackaging_for(other)
+    with pytest.raises(ValueError, match="actor"):
+        loom.emit(event)
+
+
+@pytest.mark.loom
+def test_float_unit_mass_is_rejected():
+    with pytest.raises(TypeError, match="unit_mass_g"):
+        Item("FLOAT", 1.5)  # type: ignore[arg-type]
+
+
+@pytest.mark.loom
+def test_bool_unit_mass_is_rejected():
+    with pytest.raises(TypeError, match="unit_mass_g"):
+        Item("BOOL", True)  # type: ignore[arg-type]
+
+
+@pytest.mark.loom
+def test_float_quantity_is_rejected():
+    with pytest.raises(TypeError, match="quantity"):
+        Line(Item("A", 1), 1.5)  # type: ignore[arg-type]
+
+
+@pytest.mark.loom
+def test_bool_quantity_is_rejected():
+    with pytest.raises(TypeError, match="quantity"):
+        Line(Item("A", 1), True)  # type: ignore[arg-type]

@@ -38,6 +38,8 @@ class Item:
     unit_mass_g: int
 
     def __post_init__(self) -> None:
+        if not isinstance(self.unit_mass_g, int) or isinstance(self.unit_mass_g, bool):
+            raise TypeError("unit_mass_g must be int")
         if self.unit_mass_g <= 0:
             raise ValueError(f"{self.sku}: unit_mass_g must be a positive integer")
 
@@ -50,6 +52,8 @@ class Line:
     qty: int
 
     def __post_init__(self) -> None:
+        if not isinstance(self.qty, int) or isinstance(self.qty, bool):
+            raise TypeError("line quantity must be int")
         if self.qty <= 0:
             raise ValueError("line quantity must be a positive integer")
 
@@ -86,7 +90,7 @@ def is_conserved(event: ProcessEvent) -> bool:
 
 def _sorted_lines(lines: tuple[Line, ...]) -> list[Line]:
     """Canonical line order (by SKU) so the same event in any order shares one CID."""
-    return sorted(lines, key=lambda line: line.item.sku)
+    return sorted(lines, key=lambda line: (line.item.sku, line.item.unit_mass_g, line.qty))
 
 
 class SupplyChainLoom:
@@ -100,6 +104,9 @@ class SupplyChainLoom:
         self.address = crypto.address(self.actor_pub)
 
     def to_record(self, event: ProcessEvent) -> dict:
+        if event.actor != self.address:
+            raise ValueError("process actor does not match signing key")
+
         def line_rec(line: Line) -> dict:
             return {
                 "sku": line.item.sku,
