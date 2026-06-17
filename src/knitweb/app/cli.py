@@ -28,12 +28,13 @@ import json
 import time
 
 from .. import sdk, store
+from ..edge.runtime import EdgeBundle
 from ..ledger.node import AccountNode
 from ..p2p.node import AsyncioP2PNode, PeerAddress
 
 __all__ = [
     "main", "cmd_wallet_new", "cmd_address", "cmd_balance", "cmd_pay", "run_node",
-    "cmd_compile", "cmd_verify_bundle",
+    "cmd_compile", "cmd_verify_bundle", "cmd_edge_load",
 ]
 
 
@@ -187,6 +188,28 @@ def cmd_verify_bundle(bundle_path: str, sig_hex: str, originator_pub: str) -> bo
     return sdk.verify_bundle(originator_pub, data, sig_hex)
 
 
+def cmd_edge_load(bundle_path: str, originator_pub: str | None = None,
+                  sig_hex: str | None = None) -> dict:
+    """Load a bytecode bundle on the edge (verify-before-trust) and summarise it.
+
+    The AR/edge consume side: if ``originator_pub`` + ``sig_hex`` are given, the
+    originator signature is checked first (a bad signature raises ``EdgeVerifyError``
+    — the bundle is refused before any relation is trusted). Returns the verified
+    relations as the compact ``subject -> {source_type: [objects]}`` feature view a
+    humanoid's inner model / AR overlay consumes.
+    """
+    with open(bundle_path, "rb") as fh:
+        data = fh.read()
+    bundle = EdgeBundle.load(data, originator_pub, sig_hex)
+    return {
+        "asset_cid": bundle.asset_cid,
+        "originator": bundle.originator,
+        "verified": originator_pub is not None and sig_hex is not None,
+        "relations": len(bundle),
+        "features": bundle.to_feature_dict(),
+    }
+
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="knitweb", description="Knitweb node + PLS wallet")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -223,6 +246,11 @@ def _build_parser() -> argparse.ArgumentParser:
     v.add_argument("--bundle", required=True)
     v.add_argument("--sig", required=True, help="originator signature hex")
     v.add_argument("--originator", required=True, help="originator public-key hex")
+
+    el = sub.add_parser("edge-load", help="load + verify a bundle on the edge, show its relations")
+    el.add_argument("--bundle", required=True)
+    el.add_argument("--originator", help="originator public-key hex (omit to load unverified)")
+    el.add_argument("--sig", help="originator signature hex (omit to load unverified)")
     return p
 
 
@@ -250,6 +278,12 @@ def main(argv: list[str] | None = None) -> int:
         ok = cmd_verify_bundle(args.bundle, args.sig, args.originator)
         print("valid" if ok else "INVALID")
         return 0 if ok else 1
+    elif args.cmd == "edge-load":
+        info = cmd_edge_load(args.bundle, args.originator, args.sig)
+        tag = "verified" if info["verified"] else "UNVERIFIED"
+        print(f"loaded {info['asset_cid']} from {info['originator']} [{tag}], "
+              f"{info['relations']} relations")
+        print(json.dumps(info["features"], indent=2, sort_keys=True))
     return 0
 
 
