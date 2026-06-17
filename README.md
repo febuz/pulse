@@ -1,66 +1,90 @@
-# Knitweb
+# Knitweb — P2P crypto web layer
 
-A peer-to-peer crypto **web** whose pay-token is **PLS** ("pulses") and whose value
-unit of connections is counted with **Fiber**. (The ticker **FBR** is reserved for a possible later
-regional token — it is not the active token.) Knitweb is a credibly-neutral DePIN
-where p2p web-workers ("spiders") sell **verifiable GPU compute** and weave a
-knowledge + resource **fabric** — a *Synaptic Web* whose
-verified relations compile to edge-executable bytecode (see
-[`docs/SYNAPTIC_WEB.md`](docs/SYNAPTIC_WEB.md)). Vocabulary is **Web · Loom · Knit
-· Pulse · Fiber** — never "network"/"net". It complements
-[OriginTrail](https://github.com/origintrail)'s Decentralised Knowledge Graph and
-anchors/bridges to the major blockchains.
+Knitweb is a Python + TypeScript implementation of a P2P credibly-neutral DePIN.
+Spiders (participants) sell verifiable GPU compute and weave a knowledge + resource
+fabric, complementing [OriginTrail](https://github.com/origintrail)'s DKG.
 
-## What makes it unique — and sound
+## Tokens
 
-- **Resource coordination, not consensus-only.** PLS is an *access right* to real
-  hardware capacity (GPU compute first), not a speculative instrument.
-- **Spiders weave the fabric.** P2P workers crawl the Web to find funded demand,
-  perform useful work (GPU jobs, validation, curation), and earn PLS.
-- **Proof-of-Useful-Work with sampled re-execution.** A fraction of every
-  worker's proofs are independently re-run by peers; mismatches are slashed.
-- **No founder premine.** PLS genesis is `mintable=false`, `premine=0`. Founders
-  earn PLS like anyone and monetize only via side projects and the *first*
-  user-issued ERC20-like tokens on the fabric.
-- **Tiny deterministic surface.** Money and state are integers (wei-style base
-  units), encoded as float-free canonical CBOR, so every client agrees byte-for-byte.
+| Token | Role |
+|-------|------|
+| **PLS (Pulse)** | Pay-token. Spend for activity (compute, relay, storage). Earned via proof-of-useful-work. No premine. |
+| **Fiber (FBR)** | Free silk-tier token. Earned by posting confirmed knots and validating. Deflates via 90-day burn. |
 
-## The seven core primitives
+## Architecture
 
-`Blob` (account state) · `Fiber` (content-addressed value unit) · `Loom`
-(validation) · `Knit` (two-party transfer) · `Braid` (local history) ·
-**`Web`** (the woven global graph) · **`Pulse`** (the web's heartbeat; useful
-work is paid in **PLS**). Workers are **spiders**.
-
-## Architecture (layers)
-
-| Layer | Module | Language |
-|---|---|---|
-| L0 core | crypto (secp256k1 ECDSA + SHA-256), canonical CBOR, CID | Python |
-| L1 ledger | blob / fiber / loom / knit / braid / node (integer Fiber) | Python |
-| L2 p2p | asyncio signed-feed sync + static peers; py-libp2p/DHT optional later | Python |
-| L3 fabric | Web + items + agent / scorer / masterdata | Python |
-| L4 pouw | proof-of-useful-work, sampled re-execution | Python + Julia + WGSL |
-| L5 looms | finance / operational / supply-chain / chemistry | Python (+Julia) |
-| L6 token | PLS pay-token + Fiber value unit + user LoomTokens + anchors | Python |
-
-## Status
-
-Phase 0 (core crypto + canonical encoding + Pulse + Web) is implemented and
-property-tested. Phase 3 has a stdlib-`asyncio` MVP for signed feed replication,
-conflict quarantine, and two-party Knit handshakes over canonical-CBOR frames.
-See [`docs/`](docs/) for the language-architecture decisions,
-[`docs/research/08-knitweb.md`](docs/research/08-knitweb.md) for the KnitWeb concept
-paper (knitweb beside blockchain/hashgraph; the pulses/draft compute layer; the
-blockchain + hashgraph + knitweb cooperation; the OriginTrail interlock), and
-[`docs/LOC_BY_LANGUAGE.md`](docs/LOC_BY_LANGUAGE.md) for the per-language record.
-
-## Develop
-
-```bash
-PYTHONPATH=src python3 -m pytest tests/property -q   # fast core proofs
-python3 tools/loc_report.py                          # refresh the LOC record
+```
+Fiber (node/vertex)  — 256-bit addr = SHA-256(did)
+  ↕  Dot (edge/arc)  — 256-bit addr = SHA-256(sorted(src,dst)+type), undirected
+Knot (content unit)  — 2-line post, 256-bit addr = SHA-256(canonical JSON)
 ```
 
-Requires Python ≥ 3.12 and `cryptography`. The hash-critical canonical encoder is
-hand-rolled (zero external surface). License: Apache-2.0.
+Three independent 256-bit address spaces → theoretical max **3 × 2²⁵⁶** elements.
+
+### Layers
+
+- **Silk** — free tier, FBR token, posts are real (not testnet)
+- **VPC mainnet** — premium tier, PLS token, locked stakes for risk-knots
+
+### Core primitives
+
+| Primitive | Description |
+|-----------|-------------|
+| `Fiber` | Graph node — a spider/participant, addressed by SHA-256(DID) |
+| `Dot` | Graph edge — undirected connection between fibers/knots |
+| `Knot` | Content unit — max 2 lines, content-addressed |
+| `FBRLedger` | Silk token wallet + validation/burn logic |
+| `KnitweaveGraph` | Coordinates Fiber/Dot/Knot registries + FBRLedger |
+| `RiskKnotLedger` | FBR staking on uncertain claims (yes/no + resolution) |
+| `PulseWalletStore` | PLS wallets with lock/unlock/slash for risk-knot stakes |
+| `RiskKnotStore` | TypeScript risk-knot staking (open/stake/vote/_resolve) |
+
+## Validation & rewards
+
+1. Spider posts a knot (2 lines max)
+2. 3 unique validators confirm it → knot confirmed
+3. Poster earns `FBR_POSTER_REWARD = 5 µFBR`; each validator earns `FBR_VALIDATOR_REWARD = 2 µFBR`
+4. Wallets inactive 90 days → balance burned (deflation)
+
+## Risk-Knots
+
+Uncertain claims can be staked on YES/NO:
+
+| Level | FBR lock | PLS lock |
+|-------|----------|----------|
+| L1 | 5 µFBR | 10 µPLS |
+| L2 | 50 µFBR | 100 µPLS |
+| L3 | 500 µFBR | 1 000 µPLS |
+
+Resolution fires when ≥ 5 votes with ≥ 2/3 consensus. Correct stakers earn
+`stake × multiplier + share of losing pool`. 10% of losing pool is burned.
+
+## Layout
+
+```
+knitweb/                    Python package
+  addressing.py             addr256(), 256-bit address space
+  fiber.py                  Fiber + FiberRegistry
+  dot.py                    Dot + DotRegistry
+  knot.py                   Knot + KnotRegistry
+  fbr.py                    FBRWallet + FBRLedger
+  graph.py                  KnitweaveGraph
+  market.py                 MarketCap (3×2^256 bounds)
+  risk.py                   RiskKnotLedger
+src/integrations/lightrag/  TypeScript
+  pulse.ts                  PulseWalletStore, KnotValidationStore, PulseEngine
+  risk-knot.ts              RiskKnotStore
+tests/python/               Python tests (96 total)
+tests/unit/                 TypeScript tests (57 total)
+```
+
+## Running the tests
+
+```bash
+# Python
+pip install -r requirements.txt
+python -m pytest tests/python/ -v
+
+# TypeScript (from repo root, requires jest configured)
+npx jest tests/unit/pulse.test.ts tests/unit/riskKnot.test.ts
+```
