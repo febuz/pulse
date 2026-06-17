@@ -22,6 +22,16 @@ from . import canonical
 __all__ = ["Pulse", "Beat"]
 
 
+def _require_int(name: str, value: int) -> None:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError(f"{name} must be int")
+
+
+def _require_str(name: str, value: str) -> None:
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be str")
+
+
 @dataclass(frozen=True)
 class Beat:
     """A single heartbeat: epoch N anchored to a state root, chained to prev."""
@@ -30,6 +40,13 @@ class Beat:
     timestamp: int          # integer seconds (injected)
     state_root: str         # hex Merkle root of fabric state at this epoch
     prev_beat: str | None   # CID of the previous beat, or None for genesis
+
+    def __post_init__(self) -> None:
+        _require_int("epoch", self.epoch)
+        _require_int("timestamp", self.timestamp)
+        _require_str("state_root", self.state_root)
+        if self.prev_beat is not None:
+            _require_str("prev_beat", self.prev_beat)
 
     def to_record(self) -> dict:
         return {
@@ -54,6 +71,8 @@ class Pulse:
     """
 
     def __init__(self, interval_s: int, genesis_ts: int) -> None:
+        _require_int("interval_s", interval_s)
+        _require_int("genesis_ts", genesis_ts)
         if interval_s <= 0:
             raise ValueError("interval_s must be positive")
         if genesis_ts < 0:
@@ -65,6 +84,7 @@ class Pulse:
 
     def epoch_at(self, timestamp: int) -> int:
         """Return the epoch index for ``timestamp`` (clamped at genesis)."""
+        _require_int("timestamp", timestamp)
         if timestamp < self.genesis_ts:
             return 0
         return (timestamp - self.genesis_ts) // self.interval_s
@@ -79,6 +99,7 @@ class Pulse:
         Raises if the resulting epoch does not strictly advance the last beat —
         the Pulse never goes backwards or stalls on the same epoch.
         """
+        _require_str("state_root", state_root)
         epoch = self.epoch_at(timestamp)
         if self._last is not None and epoch <= self._last.epoch:
             raise ValueError(

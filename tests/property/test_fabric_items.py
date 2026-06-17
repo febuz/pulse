@@ -100,6 +100,15 @@ def test_resource_item_rejects_negative_values():
 
 
 @pytest.mark.property
+def test_resource_item_rejects_bool_and_float_amounts():
+    for bad in (True, 1.5):
+        with pytest.raises(TypeError, match="capacity"):
+            ResourceItem(resource_kind="gpu", capacity=bad, price_per_epoch=10, provider=_ADDR_A)  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="price_per_epoch"):
+            ResourceItem(resource_kind="gpu", capacity=1, price_per_epoch=bad, provider=_ADDR_A)  # type: ignore[arg-type]
+
+
+@pytest.mark.property
 def test_resource_item_different_providers_differ():
     a = ResourceItem(resource_kind="gpu", capacity=1, price_per_epoch=1, provider=_ADDR_A)
     b = ResourceItem(resource_kind="gpu", capacity=1, price_per_epoch=1, provider=_ADDR_B)
@@ -208,6 +217,28 @@ def test_checkpoint_woven_into_web():
     assert cp_cid == cp.cid
     assert web.get(cp_cid) == cp.to_record()
     assert web.size[0] == 2  # resource item + checkpoint
+
+
+@pytest.mark.property
+def test_checkpoint_rejects_bool_and_float_counts():
+    for field, bad in (
+        ("epoch", True),
+        ("epoch", 1.5),
+        ("node_count", True),
+        ("node_count", 1.5),
+        ("edge_count", True),
+        ("edge_count", 1.5),
+    ):
+        kwargs = {
+            "epoch": 1,
+            "beat_cid": "beat",
+            "state_root": "root",
+            "node_count": 1,
+            "edge_count": 0,
+        }
+        kwargs[field] = bad
+        with pytest.raises(TypeError, match=field):
+            FabricCheckpoint(**kwargs)  # type: ignore[arg-type]
 
 
 @pytest.mark.property
