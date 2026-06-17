@@ -1,7 +1,7 @@
 """
 Unit tests for the knitweb Python package.
 
-Covers: addressing, Fiber, Dot, Knot, FBR ledger, KnitweaveGraph, MarketCap.
+Covers: addressing, Fiber, Dot, Knot, PLS ledger, KnitweaveGraph, MarketCap.
 Run with:  python -m pytest tests/python/test_knitweb.py -v
 """
 
@@ -16,12 +16,12 @@ from knitweb.addressing import addr256, is_valid_addr, addr_distance, ADDR_BITS,
 from knitweb.fiber import Fiber, FiberRegistry
 from knitweb.dot import Dot, DotRegistry, DotType
 from knitweb.knot import Knot, KnotRegistry, compute_knot_addr, validate_knot
-from knitweb.fbr import (
-    FBRLedger, FBR_POSTER_REWARD, FBR_VALIDATOR_REWARD,
-    VALIDATORS_REQUIRED, BURN_AFTER_SECONDS, MIN_FBR_TO_VOTE,
+from knitweb.pulse import (
+    PulseLedger, PULSE_POSTER_REWARD, PULSE_VALIDATOR_REWARD,
+    VALIDATORS_REQUIRED, BURN_AFTER_SECONDS, MIN_PULSE_TO_VOTE,
 )
 from knitweb.graph import KnitweaveGraph
-from knitweb.market import MarketCap, ADDR_SPACE, MAX_ELEMENTS, MAX_FBR_SUPPLY
+from knitweb.market import MarketCap, ADDR_SPACE, MAX_ELEMENTS, MAX_PLS_SUPPLY
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -37,10 +37,10 @@ def make_knot(line1="Hello knitweb", line2="", author=POSTER) -> Knot:
 
 
 def make_ledger():
-    return FBRLedger()
+    return PulseLedger()
 
 
-def confirmed_knot(ledger: FBRLedger, knot_addr: str, poster: str = POSTER):
+def confirmed_knot(ledger: PulseLedger, knot_addr: str, poster: str = POSTER):
     """Drive a knot to confirmation with three unique validators."""
     for spider in [SPIDER_A, SPIDER_B, SPIDER_C]:
         ledger.validate(knot_addr, poster, spider)
@@ -248,9 +248,9 @@ class TestKnot:
         assert listed[0].addr == k2.addr
 
 
-# ── 5. FBR Ledger ───────────────────────────────────────────────────────────────
+# ── 5. Pulse Ledger ─────────────────────────────────────────────────────────
 
-class TestFBRLedger:
+class TestPulseLedger:
     def test_wallet_created_on_access(self):
         ledger = make_ledger()
         w = ledger.wallet(POSTER)
@@ -263,11 +263,11 @@ class TestFBRLedger:
         assert ledger.wallet(POSTER).balance == 10
 
     def test_voting_eligible_zero_balance(self):
-        assert not FBRLedger().is_voting_eligible(POSTER)
+        assert not PulseLedger().is_voting_eligible(POSTER)
 
     def test_voting_eligible_after_earn(self):
         ledger = make_ledger()
-        ledger.wallet(POSTER).earn(MIN_FBR_TO_VOTE)
+        ledger.wallet(POSTER).earn(MIN_PULSE_TO_VOTE)
         assert ledger.is_voting_eligible(POSTER)
 
     def test_self_validation_rejected(self):
@@ -292,8 +292,8 @@ class TestFBRLedger:
         ok, event = ledger.validate(addr, POSTER, SPIDER_C)
         assert ok
         assert event == "confirmed"
-        assert ledger.wallet(POSTER).balance   == FBR_POSTER_REWARD
-        assert ledger.wallet(SPIDER_A).balance == FBR_VALIDATOR_REWARD
+        assert ledger.wallet(POSTER).balance   == PULSE_POSTER_REWARD
+        assert ledger.wallet(SPIDER_A).balance == PULSE_VALIDATOR_REWARD
 
     def test_poster_becomes_eligible_after_confirmation(self):
         ledger = make_ledger()
@@ -324,7 +324,7 @@ class TestFBRLedger:
         w.last_activity_at = old
         result = ledger.run_burn()
         assert result["wallets_affected"] == 1
-        assert result["fbr_burned"] == 100
+        assert result["pls_burned"] == 100
         assert w.balance == 0
         assert w.burned_total == 100
 
@@ -364,14 +364,14 @@ class TestFBRLedger:
         a1, a2 = "a" * 64, "b" * 64
         confirmed_knot(ledger, a1, POSTER)
         confirmed_knot(ledger, a2, "did:key:poster2")
-        assert ledger.wallet(POSTER).balance == FBR_POSTER_REWARD
-        assert ledger.wallet("did:key:poster2").balance == FBR_POSTER_REWARD
-        assert ledger.wallet(SPIDER_A).balance == FBR_VALIDATOR_REWARD * 2
+        assert ledger.wallet(POSTER).balance == PULSE_POSTER_REWARD
+        assert ledger.wallet("did:key:poster2").balance == PULSE_POSTER_REWARD
+        assert ledger.wallet(SPIDER_A).balance == PULSE_VALIDATOR_REWARD * 2
 
     def test_stats_structure(self):
         s = make_ledger().stats()
-        assert s["token"] == "FBR"
-        assert "circulating_micro_fbr" in s
+        assert s["token"] == "PLS"
+        assert "circulating_micro_pls" in s
         assert "burn_after_days" in s
 
 
@@ -404,7 +404,7 @@ class TestKnitweaveGraph:
         r3 = g.validate_knot(addr, SPIDER_C)
         assert r3["ok"]
         assert r3["event"] == "confirmed"
-        assert g.ledger.wallet(POSTER).balance == FBR_POSTER_REWARD
+        assert g.ledger.wallet(POSTER).balance == PULSE_POSTER_REWARD
 
     def test_validate_adds_dot(self):
         g = KnitweaveGraph()
@@ -417,7 +417,7 @@ class TestKnitweaveGraph:
         g = KnitweaveGraph()
         s = g.stats()
         assert "graph" in s
-        assert "fbr" in s
+        assert "pulse" in s
         assert "market" in s
 
     def test_list_knots_newest_first(self):
@@ -428,7 +428,7 @@ class TestKnitweaveGraph:
         assert knots[0].line1 == "second"
 
 
-# ── 7. MarketCap ─────────────────────────────────────────────────────────────────
+# ── 7. MarketCap ───────────────────────────────────────────────────────────────
 
 class TestMarketCap:
     def test_addr_bits_256(self):
@@ -444,15 +444,15 @@ class TestMarketCap:
         mc = MarketCap()
         assert mc.total_elements == 3 * mc.fiber_space
 
-    def test_max_fbr_supply_bounded(self):
-        assert MAX_FBR_SUPPLY > 0
-        assert MAX_FBR_SUPPLY == ADDR_SPACE * (FBR_POSTER_REWARD + VALIDATORS_REQUIRED * FBR_VALIDATOR_REWARD)
+    def test_max_pls_supply_bounded(self):
+        assert MAX_PLS_SUPPLY > 0
+        assert MAX_PLS_SUPPLY == ADDR_SPACE * (PULSE_POSTER_REWARD + VALIDATORS_REQUIRED * PULSE_VALIDATOR_REWARD)
 
     def test_summary_keys(self):
         s = MarketCap().summary()
         assert "dimensions" in s
         assert "capacity" in s
-        assert "fbr_token" in s
+        assert "pls_token" in s
 
     def test_utilisation_returns_tuples(self):
         u = MarketCap().utilisation(100, 200, 300)

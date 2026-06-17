@@ -1,4 +1,4 @@
-"""Tests for knitweb/risk.py — risk-knot staking on the FBR layer."""
+"""Tests for knitweb/risk.py — risk-knot staking on the PLS layer."""
 
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 import datetime
 import pytest
 
-from knitweb.fbr import FBRLedger, VALIDATORS_REQUIRED
+from knitweb.pulse import PulseLedger, VALIDATORS_REQUIRED
 from knitweb.risk import (
     RiskKnotLedger,
     LOCK_LEVELS,
@@ -24,8 +24,8 @@ SPIDER_D  = "did:key:spiderD"
 SPIDER_E  = "did:key:spiderE"
 
 
-def make_ledger(funded: dict | None = None) -> tuple[FBRLedger, RiskKnotLedger]:
-    ledger = FBRLedger()
+def make_ledger(funded: dict | None = None) -> tuple[PulseLedger, RiskKnotLedger]:
+    ledger = PulseLedger()
     if funded:
         for did, amount in funded.items():
             ledger.wallet(did).earn(amount)
@@ -214,7 +214,7 @@ class TestStats:
         s = rkl.stats()
         assert s["open"] == 1
         assert s["resolved"] == 0
-        assert s["total_staked_micro_fbr"] == LOCK_LEVELS[1]
+        assert s["total_staked_micro_pls"] == LOCK_LEVELS[1]
 
 
 class TestConstants:
