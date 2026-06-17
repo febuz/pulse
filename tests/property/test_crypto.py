@@ -1,4 +1,4 @@
-"""Property tests for FBR crypto: secp256k1 ECDSA + SHA-256, addresses, merkle."""
+"""Property tests for PLS crypto: secp256k1 ECDSA + SHA-256, addresses, merkle."""
 
 import pytest
 
@@ -16,7 +16,7 @@ def test_keypair_and_public_derivation():
 @pytest.mark.property
 def test_sign_verify_round_trip():
     priv, pub = crypto.generate_keypair()
-    msg = b"transfer 100 FBR from A to B"
+    msg = b"transfer 100 PLS from A to B"
     sig = crypto.sign(priv, msg)
     assert crypto.verify(pub, msg, sig)
 

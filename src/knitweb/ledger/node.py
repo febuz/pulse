@@ -2,9 +2,9 @@
 
 This ties the ledger primitives together for local (offline) settlement. A node
 proposes and signs Knits as a sender, accepts and signs them as a receiver, and
-applies them to its own Braid. There is no network here — that arrives in the P2P
-layer (L2); the value of this layer is that the economic rules are provable in
-isolation.
+applies them to its own Braid. There is no peer-to-peer wiring here — that arrives
+in the P2P layer (L2); the value of this layer is that the economic rules are
+provable in isolation.
 """
 
 from __future__ import annotations

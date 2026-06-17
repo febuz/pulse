@@ -1,7 +1,7 @@
 """Braid — a node's local, append-only history chain (one of the seven primitives).
 
 A Braid is the ordered chain of one account's Fibers. It enforces local integrity
-independent of the network:
+independent of the web:
 
   * sequence numbers increase by exactly one,
   * each Fiber links to the previous Fiber's CID,

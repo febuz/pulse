@@ -1,7 +1,7 @@
 """Loom — the validation protocol (one of the seven core primitives).
 
 The Loom is the *only* determinism-critical surface in Knitweb. It validates Knits
-and the state transitions they cause, enforcing the network's economic invariants:
+and the state transitions they cause, enforcing the web's economic invariants:
 
   * well-formedness (positive integer amount, sender ≠ receiver),
   * dual signatures valid over the canonical record (both parties agreed),

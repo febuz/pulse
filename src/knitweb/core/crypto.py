@@ -1,14 +1,14 @@
-"""Cryptographic primitives for FBR: secp256k1 ECDSA + SHA-256.
+"""Cryptographic primitives for PLS: secp256k1 ECDSA + SHA-256.
 
-FBR keypairs and balance-keeping use Bitcoin-style cryptography — the secp256k1
+PLS keypairs and balance-keeping use Bitcoin-style cryptography — the secp256k1
 curve with ECDSA signatures over SHA-256 — implemented on the standard
 ``cryptography`` library (no native build step required).
 
 Public keys are serialized as 33-byte compressed SEC1 points (hex). Private keys
-are 32-byte scalars (hex). Signatures are DER-encoded (hex). An FBR address is a
-short, content-addressed fingerprint of the public key, prefixed with a 1-byte
-*scheme version* so the signature algorithm an address commits to is explicit and
-a post-quantum scheme can be added later by soft-fork (see
+are 32-byte scalars (hex). Signatures are DER-encoded (hex). A PLS address is a
+short, content-addressed fingerprint of the public key (``pls1`` prefix), carrying
+a 1-byte *scheme version* so the signature algorithm an address commits to is
+explicit and a post-quantum scheme can be added later by soft-fork (see
 ``docs/CRYPTO_CORPUS_STUDY.md`` §3).
 """
 

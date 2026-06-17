@@ -9,7 +9,7 @@ encoding is deterministic the restored objects reproduce **byte-identical CIDs**
 What it persists:
   * a :class:`~knitweb.ledger.braid.Braid` — an account's hash-chained ledger history;
   * a :class:`~knitweb.fabric.feed.Feed` — an author's signed append-only log;
-  * an :class:`~knitweb.ledger.node.AccountNode` — key + network + braid together.
+  * an :class:`~knitweb.ledger.node.AccountNode` — key + network-id + braid together.
 
 Writes are atomic (write a temp file, then ``os.replace``) so a crash mid-write can
 never corrupt an existing snapshot. Restoring a Braid replays every Fiber through
@@ -161,11 +161,11 @@ def load_feed(priv_hex: str, path: str) -> Feed:
 
 
 # ---------------------------------------------------------------------------
-# AccountNode (key + network + braid)
+# AccountNode (key + network-id + braid)
 # ---------------------------------------------------------------------------
 
 def save_node(node: AccountNode, path: str) -> None:
-    """Snapshot a full AccountNode (key, network, braid) to ``path`` (mode 0600).
+    """Snapshot a full AccountNode (key, network-id, braid) to ``path`` (mode 0600).
 
     WARNING: writes the private key in clear text — local/dev MVP use only.
     """
