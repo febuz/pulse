@@ -98,7 +98,7 @@ def render(stats: dict[str, dict]) -> str:
         lines.append(f"| {lang} | {v['files']} | {v['lines']} | {category} |")
     lines += [
         "",
-        f"**Code total:** {code_files} files, {code_lines} lines.  ",
+        f"**Code total:** {code_files} files, {code_lines} lines.",
         f"**All tracked files:** {total_files} files, {total_lines} lines.",
         "",
     ]
