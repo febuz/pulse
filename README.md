@@ -38,7 +38,7 @@ work is paid in **PLS**). Workers are **spiders**.
 |---|---|---|
 | L0 core | crypto (secp256k1 ECDSA + SHA-256), canonical CBOR, CID | Python |
 | L1 ledger | blob / fiber / loom / knit / braid / node (integer Fiber) | Python |
-| L2 p2p | py-libp2p signed feeds + DHT | Python |
+| L2 p2p | asyncio signed-feed sync + static peers; py-libp2p/DHT optional later | Python |
 | L3 fabric | Web + items + agent / scorer / masterdata | Python |
 | L4 pouw | proof-of-useful-work, sampled re-execution | Python + Julia + WGSL |
 | L5 looms | finance / operational / supply-chain / chemistry | Python (+Julia) |
@@ -47,7 +47,9 @@ work is paid in **PLS**). Workers are **spiders**.
 ## Status
 
 Phase 0 (core crypto + canonical encoding + Pulse + Web) is implemented and
-property-tested. See [`docs/`](docs/) for the language-architecture decisions,
+property-tested. Phase 3 has a stdlib-`asyncio` MVP for signed feed replication,
+conflict quarantine, and two-party Knit handshakes over canonical-CBOR frames.
+See [`docs/`](docs/) for the language-architecture decisions,
 [`docs/research/08-knitweb.md`](docs/research/08-knitweb.md) for the KnitWeb concept
 paper (knitweb beside blockchain/hashgraph; the pulses/draft compute layer; the
 blockchain + hashgraph + knitweb cooperation; the OriginTrail interlock), and

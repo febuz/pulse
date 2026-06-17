@@ -41,11 +41,13 @@ digest mismatch, no minting yet. Lessons from networks that actually ship this:
 
 ---
 
-## 2. Append-only signed feeds + P2P → `p2p/` (Phase 3, unbuilt)
+## 2. Append-only signed feeds + P2P → `p2p/` (Phase 3)
 
-Knitweb Phase 3: a signed append-only feed per peer + DHT + local index, two
-Python nodes replicating a feed and settling a Knit over the wire, guarding
-feed equivocation.
+Knitweb Phase 3: a signed append-only feed per peer + local index, two Python
+nodes replicating a feed and settling a Knit over the wire, guarding feed
+equivocation. The first transport is stdlib `asyncio` with static peers because
+py-libp2p is not installable on this box without breaking the system Python
+policy; py-libp2p/DHT stays a later backend.
 
 **Hypercore (Holepunch Pear) is almost exactly this design.**
 *Read: `lib/verifier.js`,`caps.js`,`merkle-tree.js`,`core.js`,`replicator.js`.*
@@ -80,8 +82,9 @@ for a feed head.
    a signed Envelope (`feedID → latest CID + seq`); gossipsub `StrictSign` for fan-out.
 
 **Verdict:** mirror Hypercore's *design* natively in Python (secp256k1/SHA-256/CBOR
-instead of ed25519/blake2b), but build the *network* on **py-libp2p** (DHT, pubsub,
-transport). Don't reimplement a DHT.
+instead of ed25519/blake2b). The installable MVP uses stdlib `asyncio` transport
+with static peers; py-libp2p/DHT/pubsub is a later backend once the dependency path
+is sanctioned. Don't reimplement a DHT.
 
 ---
 
@@ -134,4 +137,5 @@ high-value accounts.
 - [ ] **chainID in signed Knit payload** — anti cross-fork replay (Phase 1 follow-up)
 - [ ] **pouw digest-determinism** — tolerance/quantized digests + per-challenge salt (Phase 4, existential)
 - [ ] **pouw dispute window + k-of-n verifier quorum + collateral sizing** (Phase 4)
-- [ ] **Phase 3 feed** = Hypercore-style signed Merkle-tree state + fork counter + `check_conflict`, on py-libp2p
+- [x] **Phase 3 asyncio MVP** = Hypercore-style signed Merkle-tree state + fork counter + `check_conflict`, full-feed sync over stdlib `asyncio`, static peers, two-party Knit wire handshake
+- [ ] **Phase 3 optional backend** = partial-range Merkle proofs + DHT/pubsub backend once py-libp2p has a sanctioned install path

@@ -51,6 +51,11 @@ move. So Phase 3's MVP should be:
 This keeps the `-m interop` proof (two Python nodes replicate a feed, a Knit
 completes over the wire, both braids validate) achievable **today** with stdlib only.
 
+**Implemented MVP:** `src/knitweb/p2p/` now provides this stdlib-`asyncio` proof
+path: length-prefixed canonical-CBOR frames, full-feed sync against signed
+Merkle heads, static peers, conflict quarantine, and a two-party Knit handshake.
+py-libp2p remains an optional future backend rather than a blocker.
+
 ### Phase 4 — GPU producer needs an install decision or a CPU-deterministic proof
 `wgpu`/`juliacall` are missing and PEP-668-blocked too. Options, in order of
 preference for the *proof*:

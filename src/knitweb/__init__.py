@@ -10,7 +10,7 @@ token later; the native pay-token is PLS.)
 Layered architecture:
   L0  core      — secp256k1 ECDSA + SHA-256, canonical CBOR, content addressing
   L1  ledger    — blob / fiber / loom / knit / braid / node (integer PLS balances)
-  L2  p2p       — py-libp2p signed append-only feeds + DHT
+  L2  p2p       — asyncio signed-feed sync + static peers (DHT backend later)
   L3  fabric    — Web (woven global graph) + items + agent/scorer/masterdata
   L4  pouw      — proof-of-useful-work (Julia + WebGPU), sampled re-execution
   L5  looms     — finance / operational / supply-chain / chemistry plugins
