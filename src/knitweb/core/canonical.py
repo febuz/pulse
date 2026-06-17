@@ -129,27 +129,21 @@ def _decode(buf: bytes, pos: int) -> tuple[Any, int]:
         # object (this is the RLP ErrCanonInt / Cosmos ADR-027 guarantee).
         if minor < 24:
             return minor, pos
-        if minor == 24:
-            n = buf[pos]
-            if n < 24:
-                raise CanonicalError("non-minimal integer: value < 24 used 1-byte head")
-            return n, pos + 1
-        if minor == 25:
-            n = int.from_bytes(buf[pos:pos + 2], "big")
-            if n < 0x100:
-                raise CanonicalError("non-minimal integer: value fits a shorter head")
-            return n, pos + 2
-        if minor == 26:
-            n = int.from_bytes(buf[pos:pos + 4], "big")
-            if n < 0x10000:
-                raise CanonicalError("non-minimal integer: value fits a shorter head")
-            return n, pos + 4
-        if minor == 27:
-            n = int.from_bytes(buf[pos:pos + 8], "big")
-            if n < 0x100000000:
-                raise CanonicalError("non-minimal integer: value fits a shorter head")
-            return n, pos + 8
-        raise CanonicalError(f"unsupported minor value: {minor}")
+        # Length-byte counts per minor; verify they are present before reading so a
+        # truncated head raises a typed CanonicalError, not IndexError. A decoder on
+        # the wire must reject malformed/adversarial input cleanly.
+        width = {24: 1, 25: 2, 26: 4, 27: 8}.get(minor)
+        if width is None:
+            raise CanonicalError(f"unsupported minor value: {minor}")
+        if pos + width > len(buf):
+            raise CanonicalError("truncated length: not enough bytes for head")
+        n = int.from_bytes(buf[pos:pos + width], "big")
+        # Reject non-minimal heads (RLP ErrCanonInt / Cosmos ADR-027): an argument
+        # MUST use the shortest form, so there is exactly one byte-string per value.
+        minimum = {1: 24, 2: 0x100, 4: 0x10000, 8: 0x100000000}[width]
+        if n < minimum:
+            raise CanonicalError("non-minimal integer: value fits a shorter head")
+        return n, pos + width
 
     if major == 0:
         n, pos = read_len(minor, pos)
@@ -159,9 +153,13 @@ def _decode(buf: bytes, pos: int) -> tuple[Any, int]:
         return -1 - n, pos
     if major == 2:
         n, pos = read_len(minor, pos)
+        if pos + n > len(buf):
+            raise CanonicalError("truncated byte string: not enough body bytes")
         return buf[pos:pos + n], pos + n
     if major == 3:
         n, pos = read_len(minor, pos)
+        if pos + n > len(buf):
+            raise CanonicalError("truncated text string: not enough body bytes")
         return buf[pos:pos + n].decode("utf-8"), pos + n
     if major == 4:
         n, pos = read_len(minor, pos)

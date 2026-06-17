@@ -92,3 +92,21 @@ def test_nonminimal_key_inside_map_is_caught():
     # int key 5 encoded non-minimally as 0x18 0x05, value 0 -> 0xA1 18 05 00
     with pytest.raises(CanonicalError, match="non-minimal"):
         canonical.decode(bytes([0xA1, 0x18, 0x05, 0x00]))
+
+
+@pytest.mark.property
+def test_truncated_input_raises_typed_error_not_indexerror():
+    # A decoder on the wire must reject malformed/adversarial input with a typed
+    # CanonicalError — never a raw IndexError or a silent mis-parse.
+    truncated = [
+        b"\x18",          # major0 minor24: promises a length byte, none present
+        b"\x19\x01",      # minor25: promises 2 length bytes, only 1
+        b"\x1a\x00\x01",  # minor26: promises 4 length bytes, only 2
+        b"\x42\x00",      # bytes(2): only 1 body byte present
+        b"\x63ab",        # text(3): only 2 body bytes present
+        b"\x82\x01",      # array(2): only 1 item present
+        b"\xa1\x01",      # map(1): key present, value missing
+    ]
+    for buf in truncated:
+        with pytest.raises(CanonicalError):
+            canonical.decode(buf)
