@@ -24,8 +24,8 @@ Protocol (all CPU-deterministic, O(k) verifier cost):
                               computed after the salt — no precompute).
 
 The Merkle tree is built locally with explicit leaf/node domain separation
-(second-preimage safety); we do not reuse ``crypto.merkle_root`` because it emits
-no membership proofs and no domain tag.
+(second-preimage safety; avoids the CVE-2012-2459 ambiguity); we do not reuse
+``crypto.merkle_root`` because it emits no membership proofs and no domain tag.
 """
 
 from __future__ import annotations
@@ -125,7 +125,8 @@ def sample_indices(salt: bytes, n: int, k: int) -> list[int]:
 
     A SHA-256 counter stream over the salt gives an unpredictable-yet-reproducible
     selection: the worker can't know it before the salt, the verifier recomputes
-    it exactly.
+    it exactly. The returned order is the canonical challenge order (see
+    :func:`verify_response`).
     """
     if n <= 0 or k <= 0:
         return []
@@ -148,7 +149,11 @@ def _salted_digest(salt: bytes, index: int, block: bytes) -> str:
 
 
 def respond(blocks: list[bytes], salt: bytes, k: int) -> list[Reveal]:
-    """Worker reveals the sampled blocks with membership proofs + salted digests."""
+    """Worker reveals the sampled blocks with membership proofs + salted digests.
+
+    The reveals are returned in :func:`sample_indices` order; keep them in that
+    order for :func:`verify_response` (which compares the index list positionally).
+    """
     levels = _build_levels([_leaf(b) for b in blocks])
     reveals: list[Reveal] = []
     for i in sample_indices(salt, len(blocks), k):
@@ -171,9 +176,13 @@ def verify_response(
 ) -> bool:
     """Confirm the reveals answer *this* salt against the committed root.
 
-    Rejects: wrong/missing sampled indices, a salted digest that doesn't match
-    (stale or precomputed answer), or a block that isn't a member of the committed
-    Merkle root (retroactive work-swap).
+    The reveals MUST be in the exact order produced by :func:`sample_indices` /
+    :func:`respond`: the index list is compared positionally, so a reordered (or
+    partial) reveal set is rejected. Callers should not sort the reveals.
+
+    Rejects: wrong/missing/reordered sampled indices, a salted digest that doesn't
+    match (stale or precomputed answer), or a block that isn't a member of the
+    committed Merkle root (retroactive work-swap).
     """
     expected = sample_indices(salt, commitment.n, k)
     if [r.index for r in reveals] != expected:

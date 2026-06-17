@@ -4,6 +4,10 @@ Two existential gaps closed here:
   * tolerance digests so honest float noise doesn't slash (digest.py);
   * commit-before-sample with a fresh salt so neither precompute nor retroactive
     work-swap can fake a proof (challenge.py).
+
+These primitives are the *foundation* for future GPU compute job classes; they
+are intentionally NOT wired into pouw/job.py yet — the synaptic-compile job is
+float-free and deterministic, so it correctly stays exact-match.
 """
 
 import pytest
@@ -38,6 +42,15 @@ def test_quantize_returns_int_and_rejects_bad_eps():
     for bad in (0, -1.0):
         with pytest.raises(ValueError):
             digest.quantize(1.0, bad)
+
+
+@pytest.mark.property
+def test_quantize_negative_sign_behaviour_is_round_half_up():
+    # round-half-up via floor(x/eps + 0.5) is deterministic (not banker's):
+    # the .5 tie breaks toward +inf, consistently on both signs.
+    assert digest.quantize(-4.5, 1.0) == -4    # -4.5 + 0.5 = -4.0 -> floor -4
+    assert digest.quantize(-4.6, 1.0) == -5    # -4.6 + 0.5 = -4.1 -> floor -5
+    assert digest.quantize(-4.4, 1.0) == -4    # -4.4 + 0.5 = -3.9 -> floor -4
 
 
 # -- commit-before-sample ----------------------------------------------------
@@ -92,6 +105,17 @@ def test_tampered_salted_digest_fails():
     r0 = reveals[0]
     tampered = challenge.Reveal(r0.index, r0.block, r0.proof, "00" * 32)
     assert not challenge.verify_response(c, salt, 3, [tampered] + reveals[1:])
+
+
+@pytest.mark.property
+def test_reordered_reveals_are_rejected():
+    # verify_response compares the index list positionally; a reorder must fail.
+    blocks = _blocks()
+    c = challenge.commit(blocks)
+    salt = challenge.new_salt()
+    reveals = challenge.respond(blocks, salt, k=4)
+    assert challenge.verify_response(c, salt, 4, reveals)
+    assert not challenge.verify_response(c, salt, 4, list(reversed(reveals)))
 
 
 @pytest.mark.property
