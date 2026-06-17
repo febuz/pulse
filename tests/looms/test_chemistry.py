@@ -137,6 +137,18 @@ def test_term_order_does_not_change_content_id():
 
 
 @pytest.mark.loom
+def test_duplicate_formula_terms_do_not_change_content_id():
+    priv, _ = crypto.generate_keypair()
+    loom = ChemistryLoom(priv)
+    a = Species.make("A", {"A": 1})
+    a3 = Species.make("A3", {"A": 3})
+    forward = Reaction(reactants=(Term(a, 2), Term(a, 1)), products=(Term(a3, 1),))
+    swapped = Reaction(reactants=(Term(a, 1), Term(a, 2)), products=(Term(a3, 1),))
+    assert loom.to_record(forward) == loom.to_record(swapped)
+    assert canonical.cid(loom.to_record(forward)) == canonical.cid(loom.to_record(swapped))
+
+
+@pytest.mark.loom
 def test_kinetics_metadata_is_integer_and_optional():
     priv, _ = crypto.generate_keypair()
     loom = ChemistryLoom(priv)
@@ -154,3 +166,52 @@ def test_kinetics_metadata_is_integer_and_optional():
         ["activation_energy_j_per_mol", 71000],
         ["pre_exponential_milli", 5000],
     ]
+
+
+@pytest.mark.loom
+def test_duplicate_elements_are_rejected():
+    with pytest.raises(ValueError, match="duplicate"):
+        Species("bad", (("H", 1), ("H", 2)))
+
+
+@pytest.mark.loom
+def test_float_element_count_is_rejected():
+    with pytest.raises(TypeError, match="count"):
+        Species("bad", (("H", 1.5),))  # type: ignore[arg-type]
+
+
+@pytest.mark.loom
+def test_bool_element_count_is_rejected():
+    with pytest.raises(TypeError, match="count"):
+        Species("bad", (("H", True),))  # type: ignore[arg-type]
+
+
+@pytest.mark.loom
+def test_float_charge_is_rejected():
+    with pytest.raises(TypeError, match="charge"):
+        Species.make("Na+", {"Na": 1}, charge=1.0)  # type: ignore[arg-type]
+
+
+@pytest.mark.loom
+def test_float_coefficient_is_rejected():
+    with pytest.raises(TypeError, match="coefficient"):
+        Term(Species.make("H2", {"H": 2}), 1.5)  # type: ignore[arg-type]
+
+
+@pytest.mark.loom
+def test_bool_coefficient_is_rejected():
+    with pytest.raises(TypeError, match="coefficient"):
+        Term(Species.make("H2", {"H": 2}), True)  # type: ignore[arg-type]
+
+
+@pytest.mark.loom
+def test_float_kinetics_metadata_is_rejected():
+    h2 = Species.make("H2", {"H": 2})
+    o2 = Species.make("O2", {"O": 2})
+    h2o = Species.make("H2O", {"H": 2, "O": 1})
+    with pytest.raises(TypeError, match="kinetic"):
+        Reaction(
+            reactants=(Term(h2, 2), Term(o2, 1)),
+            products=(Term(h2o, 2),),
+            kinetics=(("pre_exponential_milli", 5000.5),),  # type: ignore[arg-type]
+        )
