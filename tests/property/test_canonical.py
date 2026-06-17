@@ -44,9 +44,9 @@ def test_floats_are_rejected():
 
 @pytest.mark.property
 def test_cid_is_stable_and_content_addressed():
-    rec = {"kind": "fiber", "value": 100, "owner": "fbr1abc"}
-    same = {"owner": "fbr1abc", "value": 100, "kind": "fiber"}
-    different = {"kind": "fiber", "value": 101, "owner": "fbr1abc"}
+    rec = {"kind": "fiber", "value": 100, "owner": "pls1abc"}
+    same = {"owner": "pls1abc", "value": 100, "kind": "fiber"}
+    different = {"kind": "fiber", "value": 101, "owner": "pls1abc"}
     cid1 = canonical.cid(rec)
     assert cid1 == canonical.cid(rec)          # stable across runs
     assert cid1 == canonical.cid(same)         # order-independent

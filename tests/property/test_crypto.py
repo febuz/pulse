@@ -37,7 +37,7 @@ def test_address_is_deterministic_and_prefixed():
     _, pub = crypto.generate_keypair()
     addr = crypto.address(pub)
     assert addr == crypto.address(pub)
-    assert addr.startswith("fbr1")
+    assert addr.startswith("pls1")
 
 
 @pytest.mark.property

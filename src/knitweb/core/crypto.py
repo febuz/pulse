@@ -141,16 +141,16 @@ def _base32_lower_nopad(data: bytes) -> str:
 
 
 def address(pub_hex: str) -> str:
-    """Derive a short FBR address from a public key.
+    """Derive a short PLS address from a public key.
 
-    address = "fbr1" + base32( sha256(sha256(pubkey))[:20] )
+    address = "pls1" + base32( sha256(sha256(pubkey))[:20] )
 
     Double-SHA-256 mirrors Bitcoin's hash160 step without depending on RIPEMD-160
     (which is disabled in some OpenSSL 3 builds).
     """
     pub_bytes = bytes.fromhex(pub_hex)
     fingerprint = sha256(sha256(pub_bytes))[:20]
-    return "fbr1" + _base32_lower_nopad(fingerprint)
+    return "pls1" + _base32_lower_nopad(fingerprint)
 
 
 def is_valid_hex(value: str, n_bytes: int | None = None) -> bool:
