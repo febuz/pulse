@@ -84,17 +84,47 @@ async def cmd_pay(
     return knit.id
 
 
+def _autosave_once(node: AccountNode, path: str, last_cid: str | None) -> str:
+    """Persist ``node`` iff its braid head changed since ``last_cid``; return the new head.
+
+    The braid head CID advances whenever a Knit is applied (sent or received), so this
+    snapshots exactly when state changed and is a no-op otherwise. Pure + deterministic —
+    the daemon's autosave loop is just this called on a timer.
+    """
+    head = node.braid.head.cid
+    if head != last_cid:
+        store.save_node(node, path)
+    return head
+
+
+async def _autosave_loop(
+    node: AccountNode, path: str, stop: "asyncio.Event", poll_s: float
+) -> None:
+    """Snapshot the node whenever its state changes, until ``stop`` is set."""
+    last = node.braid.head.cid
+    while not stop.is_set():
+        last = _autosave_once(node, path, last)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=poll_s)
+        except asyncio.TimeoutError:
+            pass
+
+
 async def run_node(
     path: str,
     listen: tuple[str, int],
     *,
     ready: "asyncio.Event | None" = None,
     stop: "asyncio.Event | None" = None,
+    autosave_poll_s: float = 2.0,
 ) -> AsyncioP2PNode:
     """Run a node daemon: serve feed sync + accept incoming Knits until ``stop``.
 
     ``ready``/``stop`` events make the daemon drivable from tests; the CLI passes a
-    never-set ``stop`` so it runs until interrupted. State is persisted on shutdown.
+    never-set ``stop`` so it runs until interrupted. State is persisted **continuously**
+    — an autosave loop snapshots the node whenever a Knit changes its braid head, so a
+    crash loses at most ``autosave_poll_s`` of activity rather than everything since
+    startup — plus a final snapshot on clean shutdown.
     """
     node = store.load_node(path)
     p2p = AsyncioP2PNode(account=node, host=listen[0], port=listen[1])
@@ -102,10 +132,13 @@ async def run_node(
     print(f"knitweb node {node.address} listening on {p2p.host}:{p2p.port}")
     if ready is not None:
         ready.set()
+    stop = stop or asyncio.Event()
+    saver = asyncio.create_task(_autosave_loop(node, path, stop, autosave_poll_s))
     try:
-        await (stop.wait() if stop is not None else asyncio.Event().wait())
+        await stop.wait()
     finally:
-        store.save_node(node, path)  # persist any received Knits
+        saver.cancel()
+        store.save_node(node, path)  # final snapshot on clean shutdown
         await p2p.stop()
     return p2p
 
