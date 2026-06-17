@@ -157,7 +157,9 @@ def web_state_root(web: Web) -> str:
     the same set of nodes produces the same root regardless of insertion order.
     """
     sorted_cids = sorted(web.nodes.keys())
-    leaves = [cid.encode("utf-8") for cid in sorted_cids]
+    # Hash each CID into a fixed 32-byte leaf so the root is always a real digest
+    # (otherwise a single-node Web would return the raw CID bytes unchanged).
+    leaves = [crypto.sha256(cid.encode("utf-8")) for cid in sorted_cids]
     return crypto.merkle_root(leaves).hex()
 
 
