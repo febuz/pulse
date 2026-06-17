@@ -23,6 +23,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+OUTPUT_FILE = ROOT / "docs" / "LOC_BY_LANGUAGE.md"
 
 # Directories never counted (not public-OSS-relevant source).
 EXCLUDE_DIRS = {
@@ -53,6 +54,8 @@ EXCLUDE_SUFFIXES = (".sqlite", ".sqlite-wal", ".sqlite-shm", ".lock")
 
 
 def _excluded(path: Path) -> bool:
+    if path == OUTPUT_FILE:
+        return True
     if any(part in EXCLUDE_DIRS for part in path.parts):
         return True
     if path.name.endswith(EXCLUDE_SUFFIXES):
@@ -114,7 +117,7 @@ def render(stats: dict[str, dict]) -> str:
 def main() -> int:
     stats = collect()
     report = render(stats)
-    out = ROOT / "docs" / "LOC_BY_LANGUAGE.md"
+    out = OUTPUT_FILE
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(report, encoding="utf-8")
     if "--print" in sys.argv:
