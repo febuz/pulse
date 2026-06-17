@@ -84,6 +84,22 @@ def test_feed_round_trips_after_fork_bump(tmp_path):
 
 
 @pytest.mark.property
+def test_tampered_feed_snapshot_fails_on_load(tmp_path):
+    priv, _ = crypto.generate_keypair()
+    feed = Feed(priv)
+    feed.append({"i": 0})
+    feed.append({"i": 1})
+    p = str(tmp_path / "feed.cbor")
+    store.save_feed(feed, p)
+    from knitweb.core import canonical
+    rec = canonical.decode(open(p, "rb").read())
+    rec["entries"][-1] = {"i": 999}
+    open(p, "wb").write(canonical.encode(rec))
+    with pytest.raises(store.StoreError, match="feed snapshot head"):
+        store.load_feed(priv, p)
+
+
+@pytest.mark.property
 def test_tampered_braid_snapshot_fails_on_load(tmp_path):
     a, _ = _funded_pair()
     p = str(tmp_path / "braid.cbor")
@@ -94,6 +110,21 @@ def test_tampered_braid_snapshot_fails_on_load(tmp_path):
     rec["fibers"][1]["balances"] = {"PLS": 999999}
     open(p, "wb").write(canonical.encode(rec))
     with pytest.raises(Exception):    # BraidError (broken link) or StoreError
+        store.load_braid(p)
+
+
+@pytest.mark.property
+def test_tampered_tail_fiber_snapshot_fails_on_load(tmp_path):
+    a, _ = _funded_pair()
+    p = str(tmp_path / "braid.cbor")
+    store.save_braid(a.braid, p)
+    # The last Fiber has no child link to expose tampering, so the snapshot stores
+    # the expected head CID and load_braid checks it.
+    from knitweb.core import canonical
+    rec = canonical.decode(open(p, "rb").read())
+    rec["fibers"][-1]["balances"] = {"PLS": 999999}
+    open(p, "wb").write(canonical.encode(rec))
+    with pytest.raises(store.StoreError, match="head CID"):
         store.load_braid(p)
 
 
@@ -127,4 +158,18 @@ def test_wrong_kind_and_owner_mismatch_rejected(tmp_path):
     with pytest.raises(store.StoreError):
         store.load_braid(p)
     with pytest.raises(store.StoreError):
+        store.load_node(p)
+
+
+@pytest.mark.property
+def test_node_snapshot_rejects_key_mismatch(tmp_path):
+    a, _ = _funded_pair()
+    p = str(tmp_path / "node.cbor")
+    store.save_node(a, p)
+    from knitweb.core import canonical
+    rec = canonical.decode(open(p, "rb").read())
+    other_priv, _ = crypto.generate_keypair()
+    rec["priv"] = other_priv
+    open(p, "wb").write(canonical.encode(rec))
+    with pytest.raises(store.StoreError, match="public key"):
         store.load_node(p)

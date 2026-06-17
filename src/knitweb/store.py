@@ -26,7 +26,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from .core import canonical
+from .core import canonical, crypto
 from .fabric.feed import Feed
 from .ledger.braid import Braid
 from .ledger.fiber import Fiber
@@ -95,6 +95,7 @@ def save_braid(braid: Braid, path: str) -> None:
     _write_atomic(path, {
         "kind": "braid-snapshot",
         "v": _VERSION,
+        "head": braid.head.cid,
         "fibers": [f.to_record() for f in braid.fibers],
     })
 
@@ -110,6 +111,8 @@ def load_braid(path: str) -> Braid:
     braid = Braid(_fiber_from_record(fibers[0]))
     for frec in fibers[1:]:
         braid.weave(_fiber_from_record(frec))  # re-checks seq/link/nonce/spent-knit
+    if rec.get("head") != braid.head.cid:
+        raise StoreError("braid snapshot head CID mismatch")
     return braid
 
 
@@ -120,9 +123,16 @@ def load_braid(path: str) -> Braid:
 def save_feed(feed: Feed, path: str) -> None:
     """Snapshot a Feed's entries + fork counter to ``path`` (the private key is
     NOT stored — supply it on load)."""
+    head = feed.head()
     _write_atomic(path, {
         "kind": "feed-snapshot",
         "v": _VERSION,
+        "head": {
+            "feed": head.feed,
+            "root": head.root,
+            "length": head.length,
+            "fork": head.fork,
+        },
         "fork": feed.fork,
         "entries": list(feed.entries),
     })
@@ -136,6 +146,17 @@ def load_feed(priv_hex: str, path: str) -> Feed:
     feed = Feed(priv_hex, fork=rec.get("fork", 0))
     for entry in rec.get("entries") or []:
         feed.append(entry)
+    expected = rec.get("head")
+    if not isinstance(expected, dict):
+        raise StoreError("feed snapshot missing head")
+    actual = feed.head()
+    if (
+        expected.get("feed") != actual.feed
+        or expected.get("root") != actual.root
+        or expected.get("length") != actual.length
+        or expected.get("fork") != actual.fork
+    ):
+        raise StoreError("feed snapshot head mismatch")
     return feed
 
 
@@ -154,6 +175,7 @@ def save_node(node: AccountNode, path: str) -> None:
         "priv": node.priv,
         "pub": node.pub,
         "network": node.network,
+        "head": node.braid.head.cid,
         "fibers": [f.to_record() for f in node.braid.fibers],
     })
 
@@ -163,6 +185,8 @@ def load_node(path: str) -> AccountNode:
     rec = _read(path)
     if not isinstance(rec, dict) or rec.get("kind") != "node-snapshot":
         raise StoreError("not a node snapshot")
+    if crypto.public_from_private(rec["priv"]) != rec["pub"]:
+        raise StoreError("snapshot public key does not match private key")
     node = AccountNode(priv=rec["priv"], pub=rec["pub"], network=rec.get("network", 1))
     fibers = rec.get("fibers") or []
     if not fibers:
@@ -172,5 +196,7 @@ def load_node(path: str) -> AccountNode:
         raise StoreError("snapshot braid owner does not match node key")
     for frec in fibers[1:]:
         braid.weave(_fiber_from_record(frec))
+    if rec.get("head") != braid.head.cid:
+        raise StoreError("node snapshot head CID mismatch")
     node.braid = braid
     return node
