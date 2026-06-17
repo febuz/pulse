@@ -1,17 +1,19 @@
-"""Operational loom — signed capacity allocations for the compute-resource market.
+"""Operational loom — emit signed, capacity-feasible allocation events into the Web.
 
-Where the chemistry and supply-chain looms gate on an *equality* (mass/element
-conservation), the operational loom gates on an *inequality*: a provider may never
-allocate more of a resource than it actually has. An :class:`AllocationEvent`
-publishes how a provider splits a bounded ``capacity`` (e.g. 24 GPU units) into
-consumer ``leases``; the soundness gate is **no over-allocation** —
-``sum(lease units) <= capacity`` — so a provider cannot sell capacity it does not
-own. Over-allocation is refused before any signature is produced.
+An operational loom models resource capacity scheduling: given named resource pools
+with integer capacity limits, an allocation event assigns integer units to one or
+more tasks. The soundness gate is **feasibility** — no resource is over-subscribed:
 
-Prices are integer PLS-wei per Pulse epoch; everything on the signed path is integer
-so it round-trips through canonical CBOR. A valid allocation becomes a signed,
-content-addressed ``capacity-allocation`` record woven into the Web by its provider —
-the market side of the DePIN fabric (consumers later pay these leases via PoUW escrow).
+    sum(units for all claims on resource R) <= R.capacity
+
+An infeasible allocation is physically impossible (more work than available capacity)
+and is refused before any signature is produced. This is the same discipline as the
+chemistry loom (element/charge balance) and supply-chain loom (mass conservation),
+applied to capacity scheduling.
+
+All capacities and units are integers; records round-trip through canonical CBOR.
+A feasible event becomes a signed, content-addressed ``operational-allocation``
+record woven into the Web by the scheduling actor.
 """
 
 from __future__ import annotations
@@ -24,114 +26,141 @@ from ...fabric.web import Web
 
 __all__ = [
     "Resource",
-    "Lease",
+    "Claim",
     "AllocationEvent",
     "OperationalLoom",
-    "allocated_units",
-    "idle_units",
-    "is_within_capacity",
+    "capacity_balance",
+    "is_feasible",
 ]
 
 
 @dataclass(frozen=True)
 class Resource:
-    """A bounded resource a provider offers (e.g. kind="gpu-3090", capacity=24)."""
+    """A named resource with an integer total capacity (e.g. GPU slots, CPU cores)."""
 
-    kind: str
+    name: str
     capacity: int
 
     def __post_init__(self) -> None:
+        if not isinstance(self.capacity, int) or isinstance(self.capacity, bool):
+            raise TypeError("resource capacity must be int")
         if self.capacity <= 0:
-            raise ValueError("resource capacity must be a positive integer")
+            raise ValueError(f"{self.name}: capacity must be a positive integer")
 
 
 @dataclass(frozen=True)
-class Lease:
-    """``units`` of the resource leased to ``consumer`` at an integer epoch price."""
+class Claim:
+    """An integer unit-demand against a named resource for a labelled task."""
 
-    consumer: str          # PLS address of the leasing consumer
+    resource_name: str
+    task: str
     units: int
-    price_per_epoch: int   # PLS-wei per Pulse epoch
 
     def __post_init__(self) -> None:
+        if not isinstance(self.units, int) or isinstance(self.units, bool):
+            raise TypeError("claim units must be int")
         if self.units <= 0:
-            raise ValueError("lease units must be a positive integer")
-        if self.price_per_epoch < 0:
-            raise ValueError("price_per_epoch must be non-negative")
+            raise ValueError("claim units must be a positive integer")
 
 
 @dataclass(frozen=True)
 class AllocationEvent:
-    """A provider's split of one resource's capacity into consumer leases."""
+    """A set of claims against declared resources, scheduled by ``actor``.
 
-    resource: Resource
-    leases: tuple[Lease, ...]
-    provider: str          # PLS address of the offering provider
+    ``resources`` declares available capacity; ``claims`` express demand.
+    Every resource referenced in a claim must appear in ``resources``.
+    """
+
+    resources: tuple[Resource, ...]
+    claims: tuple[Claim, ...]
+    actor: str  # PLS address of the scheduling spider
 
     def __post_init__(self) -> None:
-        if not self.leases:
-            raise ValueError("an allocation needs at least one lease")
+        if not self.resources:
+            raise ValueError("an allocation event needs at least one resource")
+        if not self.claims:
+            raise ValueError("an allocation event needs at least one claim")
+        declared = {r.name for r in self.resources}
+        unknown = {c.resource_name for c in self.claims} - declared
+        if unknown:
+            raise ValueError(f"claims reference undeclared resources: {unknown}")
 
 
-def allocated_units(event: AllocationEvent) -> int:
-    """Total resource units committed across all leases."""
-    return sum(lease.units for lease in event.leases)
+# ---------------------------------------------------------------------------
+# Invariant checks
+# ---------------------------------------------------------------------------
+
+def capacity_balance(event: AllocationEvent) -> dict[str, int]:
+    """Per-resource remaining capacity after all claims.
+
+    Feasible ⇔ all values >= 0. A negative value means that resource is
+    over-subscribed by the absolute value of the entry.
+    """
+    cap = {r.name: r.capacity for r in event.resources}
+    for claim in event.claims:
+        cap[claim.resource_name] -= claim.units
+    return cap
 
 
-def idle_units(event: AllocationEvent) -> int:
-    """Unallocated capacity (>= 0 when the allocation is sound)."""
-    return event.resource.capacity - allocated_units(event)
+def is_feasible(event: AllocationEvent) -> bool:
+    """True iff every resource has enough capacity to satisfy all its claims."""
+    return all(v >= 0 for v in capacity_balance(event).values())
 
 
-def is_within_capacity(event: AllocationEvent) -> bool:
-    """True iff the provider has not over-allocated its capacity."""
-    return allocated_units(event) <= event.resource.capacity
+# ---------------------------------------------------------------------------
+# The loom
+# ---------------------------------------------------------------------------
+
+def _sorted_resources(resources: tuple[Resource, ...]) -> list[Resource]:
+    return sorted(resources, key=lambda r: r.name)
 
 
-def _sorted_leases(leases: tuple[Lease, ...]) -> list[Lease]:
-    """Canonical lease order so the same allocation in any order shares one CID."""
-    return sorted(leases, key=lambda lease: (lease.consumer, lease.units, lease.price_per_epoch))
+def _sorted_claims(claims: tuple[Claim, ...]) -> list[Claim]:
+    return sorted(claims, key=lambda c: (c.resource_name, c.task))
 
 
 class OperationalLoom:
-    """Emits signed, over-allocation-checked capacity allocations for one provider key."""
+    """Emits signed, capacity-feasible allocation events for one scheduling actor."""
 
-    KIND = "capacity-allocation"
+    KIND = "operational-allocation"
 
-    def __init__(self, provider_priv: str) -> None:
-        self._priv = provider_priv
-        self.provider_pub = crypto.public_from_private(provider_priv)
-        self.address = crypto.address(self.provider_pub)
+    def __init__(self, actor_priv: str) -> None:
+        self._priv = actor_priv
+        self.actor_pub = crypto.public_from_private(actor_priv)
+        self.address = crypto.address(self.actor_pub)
 
     def to_record(self, event: AllocationEvent) -> dict:
-        def lease_rec(lease: Lease) -> dict:
-            return {
-                "consumer": lease.consumer,
-                "units": lease.units,
-                "price_per_epoch": lease.price_per_epoch,
-            }
+        """Build the integer-only, canonical-encodable record for an allocation event."""
         record = {
             "kind": self.KIND,
-            "resource_kind": event.resource.kind,
-            "capacity": event.resource.capacity,
-            "leases": [lease_rec(lease) for lease in _sorted_leases(event.leases)],
-            "allocated": allocated_units(event),
-            "idle": idle_units(event),
-            "provider": self.address,
+            "resources": [
+                {"name": r.name, "capacity": r.capacity}
+                for r in _sorted_resources(event.resources)
+            ],
+            "claims": [
+                {"resource": c.resource_name, "task": c.task, "units": c.units}
+                for c in _sorted_claims(event.claims)
+            ],
+            "actor": self.address,
+            "feasible": True,
         }
         canonical.encode(record)  # fail fast on any non-canonical content
         return record
 
     def emit(self, event: AllocationEvent) -> Attestation:
-        """Validate no-over-allocation, then sign the allocation. Raises if oversold."""
-        if not is_within_capacity(event):
+        """Validate capacity feasibility, then sign the event. Raises if over-subscribed."""
+        oversubscribed = {
+            name: -remaining
+            for name, remaining in capacity_balance(event).items()
+            if remaining < 0
+        }
+        if oversubscribed:
             raise ValueError(
-                f"over-allocation: {allocated_units(event)} units > capacity "
-                f"{event.resource.capacity}, cannot sign"
+                f"capacity exceeded, cannot sign: {oversubscribed}"
             )
-        return attest(self.to_record(event), self._priv, author_field="provider")
+        return attest(self.to_record(event), self._priv, author_field="actor")
 
     def weave(self, event: AllocationEvent, web: Web) -> tuple[str, Attestation]:
-        """Emit a signed allocation and weave it into *web*; return (cid, attestation)."""
+        """Emit a signed event and weave it into *web*; return (cid, attestation)."""
         att = self.emit(event)
         return web.weave(att.record), att
