@@ -6,7 +6,7 @@ breaks the signature), and be impossible to re-point at a different checkpoint.
 
 import pytest
 
-from knitweb.anchor import LocalAnchorBackend, Notary, verify_receipt
+from knitweb.anchor import AnchorBackend, AnchorReceipt, LocalAnchorBackend, Notary, verify_receipt
 from knitweb.core import crypto
 from knitweb.core.pulse import Pulse
 from knitweb.fabric.items import checkpoint, web_state_root
@@ -81,3 +81,51 @@ def test_receipt_record_is_canonical():
     cp = _checkpoint()
     receipt = Notary(priv).anchor(cp, LocalAnchorBackend(), timestamp=200)
     assert canonical.decode(canonical.encode(receipt.to_record())) == receipt.to_record()
+
+
+@pytest.mark.property
+def test_anchor_timestamp_rejects_bool_and_float():
+    priv, _ = crypto.generate_keypair()
+    cp = _checkpoint()
+    notary = Notary(priv)
+    for bad in (True, 1.5):
+        with pytest.raises(TypeError, match="timestamp"):
+            notary.anchor(cp, LocalAnchorBackend(), timestamp=bad)  # type: ignore[arg-type]
+
+
+@pytest.mark.property
+def test_local_backend_timestamp_rejects_bool_and_float():
+    backend = LocalAnchorBackend()
+    for bad in (True, 1.5):
+        with pytest.raises(TypeError, match="timestamp"):
+            backend.submit("root", bad)  # type: ignore[arg-type]
+
+
+@pytest.mark.property
+def test_bad_backend_external_ref_is_rejected_before_signing():
+    class BadBackend(AnchorBackend):
+        target = "bad"
+
+        def submit(self, state_root: str, timestamp: int) -> str:
+            return 123  # type: ignore[return-value]
+
+    priv, _ = crypto.generate_keypair()
+    cp = _checkpoint()
+    with pytest.raises(TypeError, match="external_ref"):
+        Notary(priv).anchor(cp, BadBackend(), timestamp=200)
+
+
+@pytest.mark.property
+def test_receipt_epoch_rejects_bool():
+    with pytest.raises(TypeError, match="epoch"):
+        AnchorReceipt(
+            state_root="root",
+            epoch=True,  # type: ignore[arg-type]
+            beat_cid="beat",
+            target="local",
+            external_ref="ref",
+            notary="pls1notary",
+            timestamp=200,
+            notary_pub="pub",
+            sig="sig",
+        )

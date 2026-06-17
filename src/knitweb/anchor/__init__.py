@@ -33,6 +33,16 @@ __all__ = [
 ]
 
 
+def _require_int(name: str, value: int) -> None:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError(f"{name} must be int")
+
+
+def _require_str(name: str, value: str) -> None:
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be str")
+
+
 class AnchorBackend:
     """Abstract external-anchor target. Subclasses commit a root and return a ref."""
 
@@ -53,6 +63,8 @@ class LocalAnchorBackend(AnchorBackend):
     target = "local"
 
     def submit(self, state_root: str, timestamp: int) -> str:
+        _require_str("state_root", state_root)
+        _require_int("timestamp", timestamp)
         return canonical.cid(
             {"kind": "local-anchor", "state_root": state_root, "timestamp": timestamp}
         )
@@ -71,6 +83,17 @@ class AnchorReceipt:
     timestamp: int
     notary_pub: str    # compressed secp256k1 public key (hex)
     sig: str           # DER signature (hex) over to_record()
+
+    def __post_init__(self) -> None:
+        _require_str("state_root", self.state_root)
+        _require_int("epoch", self.epoch)
+        _require_str("beat_cid", self.beat_cid)
+        _require_str("target", self.target)
+        _require_str("external_ref", self.external_ref)
+        _require_str("notary", self.notary)
+        _require_int("timestamp", self.timestamp)
+        _require_str("notary_pub", self.notary_pub)
+        _require_str("sig", self.sig)
 
     def to_record(self) -> dict:
         """The signed payload (signature + notary_pub are not part of it)."""
@@ -111,6 +134,7 @@ class Notary:
         timestamp: int,
     ) -> AnchorReceipt:
         """Anchor ``checkpoint`` via ``backend`` and return a signed receipt."""
+        _require_int("timestamp", timestamp)
         external_ref = backend.submit(checkpoint.state_root, timestamp)
         receipt = AnchorReceipt(
             state_root=checkpoint.state_root,
