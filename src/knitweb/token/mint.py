@@ -50,10 +50,20 @@ class EmissionPolicy:
     max_supply: int | None = None
 
     def __post_init__(self) -> None:
+        if (
+            not isinstance(self.rate_num, int)
+            or isinstance(self.rate_num, bool)
+            or not isinstance(self.rate_den, int)
+            or isinstance(self.rate_den, bool)
+        ):
+            raise TypeError("emission rate numerator/denominator must be int")
         if self.rate_den <= 0 or self.rate_num < 0:
             raise ValueError("emission rate must have rate_num>=0 and rate_den>0")
-        if self.max_supply is not None and self.max_supply < 0:
-            raise ValueError("max_supply must be non-negative")
+        if self.max_supply is not None:
+            if not isinstance(self.max_supply, int) or isinstance(self.max_supply, bool):
+                raise TypeError("max_supply must be int")
+            if self.max_supply < 0:
+                raise ValueError("max_supply must be non-negative")
 
     def reward(self, escrow: int, already_minted: int) -> int:
         """The bounded reward for a job whose consumer spent ``escrow`` pulses."""
@@ -125,13 +135,21 @@ class Treasury:
            transfer — conservation-preserving, no issuance).
         4. **Mint** the bounded reward to the worker as a coinbase, record it.
         """
+        if not isinstance(escrow, int) or isinstance(escrow, bool):
+            raise TypeError("escrow must be int")
         if escrow < 0:
             raise ValueError("escrow must be non-negative")
-        if not verify(job, proof):
-            return None
         if proof.digest in self._rewarded_digests:
             return None  # this work was already rewarded — no replay, no double-mint
-        self._rewarded_digests.add(proof.digest)
+        if escrow > 0:
+            if consumer.network != worker.network:
+                raise ValueError("consumer and worker must be on the same network")
+            if consumer.pub == worker.pub:
+                raise ValueError("consumer and worker must differ")
+            if consumer.balance(NATIVE) < escrow:
+                raise ValueError("consumer balance is below escrow")
+        if not verify(job, proof):
+            return None
 
         # 3. settle escrow consumer -> worker (conservation-preserving)
         if escrow > 0:
@@ -150,6 +168,7 @@ class Treasury:
             self._coinbase(worker, amount, issuance)
             self.total_minted += amount
         self.issuances.append(issuance)
+        self._rewarded_digests.add(proof.digest)
         return issuance
 
     def _coinbase(self, worker: AccountNode, amount: int, issuance: Issuance) -> Fiber:

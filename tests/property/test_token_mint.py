@@ -39,6 +39,16 @@ def test_no_premine():
 
 
 @pytest.mark.property
+def test_policy_rejects_bool_parameters():
+    with pytest.raises(TypeError):
+        EmissionPolicy(rate_num=True)
+    with pytest.raises(TypeError):
+        EmissionPolicy(rate_den=False)
+    with pytest.raises(TypeError):
+        EmissionPolicy(max_supply=True)
+
+
+@pytest.mark.property
 def test_verified_work_settles_escrow_and_mints_bounded_reward():
     job, orig_priv = _job()
     proof = execute(job, orig_priv)
@@ -70,6 +80,37 @@ def test_fraudulent_proof_mints_and_settles_nothing():
     assert iss is None
     assert consumer.balance(NATIVE) == 100 and worker.balance(NATIVE) == 0
     assert t.total_minted == 0
+
+
+@pytest.mark.property
+def test_failed_escrow_transfer_does_not_burn_verified_work():
+    # A valid proof must not be marked "rewarded" until settlement/mint succeeds.
+    # Otherwise an underfunded consumer could permanently burn future rewards for
+    # the same work digest.
+    job, orig_priv = _job()
+    proof = execute(job, orig_priv)
+    underfunded = AccountNode(genesis_balances={"PLS": 5})
+    worker = AccountNode()
+    t = Treasury()
+
+    with pytest.raises(ValueError, match="below escrow"):
+        t.reward_verified_work(underfunded, worker, 10, job, proof, timestamp=1)
+    assert t.total_minted == 0 and t.issuances == []
+
+    funded = AccountNode(genesis_balances={"PLS": 100})
+    iss = t.reward_verified_work(funded, worker, 10, job, proof, timestamp=2)
+    assert iss is not None and iss.amount == 5
+    assert t.total_minted == 5
+
+
+@pytest.mark.property
+def test_bool_escrow_is_rejected():
+    job, orig_priv = _job()
+    proof = execute(job, orig_priv)
+    consumer = AccountNode(genesis_balances={"PLS": 100})
+    worker = AccountNode()
+    with pytest.raises(TypeError):
+        Treasury().reward_verified_work(consumer, worker, True, job, proof, timestamp=1)
 
 
 @pytest.mark.property
