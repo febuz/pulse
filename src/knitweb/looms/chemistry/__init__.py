@@ -46,7 +46,15 @@ class Species:
     charge: int = 0
 
     def __post_init__(self) -> None:
+        if not isinstance(self.charge, int) or isinstance(self.charge, bool):
+            raise TypeError("species charge must be int")
+        seen: set[str] = set()
         for element, count in self.composition:
+            if element in seen:
+                raise ValueError(f"{self.formula}: duplicate element {element}")
+            seen.add(element)
+            if not isinstance(count, int) or isinstance(count, bool):
+                raise TypeError(f"{self.formula}: element {element} count must be int")
             if count <= 0:
                 raise ValueError(f"{self.formula}: element {element} count must be > 0")
 
@@ -68,6 +76,8 @@ class Term:
     coeff: int
 
     def __post_init__(self) -> None:
+        if not isinstance(self.coeff, int) or isinstance(self.coeff, bool):
+            raise TypeError("stoichiometric coefficient must be int")
         if self.coeff <= 0:
             raise ValueError("stoichiometric coefficient must be a positive integer")
 
@@ -86,6 +96,9 @@ class Reaction:
     def __post_init__(self) -> None:
         if not self.reactants or not self.products:
             raise ValueError("a reaction needs at least one reactant and one product")
+        for key, value in self.kinetics:
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise TypeError(f"kinetic value {key!r} must be int")
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +137,15 @@ def _sorted(terms: tuple[Term, ...]) -> list[Term]:
     """Canonical term order (by species formula) so a reaction written with its
     reactants/products in any order yields one content id — equivalent reactions
     dedupe in the content-addressed Web instead of forking into distinct CIDs."""
-    return sorted(terms, key=lambda t: t.species.formula)
+    return sorted(
+        terms,
+        key=lambda t: (
+            t.species.formula,
+            t.species.composition,
+            t.species.charge,
+            t.coeff,
+        ),
+    )
 
 
 def _equation(reaction: Reaction) -> str:
