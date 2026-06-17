@@ -120,13 +120,20 @@ def is_balanced(reaction: Reaction) -> bool:
 # The loom
 # ---------------------------------------------------------------------------
 
+def _sorted(terms: tuple[Term, ...]) -> list[Term]:
+    """Canonical term order (by species formula) so a reaction written with its
+    reactants/products in any order yields one content id — equivalent reactions
+    dedupe in the content-addressed Web instead of forking into distinct CIDs."""
+    return sorted(terms, key=lambda t: t.species.formula)
+
+
 def _equation(reaction: Reaction) -> str:
-    def side(terms: tuple[Term, ...]) -> str:
+    def side(terms: list[Term]) -> str:
         return " + ".join(
             (f"{t.coeff} {t.species.formula}" if t.coeff != 1 else t.species.formula)
             for t in terms
         )
-    return f"{side(reaction.reactants)} -> {side(reaction.products)}"
+    return f"{side(_sorted(reaction.reactants))} -> {side(_sorted(reaction.products))}"
 
 
 class ChemistryLoom:
@@ -151,8 +158,9 @@ class ChemistryLoom:
         record = {
             "kind": self.KIND,
             "equation": _equation(reaction),
-            "reactants": [term_rec(t) for t in reaction.reactants],
-            "products": [term_rec(t) for t in reaction.products],
+            # Terms are canonically sorted so equivalent reactions share one CID.
+            "reactants": [term_rec(t) for t in _sorted(reaction.reactants)],
+            "products": [term_rec(t) for t in _sorted(reaction.products)],
             "author": self.address,
             "balanced": True,
         }

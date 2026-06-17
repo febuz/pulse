@@ -120,6 +120,23 @@ def test_tampered_signed_reaction_fails_verification():
 
 
 @pytest.mark.loom
+def test_term_order_does_not_change_content_id():
+    # The same reaction written with reactants in swapped order must produce the
+    # SAME signed record/CID, so equivalent reactions dedupe in the Web.
+    priv, _ = crypto.generate_keypair()
+    loom = ChemistryLoom(priv)
+    h2 = Species.make("H2", {"H": 2})
+    o2 = Species.make("O2", {"O": 2})
+    h2o = Species.make("H2O", {"H": 2, "O": 1})
+    forward = Reaction(reactants=(Term(h2, 2), Term(o2, 1)), products=(Term(h2o, 2),))
+    swapped = Reaction(reactants=(Term(o2, 1), Term(h2, 2)), products=(Term(h2o, 2),))
+    assert loom.to_record(forward) == loom.to_record(swapped)
+    assert canonical.cid(loom.to_record(forward)) == canonical.cid(loom.to_record(swapped))
+    # canonical equation is term-sorted ("H2" < "O2")
+    assert loom.to_record(swapped)["equation"] == "2 H2 + O2 -> 2 H2O"
+
+
+@pytest.mark.loom
 def test_kinetics_metadata_is_integer_and_optional():
     priv, _ = crypto.generate_keypair()
     loom = ChemistryLoom(priv)
