@@ -60,7 +60,8 @@ check if the same input deterministically yields the same output. Two regimes:
 
 ### 4.1 Deterministic verification (shipped)
 `pouw/digest.py` — `tolerance_digest(values, eps)` snaps each value to its integer
-bucket `round(value/eps)` and hashes the **integers** via canonical CBOR. Outputs
+bucket `floor(value/eps + 0.5)` (deterministic round-half-up, not banker's
+rounding) and hashes the **integers** via canonical CBOR. Outputs
 within `eps` share a digest; genuinely different work mismatches. No float ever
 reaches the hash. Bucket-boundary straddle is the inherent residual; for chaotic
 kernels, fall back to hardware attestation. (Not yet wired into `job.py` — the

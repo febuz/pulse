@@ -70,7 +70,8 @@ guarantees):
   `sign_bundle` / `verify_bundle` let an edge device verify origin *before*
   executing. A tampered bundle fails verification and is refused.
 - **Compact** — string interning + varints. The win scales with graph size and
-  URI repetition (a 4-source toy is ~24% smaller than its JSON; large graphs with
+  URI repetition (the 4-source toy in `tests/property/test_synaptic.py` is ~58%
+  smaller than the equivalent `json.dumps` of its relations; large graphs with
   shared URIs compress far more). We report real ratios, never inflated ones.
 
 ## Where PLS (the pay-token) fits — the economic loop

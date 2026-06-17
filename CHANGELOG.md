@@ -25,10 +25,20 @@ The crypto is built and operable end to end. Highlights:
   restart-safe persistence and daemon auto-persist.
 - **USP** — the OriginTrail read↔write symbiosis proven end to end.
 
-~250 property/interop/loom proofs green.
+273 property/interop/loom proofs green.
+
+### Consistency pass
+- PoUW digest rule documented exactly as implemented: deterministic round-half-up
+  `floor(value/eps + 0.5)` (was mis-stated as `round(value/eps)` in `pouw/digest.py`
+  and `docs/PROOF_OF_USEFUL_WORK.md`).
+- Synaptic bytecode compression claim corrected to the measured, reproducible ~58%
+  vs `json.dumps` for the `tests/property/test_synaptic.py` toy (was "~24%").
+- `pouw/job.py` issuance note updated: mint is shipped in `token/mint.py` (demand-gated,
+  bounded), not "deferred"; this module only transfers escrow.
 
 ### Notes
-- Repository home migrated to `github.com/knitweb/knitweb` (org = repo = package = `knitweb`).
+- Repository home moving to `github.com/knitweb/pulse` (org `knitweb`, package `knitweb`);
+  the `pulse` repo name is retained.
 - The active token is **PLS**; the ticker **FBR is reserved and not active**.
 - A repo-wide `loom → knitweb` rename is scheduled as a dedicated follow-up PR (see
   `docs/ROADMAP.md`); it is identifier/docs-only with no signed-record impact.

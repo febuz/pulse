@@ -80,8 +80,8 @@ hand-rolled (zero external surface). License: Apache-2.0.
 
 ## Repo, org & package names
 
-Org, repository, and Python package now all share one name: the project lives at
-**`github.com/knitweb/knitweb`** and installs as **`knitweb`** (`pip install knitweb`,
-`import knitweb`). (It was previously developed in the `febuz/pulse` repo — *Pulse*/PLS
-is the pay-token; *Knitweb* is the protocol/brand. History was migrated to the
-`knitweb` org; older `febuz/pulse` links are superseded.)
+The project is moving to the **`knitweb`** org as **`github.com/knitweb/pulse`** and
+installs as the **`knitweb`** package (`pip install knitweb`, `import knitweb`). The
+repo keeps the name `pulse` while the package and protocol/brand are *Knitweb*:
+*Pulse*/PLS is the pay-token, *Knitweb* is the protocol/brand. (Currently developed
+at `febuz/pulse`; history transfers to the `knitweb` org with redirects intact.)

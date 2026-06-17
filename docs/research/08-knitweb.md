@@ -564,7 +564,7 @@ Benefits: offline-first agents (weave locally, merge later); fork-tolerant colla
 
 ### 13.1 Relationship to the knitweb reference implementation
 
-This paper is the conceptual model; the `knitweb/knitweb` reference implementation is the running code. They map as follows (and the implementation's non-negotiables — secp256k1 + SHA-256, integer-only money/state, float-free canonical CBOR, no founder premine — hold throughout this paper).
+This paper is the conceptual model; the `knitweb/pulse` reference implementation is the running code. They map as follows (and the implementation's non-negotiables — secp256k1 + SHA-256, integer-only money/state, float-free canonical CBOR, no founder premine — hold throughout this paper).
 
 **Seven core primitives** (`src/`): `Blob` (account balance state) · `Fiber` (content-addressed **account-state commitment**; "Fiber" is the brand coin, but the primitive is never itself transferred) · `Loom` (validation) · `Knit` (two-party transfer of a `symbol` balance, native **PLS**) · `Braid` (local history) · **`Web`** (the woven global graph) · **`Pulse`** (the heartbeat; useful work is paid in **PLS**, "pulses"). Workers are **spiders** (verifiable GPU compute via proof-of-useful-work with sampled re-execution).
 
