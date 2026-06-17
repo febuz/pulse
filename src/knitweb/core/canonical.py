@@ -12,8 +12,15 @@ and signatures agree. We therefore use a strict, deterministic subset of CBOR
   * maps / dicts       — major type 5, keys sorted by *encoded-key bytes*
   * bool / None        — major type 7 simple values 20 / 21 / 22
 
-Floats are rejected: money and state are integers (FBR-wei), never floats, so
+Floats are rejected: money and state are integers (PLS-wei), never floats, so
 conservation is exact and cross-language agreement is guaranteed.
+
+``decode`` is *strict*, not just permissive: it rejects any non-canonical input
+— non-minimal integer/length heads, unsorted or duplicate map keys, indefinite-
+length items, and trailing bytes. There is therefore exactly one byte-string per
+logical object, so ``decode(encode(x))`` is canonical and an attacker cannot
+forge alternate bytes that hash differently yet decode to the same value. This is
+the same guarantee Ethereum RLP (ErrCanonInt) and Cosmos ADR-027 enforce.
 
 Content identity is a real CIDv1: codec dag-cbor (0x71), multihash sha2-256.
 """
@@ -92,7 +99,7 @@ def _encode(value: Any) -> bytes:
         return out
     if isinstance(value, float):
         raise CanonicalError(
-            "floats are forbidden in canonical encoding; use integers (FBR-wei)"
+            "floats are forbidden in canonical encoding; use integers (PLS-wei)"
         )
     raise CanonicalError(f"cannot canonically encode type: {type(value).__name__}")
 
@@ -115,16 +122,33 @@ def _decode(buf: bytes, pos: int) -> tuple[Any, int]:
     pos += 1
 
     def read_len(minor: int, pos: int) -> tuple[int, int]:
+        # Deterministic decoding (RFC 8949 §4.2): an argument MUST use the
+        # shortest possible head. We reject non-minimal encodings so there is
+        # exactly one byte-string per value and decode(encode(x)) round-trips
+        # are canonical — an attacker cannot craft alternate bytes for the same
+        # object (this is the RLP ErrCanonInt / Cosmos ADR-027 guarantee).
         if minor < 24:
             return minor, pos
         if minor == 24:
-            return buf[pos], pos + 1
+            n = buf[pos]
+            if n < 24:
+                raise CanonicalError("non-minimal integer: value < 24 used 1-byte head")
+            return n, pos + 1
         if minor == 25:
-            return int.from_bytes(buf[pos:pos + 2], "big"), pos + 2
+            n = int.from_bytes(buf[pos:pos + 2], "big")
+            if n < 0x100:
+                raise CanonicalError("non-minimal integer: value fits a shorter head")
+            return n, pos + 2
         if minor == 26:
-            return int.from_bytes(buf[pos:pos + 4], "big"), pos + 4
+            n = int.from_bytes(buf[pos:pos + 4], "big")
+            if n < 0x10000:
+                raise CanonicalError("non-minimal integer: value fits a shorter head")
+            return n, pos + 4
         if minor == 27:
-            return int.from_bytes(buf[pos:pos + 8], "big"), pos + 8
+            n = int.from_bytes(buf[pos:pos + 8], "big")
+            if n < 0x100000000:
+                raise CanonicalError("non-minimal integer: value fits a shorter head")
+            return n, pos + 8
         raise CanonicalError(f"unsupported minor value: {minor}")
 
     if major == 0:
@@ -149,8 +173,20 @@ def _decode(buf: bytes, pos: int) -> tuple[Any, int]:
     if major == 5:
         n, pos = read_len(minor, pos)
         out: dict[Any, Any] = {}
+        prev_key_bytes: bytes | None = None
         for _ in range(n):
+            key_start = pos
             k, pos = _decode(buf, pos)
+            key_bytes = buf[key_start:pos]
+            # Keys MUST appear in strictly ascending encoded-key byte order
+            # (the same order encode() emits). This rejects both unsorted maps
+            # and duplicate keys in one check, so a map has exactly one
+            # canonical serialization.
+            if prev_key_bytes is not None and key_bytes <= prev_key_bytes:
+                if key_bytes == prev_key_bytes:
+                    raise CanonicalError("duplicate map key in canonical CBOR")
+                raise CanonicalError("map keys not in canonical (ascending) order")
+            prev_key_bytes = key_bytes
             v, pos = _decode(buf, pos)
             out[k] = v
         return out, pos
