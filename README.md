@@ -27,17 +27,22 @@ anchors/bridges to the major blockchains.
 
 ## The seven core primitives
 
-`Blob` (account state) · `Fiber` (content-addressed value unit) · `Loom`
-(validation) · `Knit` (two-party transfer) · `Braid` (local history) ·
-**`Web`** (the woven global graph) · **`Pulse`** (the web's heartbeat; useful
-work is paid in **PLS**). Workers are **spiders**.
+`Blob` (account balance state) · `Fiber` (content-addressed **account-state
+commitment**) · `Loom` (validation) · `Knit` (two-party transfer) · `Braid` (local
+history) · **`Web`** (the woven global graph) · **`Pulse`** (the web's heartbeat;
+useful work is paid in **PLS**). Workers are **spiders**.
+
+> *Fiber* is the brand coin, but the `Fiber` **primitive** is an immutable snapshot
+> of one account's state (a link in its `Braid`) — it is never itself transferred.
+> The transferable value is an integer balance of a *symbol* (native symbol = `PLS`)
+> moved between accounts by a `Knit`.
 
 ## Architecture (layers)
 
 | Layer | Module | Language |
 |---|---|---|
 | L0 core | crypto (secp256k1 ECDSA + SHA-256), canonical CBOR, CID | Python |
-| L1 ledger | blob / fiber / loom / knit / braid / node (integer Fiber) | Python |
+| L1 ledger | blob / fiber / loom / knit / braid / node (integer PLS-wei balances) | Python |
 | L2 p2p | asyncio signed-feed sync + static peers; py-libp2p/DHT optional later | Python |
 | L3 fabric | Web + items + agent / scorer / masterdata | Python |
 | L4 pouw | proof-of-useful-work, sampled re-execution | Python + Julia + WGSL |
@@ -46,9 +51,16 @@ work is paid in **PLS**). Workers are **spiders**.
 
 ## Status
 
-Phase 0 (core crypto + canonical encoding + Pulse + Web) is implemented and
-property-tested. Phase 3 has a stdlib-`asyncio` MVP for signed feed replication,
-conflict quarantine, and two-party Knit handshakes over canonical-CBOR frames.
+Implemented and property-tested end to end across **L0–L6**:
+- **L0/L3** core crypto, float-free canonical CBOR + CIDv1, Pulse, Web;
+- **L1** the integer settlement ledger (blob/fiber/loom/knit/braid/node, network-id replay protection);
+- **L2** stdlib-`asyncio` signed-feed replication, conflict quarantine, two-party Knit handshakes, and peer-exchange discovery;
+- **L4** proof-of-useful-work — sampled re-execution, commit-before-sample challenge, tolerance digests, escrow + a compute guardrail;
+- **L5** four domain looms (finance, operational, supply-chain, chemistry);
+- **L6** the PLS token (demand-gated bounded mint), plus OriginTrail anchoring and a provenance walker over the Web.
+
+A `knitweb` CLI runs a node, pays PLS, and compiles / verifies / edge-loads signed
+bytecode; node state persists across restarts. ~250 property/interop/loom proofs green.
 See [`docs/`](docs/) for the language-architecture decisions and
 [`docs/research/08-knitweb.md`](docs/research/08-knitweb.md) for the KnitWeb concept
 paper (knitweb beside blockchain/hashgraph; the pulses/draft compute layer; the
@@ -65,3 +77,11 @@ python3 tools/loc_report.py                          # print the LOC record (unt
 
 Requires Python ≥ 3.12 and `cryptography`. The hash-critical canonical encoder is
 hand-rolled (zero external surface). License: Apache-2.0.
+
+## Repo, org & package names
+
+Org, repository, and Python package now all share one name: the project lives at
+**`github.com/knitweb/knitweb`** and installs as **`knitweb`** (`pip install knitweb`,
+`import knitweb`). (It was previously developed in the `febuz/pulse` repo — *Pulse*/PLS
+is the pay-token; *Knitweb* is the protocol/brand. History was migrated to the
+`knitweb` org; older `febuz/pulse` links are superseded.)

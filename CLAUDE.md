@@ -10,13 +10,18 @@ anchoring/bridging to the major blockchains.
 
 - **PLS ("pulses") is the pay-token.** You spend PLS for *activity* (compute,
   relay, storage, curation) — not for fibers or knits. Spiders earn PLS via
-  proof-of-useful-work. No premine; mint is demand-gated and bounded per Pulse
-  epoch (`mintable=false`, `premine=0`).
-- **Fiber is the value unit (the coin)** — a content-addressed value transferred
-  by `Knit`. Value unit slang is a *fiber* (NL *vezel*); never reintroduce the
-  name "FIBRE".
-- **FBR is reserved** (a possible separate/regional token later). Do not use it as
-  the active token in new code or docs.
+  proof-of-useful-work. No premine; mint is **demand-gated and bounded by the
+  escrow it settles, plus an optional `max_supply` cap** (`token.mint`,
+  `premine=0`). Binding a mint cap to a Pulse Beat/epoch is a planned future
+  wiring, not yet implemented.
+- **"Fiber" is the brand coin / value unit — but the `Fiber` *primitive* is not a
+  transferable coin.** A `Fiber` is an immutable, content-addressed **account-state
+  commitment** (one link in a `Braid`). The transferable value is an integer
+  balance of a *symbol* (native symbol = `"PLS"`) moved between accounts by a
+  `Knit`; Fibers themselves are never transferred. Value-unit slang is a *fiber*
+  (NL *vezel*); never reintroduce the name "FIBRE".
+- **FBR is reserved and not active** (a possible separate/regional token later). Do
+  not use it as the active token in new code or docs.
 
 ## Non-negotiables
 
@@ -28,9 +33,13 @@ anchoring/bridging to the major blockchains.
 - **Canonical bytes are sacred.** All hashing/signing goes through
   `core.canonical.encode` (float-free deterministic CBOR) + `core.canonical.cid`
   (CIDv1 dag-cbor sha2-256). Changing it changes every hash and signature.
-- **Core primitives:** `Blob`, `Fiber`, `Loom`, `Knit`, `Braid`, **`Web`**,
+- **Core primitives (seven):** `Blob`, `Fiber`, `Loom`, `Knit`, `Braid`, **`Web`**,
   **`Pulse`**. Workers are **spiders**. Vocabulary is **Web · Loom · Knit · Pulse
   · Fiber** — never "network"/"net".
+- **The one allowed technical use of "network":** the `network` *id field* inside a
+  signed `Knit` (an EIP-155-style chain id that namespaces a PLS web for replay
+  protection). It is **hash-critical — never rename it**. Everywhere else in prose,
+  say *web* / *fabric*, never "network"/"net".
 - **No founder premine.** Founders earn PLS like anyone and monetize only via side
   projects and the first user-issued tokens on the fabric.
 - **Proofs-first.** Every phase ends with a runnable test + a commit + an

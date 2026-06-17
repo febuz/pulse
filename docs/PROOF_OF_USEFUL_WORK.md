@@ -17,8 +17,8 @@ claims — cheaply, without re-doing all of it, and without a trusted oracle. Ev
 other layer (ledger, feed, fabric) is determinism-critical but **local**: a node
 can prove its own braid in isolation. PoUW is the one place where the web must
 adjudicate a *remote* party's behaviour and move collateral on the verdict. Get
-it wrong and you either slash honest workers (the network dies of attrition) or
-pay fraudulent ones (the network dies of looting).
+it wrong and you either slash honest workers (the web dies of attrition) or
+pay fraudulent ones (the web dies of looting).
 
 The model is **optimistic sampled re-execution + PLS escrow, slash on mismatch**.
 The settlement path itself involves no new issuance (settlement is a

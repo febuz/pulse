@@ -1,6 +1,10 @@
 # Fiber & the Synaptic Web
 
-**Coin:** Fiber · **Pay-token:** PLS (pulses) · **Fabric:** the Knitweb (Web · Loom · Knit · Pulse)
+**Brand coin:** Fiber · **Pay-token:** PLS (pulses) · **Brand vocabulary:** Web · Loom · Knit · Pulse · Fiber (the seven code primitives: Blob · Fiber · Loom · Knit · Braid · Web · Pulse)
+
+> Note: *Fiber* is the brand coin, but the `Fiber` **primitive** is an immutable,
+> content-addressed account-state commitment (a `Braid` link) — never itself
+> transferred. Value moves as an integer balance of a *symbol* (native `"PLS"`) via `Knit`.
 
 > Token note: you pay in **PLS** ("pulses") for activity — not for fibers or knits.
 > FBR is reserved (a possible separate regional token later).
