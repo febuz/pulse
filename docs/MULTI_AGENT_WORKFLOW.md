@@ -42,8 +42,12 @@ python3 $COORD release knitweb/<lane>
   and explicit **review asks for Codex** (the equal-level reviewer).
 - Implement agreed review feedback as the leading engineer; push back with reasoning
   when you disagree. Be harmonious — accept what's possible, give benefit of the doubt.
-- Refresh `tools/loc_report.py` → `docs/LOC_BY_LANGUAGE.md` and keep the full suite
-  green (`PYTHONPATH=src pytest -q`) in every PR.
+- Keep the full suite green (`PYTHONPATH=src pytest -q`) in every PR.
+- **Do not commit `docs/LOC_BY_LANGUAGE.md`.** It is generated on demand by
+  `tools/loc_report.py` and is gitignored (not version-controlled), so it never
+  needs maintaining in a PR — every PR editing the same generated lines used to be a
+  recurring merge-conflict source. Run `python3 tools/loc_report.py` locally to view
+  the current counts.
 
 ## 4. Don't pile up unbounded unreviewed work
 

@@ -7,8 +7,13 @@ vendored, and private artifacts (VCS internals, caches, build output, local
 databases, fixtures) are excluded so the record reflects only what ships in the
 public open-source repository.
 
+The record is **generated on demand and not version-controlled** (``docs/LOC_BY_LANGUAGE.md``
+is gitignored), so it never needs maintaining in a PR — every PR editing the same
+generated lines used to be a recurring merge-conflict source. Run this whenever you
+want to see the current counts for the working tree.
+
 Usage:
-    python3 tools/loc_report.py            # write docs/LOC_BY_LANGUAGE.md
+    python3 tools/loc_report.py            # write docs/LOC_BY_LANGUAGE.md (untracked)
     python3 tools/loc_report.py --print    # also print the table to stdout
 """
 
@@ -18,6 +23,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+OUTPUT_FILE = ROOT / "docs" / "LOC_BY_LANGUAGE.md"
 
 # Directories never counted (not public-OSS-relevant source).
 EXCLUDE_DIRS = {
@@ -48,6 +54,8 @@ EXCLUDE_SUFFIXES = (".sqlite", ".sqlite-wal", ".sqlite-shm", ".lock")
 
 
 def _excluded(path: Path) -> bool:
+    if path == OUTPUT_FILE:
+        return True
     if any(part in EXCLUDE_DIRS for part in path.parts):
         return True
     if path.name.endswith(EXCLUDE_SUFFIXES):
@@ -88,7 +96,8 @@ def render(stats: dict[str, dict]) -> str:
         "Public, open-source-relevant source files only (VCS internals, caches,",
         "build output, local databases, and fixtures are excluded).",
         "",
-        "Regenerate with: `python3 tools/loc_report.py`",
+        "Generated on demand by `tools/loc_report.py` and **not version-controlled**",
+        "(gitignored). The counts reflect the working tree when it was generated.",
         "",
         "| Language | Files | Lines | Category |",
         "|---|---:|---:|---|",
@@ -108,7 +117,7 @@ def render(stats: dict[str, dict]) -> str:
 def main() -> int:
     stats = collect()
     report = render(stats)
-    out = ROOT / "docs" / "LOC_BY_LANGUAGE.md"
+    out = OUTPUT_FILE
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(report, encoding="utf-8")
     if "--print" in sys.argv:
