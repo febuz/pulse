@@ -15,6 +15,7 @@ a post-quantum scheme can be added later by soft-fork (see
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 
 from cryptography.hazmat.primitives import hashes
@@ -170,7 +171,7 @@ def _base32_lower_nopad(data: bytes) -> str:
 
 
 def _base32_decode_nopad(text: str) -> bytes:
-    """Inverse of :func:`_base32_lower_nopad`. Raises ValueError on bad input."""
+    """Inverse of :func:`_base32_lower_nopad`. Raises on bad input."""
     up = text.upper()
     pad = (-len(up)) % 8
     return base64.b32decode(up + ("=" * pad))
@@ -211,7 +212,7 @@ def decode_address(addr: str) -> tuple[int, bytes]:
         raise ValueError("address has no payload")
     try:
         payload = _base32_decode_nopad(body)
-    except (ValueError, base64.binascii.Error) as exc:  # type: ignore[attr-defined]
+    except (ValueError, binascii.Error) as exc:
         raise ValueError(f"address body is not valid base32: {exc}") from exc
     if len(payload) != _ADDR_PAYLOAD_LEN:
         raise ValueError(

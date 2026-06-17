@@ -6,6 +6,8 @@ pin the encode/decode round-trip, the version byte, and graceful rejection of
 malformed or unknown-scheme addresses.
 """
 
+import base64
+
 import pytest
 
 from knitweb.core import crypto
@@ -38,7 +40,6 @@ def test_round_trip_decode_recovers_payload():
     scheme, fingerprint = crypto.decode_address(addr)
     assert len(fingerprint) == 20
     # re-encoding the same payload reproduces the address byte-for-byte
-    import base64
     payload = bytes([scheme]) + fingerprint
     reencoded = "pls1" + base64.b32encode(payload).decode().lower().rstrip("=")
     assert reencoded == addr
@@ -69,10 +70,23 @@ def test_is_valid_address_accepts_real_and_rejects_garbage():
 
 
 @pytest.mark.property
+def test_decode_rejects_wrong_payload_length():
+    # A correct HRP with a valid-base32 body that decodes to != 21 bytes must be
+    # refused by the explicit _ADDR_PAYLOAD_LEN check (not just garbage base32).
+    too_long = bytes([0]) + b"x" * 21          # 22 bytes, scheme byte + 21
+    addr = "pls1" + base64.b32encode(too_long).decode().lower().rstrip("=")
+    with pytest.raises(ValueError):
+        crypto.decode_address(addr)
+    too_short = bytes([0]) + b"x" * 5           # 6 bytes
+    addr2 = "pls1" + base64.b32encode(too_short).decode().lower().rstrip("=")
+    with pytest.raises(ValueError):
+        crypto.decode_address(addr2)
+
+
+@pytest.mark.property
 def test_decode_reports_unknown_scheme_without_crashing():
     # Hand-craft an address with scheme byte 9 (unknown): decode must still parse
     # it and surface the scheme, but is_valid_address must reject it.
-    import base64
     payload = bytes([9]) + crypto.sha256(b"x")[:20]
     addr = "pls1" + base64.b32encode(payload).decode().lower().rstrip("=")
     scheme, fp = crypto.decode_address(addr)
