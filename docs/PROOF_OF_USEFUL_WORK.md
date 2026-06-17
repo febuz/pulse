@@ -6,7 +6,7 @@
 > work without trusting them. It consolidates the DePIN lessons mined in
 > [`CRYPTO_CORPUS_STUDY.md`](CRYPTO_CORPUS_STUDY.md) §1 into a single security
 > model, marks what is **implemented** vs **designed**, and is the spec the
-> Sprint 2 PoUW PRs build against (see [`ROADMAP.md`](ROADMAP.md)).
+> Sprint 2 PoUW PRs build against (see [`ROADMAP.md`](ROADMAP.md)).
 
 ## 1. Why this is the hard part
 
@@ -21,8 +21,10 @@ it wrong and you either slash honest workers (the network dies of attrition) or
 pay fraudulent ones (the network dies of looting).
 
 The model is **optimistic sampled re-execution + PLS escrow, slash on mismatch**.
-No new issuance is involved (see §6): settlement is a conservation-preserving
-Knit transfer of escrowed pulses, which is the sound subset we can prove today.
+The settlement path itself involves no new issuance (settlement is a
+conservation-preserving Knit transfer of escrowed pulses); *new* PLS is created
+only by a separate, demand-gated mint layered on top of a verified proof (see
+§6), never by the escrow path.
 
 ## 2. Soundness rests on determinism
 
@@ -47,11 +49,12 @@ check if the same input deterministically yields the same output. Two regimes:
 | **Precompute** | Worker computes only the blocks it expects to be challenged | Fresh per-challenge salt drawn *after* the commit; indices unpredictable at commit time | ✅ `pouw/challenge.py` (#24) |
 | **Retroactive work-swap** | Worker swaps in cheaper output after seeing which blocks are sampled | Domain-separated Merkle commitment published *before* the salt; sampled blocks must prove membership | ✅ `pouw/challenge.py` (#24) |
 | **Second-preimage / tree forgery** | Forge a Merkle path by confusing leaf and internal nodes | `\x00`/`\x01` leaf/node domain tags (avoids the CVE-2012-2459 shape) | ✅ `pouw/challenge.py` (#24) |
+| **Work-reward replay** | A colluding consumer+worker resubmits the *same* verified proof to mint repeatedly (escrow just cycles between them) → unbounded issuance | `Treasury` records rewarded **proof digests**; a duplicate is refused (no settle, no mint) — the "no-infinite-mint" guard | ✅ `token/mint.py` (#17) |
+| **Cross-web replay** | Replay a settlement Knit on another PLS web | `network` id bound into the signed Knit (EIP-155-style) | ✅ `ledger/knit.py` |
 | **Withdraw-before-dispute** | Worker is paid, then withdraws before a verifier can re-execute and slash | Escrow release delay **strictly exceeds** the dispute window; slashing reaches pending withdrawals | 📐 designed (Sprint 2) |
 | **Single corrupt verifier** | One verifier whitewashes fraud or steals stake | **k-of-n** verifier quorum (~55% confirm, tolerate ~33% adversary) | 📐 designed (Sprint 2) |
 | **Faked-digest batch** | Worker submits many fake proofs hoping few are sampled | Collateral ≥ one settlement window's payout-at-risk; faked batches are never net-profitable | 📐 designed (Sprint 2) |
 | **Salt grinding** | A colluding verifier grinds the salt to a favourable sample | Beacon-seeded / commit-revealed salt rather than free verifier choice | 📐 designed (Sprint 2) |
-| **Cross-web replay** | Replay a settlement Knit on another PLS web | `network` id bound into the signed Knit (EIP-155-style) | ✅ `ledger/knit.py` |
 
 ## 4. Layer by layer
 
@@ -76,7 +79,17 @@ O(k) verifier cost:
 4. `verify_response(...)` → recompute indices, check positional order, salted
    digest (no precompute), and membership in the committed root (no work-swap).
 
-### 4.3 Dispute, quorum & collateral (designed — Sprint 2)
+### 4.3 Demand-gated bounded mint (shipped)
+`token/mint.py` — `Treasury.reward_verified_work` is the full economic loop layered
+on top of PoUW: **gate** on `pouw.job.verify` (fraud ⇒ nothing) → **anti-replay**
+(a proof digest is rewarded at most once — the no-infinite-mint guard) → **settle**
+the consumer's escrow to the worker (conservation-preserving) → **mint** a bounded
+reward (≤ escrow consumed, ≤ optional `max_supply`) as a coinbase Fiber tagged with
+the issuance CID, so the braid's spent-knit guard makes it un-replayable. No
+premine, no admin mint. Per-epoch emission bounding and the 1-pulse-per-bundle
+access payment remain (Sprint 3).
+
+### 4.4 Dispute, quorum & collateral (designed — Sprint 2)
 The challenge protocol yields a *verdict*; this layer turns a verdict into safe
 settlement timing and slashing.
 
@@ -106,13 +119,17 @@ Knit **iff** the proof verifies, and pays nothing otherwise. This keeps the
 trusted surface tiny and auditable (Szabo principle 82: code bugs destroy more
 value than 51% attacks).
 
-## 6. What is deliberately deferred
+## 6. Issuance — shipped core, bounded refinements deferred
 
-- **PLS issuance (mint).** No new PLS is minted by PoUW today; settlement only
-  *transfers* escrowed pulses. A demand-gated, per-epoch-bounded mint
-  (`mintable=false`, `premine=0`) is a separate L6 decision (see
-  [`ROADMAP.md`](ROADMAP.md), Sprint 3 `token/pls-mint`). Escrow settlement is the
-  sound subset provable now, independent of emission policy.
+- **Demand-gated mint (shipped, #17).** New PLS is created only by
+  `token/mint.py`'s `Treasury.reward_verified_work`, gated on a verified PoUW
+  proof, bounded by the escrow consumed and an optional `max_supply`, with
+  `premine=0` and no ungated `mint` method. The PoUW *escrow path*
+  (`pouw/escrow.py`) itself still mints nothing — it only transfers — so the two
+  concerns stay cleanly separated.
+- **Deferred (Sprint 3).** Per-Pulse-epoch emission bounding (`mintable=false`
+  schedule) and wiring the 1-pulse-per-bundle access payment to synaptic bundle
+  delivery (see [`ROADMAP.md`](ROADMAP.md), `token/pls-mint` / B9).
 - **GPU producer.** `wgpu`/`juliacall` are not installable here
   ([`DEPENDENCY_READINESS.md`](DEPENDENCY_READINESS.md)); the proof model is proven
   CPU-deterministic first and GPU is a later producer plugin kept off the
@@ -126,8 +143,9 @@ value than 51% attacks).
 | Escrow settle-on-verify | `pouw/escrow.py` | `tests/property/test_pouw.py` | ✅ |
 | Tolerance digest | `pouw/digest.py` | `tests/property/test_pouw_determinism.py` | ✅ #24 |
 | Commit-before-sample | `pouw/challenge.py` | `tests/property/test_pouw_determinism.py` | ✅ #24 |
+| Demand-gated bounded mint + anti-replay | `token/mint.py` | `tests/property/test_token_mint.py` | ✅ #17 |
 | Dispute window | `pouw/dispute.py` | _planned_ | 📐 Sprint 2 |
 | k-of-n quorum | `pouw/quorum.py` | _planned_ | 📐 Sprint 2 |
 | Collateral / winning-ticket | `pouw/escrow.py` (ext) | _planned_ | 📐 Sprint 2 |
 | Synaptic compile as job class | `pouw/job.py` (ext) | _planned_ | 📐 Sprint 3 |
-| PLS mint policy | `token/` | _planned_ | 📐 Sprint 3 |
+| Per-epoch mint cap + access payment | `token/` (ext) | _planned_ | 📐 Sprint 3 |

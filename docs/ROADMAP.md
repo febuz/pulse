@@ -16,9 +16,24 @@ PR per increment, off the current `main`, in a disjoint lane.
 | L2 p2p | `p2p/{node,wire}.py` | ✅ stdlib-`asyncio` MVP |
 | L3 fabric | `fabric/{web,items,feed,attest,spatial}.py` | ✅ signed feed + attestation |
 | L4 pouw | `pouw/{job,escrow,digest,challenge}.py` | 🟡 determinism foundations done; economics next |
-| L5 looms | `looms/` | 🟡 partial |
-| L6 token | `token/` | ❌ PLS mint not started |
+| L5 looms | `looms/` | 🟡 chemistry + supply-chain shipped; more partial |
+| L6 token | `token/mint.py` | 🟡 demand-gated bounded mint shipped (#17); per-epoch cap + access payment pending |
+| app | `app/cli.py` | ✅ `knitweb` CLI + node daemon (#19) |
+| store | `store.py` | ✅ durable node persistence (#18) |
 | anchor | `anchor/` | ❌ not started |
+
+## Merged MVP milestones (parallel track)
+
+Alongside the sprint plan below, an MVP integration track landed end-to-end on
+`main` (each squash-merged, author-reported green; re-run the suite locally as the
+repo has no CI):
+
+| PR | Milestone | Lands |
+|---|---|---|
+| [#17](https://github.com/febuz/pulse/pull/17) | M4 token | `token/mint.py` — demand-gated bounded PLS mint |
+| [#18](https://github.com/febuz/pulse/pull/18) | M3 store | `store.py` — durable canonical-CBOR persistence |
+| [#19](https://github.com/febuz/pulse/pull/19) | M2 app | `app/cli.py` — runnable node + wallet CLI |
+| [#20](https://github.com/febuz/pulse/pull/20) | M5 demo | `examples/mvp_demo.py` — end-to-end acceptance |
 
 ## Consolidated backlog
 
@@ -31,8 +46,8 @@ PR per increment, off the current `main`, in a disjoint lane.
 | B5 | k-of-n verifier quorum (+ declared-vs-detected asymmetry) | CCS §1 | 2 | `pouw/verifier-quorum` |
 | B6 | Collateral sizing + winning-ticket/streaming escrow | CCS §1 | 2 | `pouw/escrow-economics` |
 | B7 | Register synaptic compile/serve as a PoUW job class | SYNAPTIC_WEB | 3 | `pouw/synaptic-job-class` |
-| B8 | PLS mint: demand-gated, per-epoch bounded, `mintable=false`/`premine=0` | tokens note | 3 | `token/pls-mint` |
-| B9 | Wire PLS access payment to bundle delivery (1 pulse/bundle) | SYNAPTIC_WEB | 3 | `token/pls-mint` |
+| B8 | PLS mint: demand-gated, bounded, no-premine | tokens note | — | core shipped [#17](https://github.com/febuz/pulse/pull/17) ✅ |
+| B9 | Per-epoch mint cap + 1-pulse/bundle access payment | SYNAPTIC_WEB | 3 | `token/pls-mint` |
 | B10 | Partial-range Merkle proofs over the wire (Hypercore-style) | CCS §2 | 3 | `p2p/partial-range-merkle` |
 | B11 | py-libp2p / DHT / pubsub optional backend | CCS §2, DEP | later | _gated on sanctioned install_ |
 
@@ -50,7 +65,7 @@ B2 (chainID) was found already implemented and dropped from the sprint. See
 
 ## Sprint 2 — PoUW verification economics (the DePIN heart)
 
-Builds on #24's challenge verdict. Spec: [`PROOF_OF_USEFUL_WORK.md`](PROOF_OF_USEFUL_WORK.md) §4.3.
+Builds on #24's challenge verdict. Spec: [`PROOF_OF_USEFUL_WORK.md`](PROOF_OF_USEFUL_WORK.md) §4.4.
 
 | PR | Lane | Scope | Depends on |
 |---|---|---|---|
@@ -63,7 +78,7 @@ Builds on #24's challenge verdict. Spec: [`PROOF_OF_USEFUL_WORK.md`](PROOF_OF_US
 | PR | Lane | Scope | Depends on |
 |---|---|---|---|
 | `pouw/synaptic-job-class` | pouw | register synaptic compile/serve as a PoUW job class (re-execute deterministic compile) | Sprint 2 |
-| `token/pls-mint` | token | demand-gated, per-epoch-bounded PLS mint; wire 1-pulse-per-bundle access payment | Sprint 2 |
+| `token/pls-mint` | token | per-Pulse-epoch mint bounding + wire 1-pulse-per-bundle access payment (core mint shipped in #17) | #17, Sprint 2 |
 | `p2p/partial-range-merkle` | feed | partial-range Merkle proofs over the wire; DHT/pubsub stays an optional backend | — |
 
 ## Conventions
