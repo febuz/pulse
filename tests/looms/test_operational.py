@@ -1,0 +1,185 @@
+"""Proofs for the operational domain loom: only feasible allocations are signable.
+
+An allocation that over-subscribes any resource (claimed > available capacity) must be
+refused before signing. A feasible allocation becomes a signed, content-addressed,
+order-independent record that weaves into the Web and verifies under the actor's key.
+"""
+
+import pytest
+
+from knitweb.core import canonical, crypto
+from knitweb.fabric.attest import verify_record
+from knitweb.fabric.web import Web
+from knitweb.looms.operational import (
+    AllocationEvent,
+    Claim,
+    OperationalLoom,
+    Resource,
+    capacity_balance,
+    is_feasible,
+)
+
+
+def _gpu_pool() -> Resource:
+    return Resource("gpu-pool", capacity=8)
+
+
+def _cpu_pool() -> Resource:
+    return Resource("cpu-pool", capacity=16)
+
+
+def _feasible_event(actor: str) -> AllocationEvent:
+    # Allocate 3 GPU slots to task-A and 5 to task-B (3+5=8, exactly at capacity)
+    return AllocationEvent(
+        resources=(_gpu_pool(),),
+        claims=(
+            Claim("gpu-pool", "task-A", 3),
+            Claim("gpu-pool", "task-B", 5),
+        ),
+        actor=actor,
+    )
+
+
+@pytest.mark.loom
+def test_feasible_allocation_passes_checks():
+    priv, _ = crypto.generate_keypair()
+    loom = OperationalLoom(priv)
+    event = _feasible_event(loom.address)
+    bal = capacity_balance(event)
+    assert bal == {"gpu-pool": 0}   # exactly at capacity
+    assert is_feasible(event)
+
+
+@pytest.mark.loom
+def test_emit_signs_feasible_event_and_is_verifiable():
+    priv, _ = crypto.generate_keypair()
+    loom = OperationalLoom(priv)
+    event = _feasible_event(loom.address)
+    att = loom.emit(event)
+    assert att.record["feasible"] is True
+    assert att.verify(author_field="actor")
+    assert verify_record(att.record, att.author_pub, att.sig, "actor")
+    # signed record round-trips through canonical CBOR
+    assert canonical.decode(canonical.encode(att.record)) == att.record
+
+
+@pytest.mark.loom
+def test_over_subscribed_allocation_is_refused():
+    # 5 + 5 = 10 > 8 capacity
+    priv, _ = crypto.generate_keypair()
+    loom = OperationalLoom(priv)
+    bad = AllocationEvent(
+        resources=(_gpu_pool(),),
+        claims=(Claim("gpu-pool", "task-A", 5), Claim("gpu-pool", "task-B", 5)),
+        actor=loom.address,
+    )
+    assert capacity_balance(bad) == {"gpu-pool": -2}
+    assert not is_feasible(bad)
+    with pytest.raises(ValueError, match="capacity exceeded"):
+        loom.emit(bad)
+
+
+@pytest.mark.loom
+def test_multi_resource_feasible_allocation():
+    priv, _ = crypto.generate_keypair()
+    loom = OperationalLoom(priv)
+    event = AllocationEvent(
+        resources=(_gpu_pool(), _cpu_pool()),
+        claims=(
+            Claim("gpu-pool", "model-inference", 4),
+            Claim("cpu-pool", "data-prep", 12),
+        ),
+        actor=loom.address,
+    )
+    assert is_feasible(event)
+    att = loom.emit(event)
+    assert att.verify(author_field="actor")
+
+
+@pytest.mark.loom
+def test_multi_resource_partially_over_subscribed_is_refused():
+    priv, _ = crypto.generate_keypair()
+    loom = OperationalLoom(priv)
+    # cpu-pool is fine (12 <= 16) but gpu-pool is over (10 > 8)
+    bad = AllocationEvent(
+        resources=(_gpu_pool(), _cpu_pool()),
+        claims=(
+            Claim("gpu-pool", "job-1", 10),
+            Claim("cpu-pool", "job-2", 12),
+        ),
+        actor=loom.address,
+    )
+    assert not is_feasible(bad)
+    with pytest.raises(ValueError, match="capacity exceeded"):
+        loom.emit(bad)
+
+
+@pytest.mark.loom
+def test_claim_order_does_not_change_content_id():
+    priv, _ = crypto.generate_keypair()
+    loom = OperationalLoom(priv)
+    e1 = AllocationEvent(
+        resources=(_gpu_pool(),),
+        claims=(Claim("gpu-pool", "task-A", 3), Claim("gpu-pool", "task-B", 5)),
+        actor=loom.address,
+    )
+    e2 = AllocationEvent(
+        resources=(_gpu_pool(),),
+        claims=(Claim("gpu-pool", "task-B", 5), Claim("gpu-pool", "task-A", 3)),
+        actor=loom.address,
+    )
+    assert loom.to_record(e1) == loom.to_record(e2)
+    assert canonical.cid(loom.to_record(e1)) == canonical.cid(loom.to_record(e2))
+
+
+@pytest.mark.loom
+def test_weave_into_web_is_content_addressed_and_idempotent():
+    priv, _ = crypto.generate_keypair()
+    loom = OperationalLoom(priv)
+    web = Web()
+    event = _feasible_event(loom.address)
+    cid, att = loom.weave(event, web)
+    assert cid in web.nodes
+    assert web.nodes[cid] == att.record
+    assert cid == canonical.cid(att.record)
+    cid2, _ = loom.weave(event, web)
+    assert cid2 == cid  # idempotent
+
+
+@pytest.mark.loom
+def test_tampered_signed_event_fails_verification():
+    priv, _ = crypto.generate_keypair()
+    loom = OperationalLoom(priv)
+    att = loom.emit(_feasible_event(loom.address))
+    forged = dict(att.record, feasible=False)
+    assert not verify_record(forged, att.author_pub, att.sig, "actor")
+
+
+@pytest.mark.loom
+def test_claim_references_undeclared_resource_is_rejected():
+    priv, _ = crypto.generate_keypair()
+    loom = OperationalLoom(priv)
+    with pytest.raises(ValueError, match="undeclared"):
+        AllocationEvent(
+            resources=(_gpu_pool(),),
+            claims=(Claim("cpu-pool", "task-A", 1),),  # "cpu-pool" not in resources
+            actor=loom.address,
+        )
+
+
+@pytest.mark.loom
+def test_zero_capacity_resource_is_rejected():
+    with pytest.raises(ValueError, match="positive"):
+        Resource("empty", capacity=0)
+
+
+@pytest.mark.loom
+def test_zero_unit_claim_is_rejected():
+    with pytest.raises(ValueError, match="positive"):
+        Claim("gpu-pool", "task-A", 0)
+
+
+@pytest.mark.loom
+def test_float_capacity_is_rejected():
+    with pytest.raises(TypeError, match="int"):
+        Resource("gpu-pool", capacity=4.5)  # type: ignore[arg-type]
