@@ -1,7 +1,7 @@
 """Blob — account balance state (one of the seven core primitives).
 
 A Blob is the mutable balance state of an account: a map of token symbol to an
-**integer** amount (FBR-wei), plus a monotonic nonce that prevents replay. All
+**integer** amount (PLS-wei), plus a monotonic nonce that prevents replay. All
 balance arithmetic is integer and total-preserving; the Blob never holds floats.
 
 Blobs are plain helpers here — the canonical, content-addressed, chained

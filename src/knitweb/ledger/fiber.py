@@ -52,9 +52,9 @@ class Fiber:
 def genesis_fiber(owner: str, balances: dict[str, int] | None = None) -> Fiber:
     """Create the seq-0 Fiber for ``owner``.
 
-    For the credibly-neutral FBR base layer, genesis balances are empty
+    For the credibly-neutral PLS base layer, genesis balances are empty
     (``premine=0``). A non-empty ``balances`` is permitted only for test fixtures
-    and for explicit, transparent allocations (never for the native FBR premine).
+    and for explicit, transparent allocations (never for the native PLS premine).
     """
     return Fiber(
         owner=owner,

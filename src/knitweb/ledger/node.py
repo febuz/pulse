@@ -1,4 +1,4 @@
-"""FBRNode — a single account that owns a keypair, a Blob, and a Braid.
+"""AccountNode — a single account that owns a keypair, a Blob, and a Braid.
 
 This ties the ledger primitives together for local (offline) settlement. A node
 proposes and signs Knits as a sender, accepts and signs them as a receiver, and
@@ -15,10 +15,10 @@ from .braid import Braid
 from .fiber import genesis_fiber
 from .knit import Knit, build, sign_from, sign_to
 
-__all__ = ["FBRNode"]
+__all__ = ["AccountNode"]
 
 
-class FBRNode:
+class AccountNode:
     def __init__(
         self,
         priv: str | None = None,
@@ -38,7 +38,7 @@ class FBRNode:
     def nonce(self) -> int:
         return self.braid.head.nonce
 
-    def balance(self, symbol: str = "FBR") -> int:
+    def balance(self, symbol: str = "PLS") -> int:
         return self.braid.head.balance(symbol)
 
     # -- the two-party transfer handshake ---------------------------------
@@ -69,7 +69,7 @@ class FBRNode:
     # -- convenience: full transfer between two local nodes ---------------
 
     def transfer_to(
-        self, receiver: "FBRNode", symbol: str, amount: int, timestamp: int
+        self, receiver: "AccountNode", symbol: str, amount: int, timestamp: int
     ) -> Knit:
         """Complete a transfer to ``receiver`` (both nodes local). Returns the Knit."""
         proposed = self.propose(receiver.pub, symbol, amount, timestamp)
