@@ -1,6 +1,9 @@
 # Fiber & the Synaptic Web
 
-**Coin:** Fiber · **Token:** FBR · **Fabric:** the Knitweb (Web · Loom · Knit · Pulse)
+**Coin:** Fiber · **Pay-token:** PLS (pulses) · **Fabric:** the Knitweb (Web · Loom · Knit · Pulse)
+
+> Token note: you pay in **PLS** ("pulses") for activity — not for fibers or knits.
+> FBR is reserved (a possible separate regional token later).
 
 > Vocabulary rule: this project is a **web**, never a "network"/"net". A network
 > is static nodes; a *web* — like a brain — lives through the **pulses** between
@@ -48,7 +51,7 @@ A tiny, self-describing binary format — **data, not code**, but it *is* the
 "relation matrix" an edge model consumes:
 
 ```
-magic "FBR1" | version | asset_cid | originator
+magic "PLS1" | version | asset_cid | originator
 dictionary (lexicographically sorted, interned terms, LEB128 varints)
 relations[]  (subject_idx, predicate_idx, object_idx, source_type_byte, weight)
 ```
@@ -66,17 +69,17 @@ guarantees):
   URI repetition (a 4-source toy is ~24% smaller than its JSON; large graphs with
   shared URIs compress far more). We report real ratios, never inflated ones.
 
-## Where FBR (the token) fits — the economic loop
+## Where PLS (the pay-token) fits — the economic loop
 
 This keeps the token an **access right**, not a speculation (no premine; demand-
-gated mint):
+gated mint). You pay in **pulses (PLS)** for activity — not for fibers or knits:
 
 1. A device (AR glasses / IoT) requests a verified relation bundle for what it is
    looking at.
 2. A **spider** resolves the OriginTrail asset, compiles + signs the bytecode, and
    serves it — *useful work*, verified by sampled re-execution.
-3. The requester pays **FBR** for the access; the spider earns bounded FBR for the
-   work. Value tracks usage (Principle 23), not hype.
+3. The requester pays **PLS** for the access (one pulse per served bundle); the
+   spider earns bounded PLS for the work. Value tracks usage (Principle 23), not hype.
 
 ## Szabo framing — cryptographic-legal computational rigor
 
@@ -95,4 +98,4 @@ gated mint):
 `knitweb.synaptic.bytecode` and `.origintrail` are implemented and property-tested
 (determinism, round-trip, provenance signing, OriginTrail resolution). Next:
 register synaptic compile/serve as a proof-of-useful-work job class (Phase 4) and
-wire FBR access payment to bundle delivery.
+wire PLS access payment to bundle delivery.

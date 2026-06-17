@@ -37,7 +37,7 @@ __all__ = [
     "BytecodeError",
 ]
 
-MAGIC = b"FBR1"
+MAGIC = b"PLS1"   # Pulse synaptic bytecode, format v1
 VERSION = 1
 
 # Source-type tags (one byte each). Covers Western, Chinese, and Russian media
