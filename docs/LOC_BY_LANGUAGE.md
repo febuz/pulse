@@ -7,9 +7,9 @@ Regenerate with: `python3 tools/loc_report.py`
 
 | Language | Files | Lines | Category |
 |---|---:|---:|---|
-| Python | 61 | 5528 | code |
+| Python | 61 | 5564 | code |
 | Markdown (docs) | 11 | 1439 | config/docs |
 | TOML (config) | 1 | 43 | config/docs |
 
-**Code total:** 61 files, 5528 lines.
-**All tracked files:** 73 files, 7010 lines.
+**Code total:** 61 files, 5564 lines.
+**All tracked files:** 73 files, 7046 lines.

@@ -102,6 +102,7 @@ class Treasury:
         self.policy = policy or EmissionPolicy()
         self.total_minted = 0
         self.issuances: list[Issuance] = []
+        self._rewarded_digests: set[str] = set()  # work already rewarded (anti-replay)
 
     def reward_verified_work(
         self,
@@ -116,20 +117,27 @@ class Treasury:
 
         1. **Gate** on sampled re-execution (`pouw.job.verify`). Fraud ⇒ None,
            nothing settles, nothing mints.
-        2. **Settle** the consumer's ``escrow`` to the worker (a normal Knit
+        2. **Anti-replay**: a given piece of work (its proof digest) is rewarded at
+           most once. Without this a colluding consumer+worker could resubmit the
+           same proof to mint unboundedly (escrow merely cycles between them) — the
+           "no infinite mint" soundness requirement. A duplicate ⇒ None, no-op.
+        3. **Settle** the consumer's ``escrow`` to the worker (a normal Knit
            transfer — conservation-preserving, no issuance).
-        3. **Mint** the bounded reward to the worker as a coinbase, record it.
+        4. **Mint** the bounded reward to the worker as a coinbase, record it.
         """
         if escrow < 0:
             raise ValueError("escrow must be non-negative")
         if not verify(job, proof):
             return None
+        if proof.digest in self._rewarded_digests:
+            return None  # this work was already rewarded — no replay, no double-mint
+        self._rewarded_digests.add(proof.digest)
 
-        # 2. settle escrow consumer -> worker (conservation-preserving)
+        # 3. settle escrow consumer -> worker (conservation-preserving)
         if escrow > 0:
             consumer.transfer_to(worker, NATIVE, escrow, timestamp)
 
-        # 3. bounded mint
+        # 4. bounded mint
         amount = self.policy.reward(escrow, self.total_minted)
         issuance = Issuance(
             worker=worker.address,
