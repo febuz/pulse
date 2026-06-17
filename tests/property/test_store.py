@@ -84,6 +84,22 @@ def test_feed_round_trips_after_fork_bump(tmp_path):
 
 
 @pytest.mark.property
+def test_tampered_feed_snapshot_fails_on_load(tmp_path):
+    priv, _ = crypto.generate_keypair()
+    feed = Feed(priv)
+    feed.append({"i": 0})
+    feed.append({"i": 1})
+    p = str(tmp_path / "feed.cbor")
+    store.save_feed(feed, p)
+    from knitweb.core import canonical
+    rec = canonical.decode(open(p, "rb").read())
+    rec["entries"][-1] = {"i": 999}
+    open(p, "wb").write(canonical.encode(rec))
+    with pytest.raises(store.StoreError, match="feed snapshot head"):
+        store.load_feed(priv, p)
+
+
+@pytest.mark.property
 def test_tampered_braid_snapshot_fails_on_load(tmp_path):
     a, _ = _funded_pair()
     p = str(tmp_path / "braid.cbor")
@@ -98,6 +114,43 @@ def test_tampered_braid_snapshot_fails_on_load(tmp_path):
 
 
 @pytest.mark.property
+def test_tampered_tail_fiber_snapshot_fails_on_load(tmp_path):
+    a, _ = _funded_pair()
+    p = str(tmp_path / "braid.cbor")
+    store.save_braid(a.braid, p)
+    # The last Fiber has no child link to expose tampering, so the snapshot stores
+    # the expected head CID and load_braid checks it.
+    from knitweb.core import canonical
+    rec = canonical.decode(open(p, "rb").read())
+    rec["fibers"][-1]["balances"] = {"PLS": 999999}
+    open(p, "wb").write(canonical.encode(rec))
+    with pytest.raises(store.StoreError, match="head CID"):
+        store.load_braid(p)
+
+
+@pytest.mark.property
+def test_double_spend_guard_survives_restart(tmp_path):
+    # A p2p node's in-memory nonce cache is lost on restart, so the persisted braid
+    # must carry the double-spend protection: load_braid rebuilds the spent-knit set
+    # from the saved Fibers, so replaying an already-applied knit after a restart is
+    # still rejected.
+    a = AccountNode(genesis_balances={"PLS": 100})
+    b = AccountNode()
+    knit = b.accept(a.propose(b.pub, "PLS", 30, timestamp=1))
+    a.apply_sent(knit)
+    b.apply_received(knit)
+    p = str(tmp_path / "b.cbor")
+    store.save_node(b, p)
+
+    b2 = store.load_node(p)
+    assert b2.balance("PLS") == 30
+    from knitweb.ledger.braid import BraidError
+    with pytest.raises(BraidError):       # replay of the same knit after restart
+        b2.apply_received(knit)
+    assert b2.balance("PLS") == 30        # state unchanged
+
+
+@pytest.mark.property
 def test_wrong_kind_and_owner_mismatch_rejected(tmp_path):
     p = str(tmp_path / "x.cbor")
     from knitweb.core import canonical
@@ -105,4 +158,18 @@ def test_wrong_kind_and_owner_mismatch_rejected(tmp_path):
     with pytest.raises(store.StoreError):
         store.load_braid(p)
     with pytest.raises(store.StoreError):
+        store.load_node(p)
+
+
+@pytest.mark.property
+def test_node_snapshot_rejects_key_mismatch(tmp_path):
+    a, _ = _funded_pair()
+    p = str(tmp_path / "node.cbor")
+    store.save_node(a, p)
+    from knitweb.core import canonical
+    rec = canonical.decode(open(p, "rb").read())
+    other_priv, _ = crypto.generate_keypair()
+    rec["priv"] = other_priv
+    open(p, "wb").write(canonical.encode(rec))
+    with pytest.raises(store.StoreError, match="public key"):
         store.load_node(p)
