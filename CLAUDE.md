@@ -33,6 +33,11 @@ anchoring/bridging to the major blockchains.
   · Fiber** — never "network"/"net".
 - **No founder premine.** Founders earn PLS like anyone and monetize only via side
   projects and the first user-issued tokens on the fabric.
+- **Essential features are research-gated.** Before implementing a backlog item
+  classified *essential* (see `docs/ROADMAP.md`), a competing-environment research
+  report in `docs/research/` must conclude **build vs adopt vs bridge** — so we
+  don't build what already exists or isn't needed. `CRYPTO_CORPUS_STUDY.md` is the
+  report for the PoUW line; `research/09-finance-settlement.md` for finance.
 - **Proofs-first.** Every phase ends with a runnable test + a commit + an
   `experiments/ledger.py` record (MLflow mirror best-effort). One pipeline; reuse
   files; delete superseded scripts.
@@ -53,10 +58,11 @@ plugins, never in core.
 
 - `docs/SYNAPTIC_WEB.md` — Fiber, the Synaptic Web, the edge bytecode compiler,
   and the OriginTrail symbiosis (the authoritative token note lives here too).
-- `docs/research/08-knitweb.md` — the **KnitWeb concept paper**: the coined word
-  *knitweb* (beside blockchain and hashgraph), the pulses/draft compute layer over
-  donated GPU/RAM, the blockchain + hashgraph + knitweb cooperation for the MOLGANG
-  P2P game, and the OriginTrail interlock.
+- `docs/PROOF_OF_USEFUL_WORK.md` — the L4 economic-security model (threat table,
+  dispute window, k-of-n quorum, the integer settlement boundary).
+- `docs/ROADMAP.md` — the single live backlog/sprint tracker + the research gate.
+- `docs/research/` — competing-environment reports gating essential features
+  (`08-knitweb.md` concept paper; `09-finance-settlement.md` finance prior-art).
 - The per-language LOC record is generated on demand by `tools/loc_report.py`
   (`docs/LOC_BY_LANGUAGE.md`, gitignored — not version-controlled).
 
