@@ -21,7 +21,7 @@ closes, so a paid worker can never withdraw inside a window where a dispute coul
 still land. EigenLayer's "withdrawal delay must exceed the dispute window", in
 miniature.
 
-Everything here is integer beats and integer µPLS — no floats touch the path. This
+Everything here is integer beats and integer PLS-wei — no floats touch the path. This
 layer decides *timing and slashing*; the actual PLS movement is a conservation-
 preserving Knit/escrow transfer (``pouw/escrow.py``) the caller drives on the verdict.
 Declared-vs-detected fault asymmetry and the k-of-n verifier quorum are the next
@@ -58,8 +58,8 @@ class Submission:
     sid: str
     worker: str
     consumer: str
-    escrow: int           # µPLS paid to the worker on a clean release
-    collateral: int       # µPLS the worker staked; slashed (burned) on detected fraud
+    escrow: int           # PLS-wei paid to the worker on a clean release
+    collateral: int       # PLS-wei the worker staked; slashed (burned) on detected fraud
     submit_beat: int
     status: str = "pending"          # "pending" | "slashed" | "released"
     resolved_beat: Optional[int] = None
@@ -68,7 +68,7 @@ class Submission:
 class DisputeWindowLedger:
     """Tracks submissions and enforces dispute-then-release timing + slashing.
 
-    All amounts are integer µPLS; all times are integer beats. The ledger records the
+    All amounts are integer PLS-wei; all times are integer beats. The ledger records the
     settlement *decisions* and their integer effects (paid / refunded / slashed /
     returned) so a caller can drive the matching Knit transfers, and so the outcome is
     auditable and conservation-checkable.
@@ -90,7 +90,7 @@ class DisputeWindowLedger:
         self.dispute_window = dispute_window
         self.release_delay = release_delay
         self._subs: Dict[str, Submission] = {}
-        # Audit totals (µPLS)
+        # Audit totals (PLS-wei)
         self.escrow_paid = 0        # released to workers
         self.escrow_refunded = 0    # returned to consumers on a slash
         self.collateral_slashed = 0  # burned on detected fraud
