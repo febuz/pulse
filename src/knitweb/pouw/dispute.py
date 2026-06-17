@@ -30,7 +30,7 @@ increment (``pouw/verifier-quorum``); here a dispute is a single detected mismat
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, List, Optional, Tuple
 
 __all__ = [
@@ -124,7 +124,7 @@ class DisputeWindowLedger:
             submit_beat=submit_beat,
         )
         self._subs[sid] = sub
-        return sub
+        return replace(sub)
 
     # ── Timing ────────────────────────────────────────────────────────────
 
@@ -193,10 +193,11 @@ class DisputeWindowLedger:
         return sub
 
     def get(self, sid: str) -> Optional[Submission]:
-        return self._subs.get(sid)
+        sub = self._subs.get(sid)
+        return replace(sub) if sub is not None else None
 
     def pending(self) -> List[Submission]:
-        return [s for s in self._subs.values() if s.status == "pending"]
+        return [replace(s) for s in self._subs.values() if s.status == "pending"]
 
     def stats(self) -> dict:
         return {

@@ -149,6 +149,37 @@ def test_double_release_and_double_dispute_are_refused():
     assert not led.dispute("b", beat=2)[0]
 
 
+@pytest.mark.property
+def test_returned_submission_cannot_mutate_ledger_state():
+    led = _ledger(dispute_window=5, release_delay=8)
+    sub = _submit(led, escrow=10, collateral=20, submit_beat=100)
+    sub.status = "released"
+    sub.escrow = 999
+    ok, reason = led.release("s1", beat=108)
+    assert ok and reason == "released"
+    assert led.get("s1").status == "released"
+    assert led.escrow_paid == 10
+    assert led.collateral_returned == 20
+
+
+@pytest.mark.property
+def test_get_and_pending_return_snapshots():
+    led = _ledger(dispute_window=5, release_delay=8)
+    _submit(led, escrow=10, collateral=20, submit_beat=100)
+    got = led.get("s1")
+    assert got is not None
+    got.status = "released"
+    got.escrow = 999
+    pending = led.pending()
+    assert len(pending) == 1
+    pending[0].status = "released"
+    pending[0].collateral = 999
+    ok, reason = led.dispute("s1", beat=105)
+    assert ok and reason == "slashed"
+    assert led.escrow_refunded == 10
+    assert led.collateral_slashed == 20
+
+
 # ── 6. Validation ──────────────────────────────────────────────────────
 
 @pytest.mark.property
