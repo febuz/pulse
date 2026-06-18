@@ -5,6 +5,8 @@ const required = [
   "docs/vision.md",
   "docs/architecture.md",
   "docs/worlds.md",
+  "docs/migration/knitweb-legacy-import.md",
+  "legacy/README.md",
   "specs/address.md",
   "specs/peer-session.md",
   "specs/sync.md",
@@ -27,4 +29,3 @@ if (missing.length > 0) {
 }
 
 console.log("Pulse repo shape ok");
-

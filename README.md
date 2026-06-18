@@ -22,6 +22,7 @@ pulse/
     provider-console/   dashboard for hosts and providers
   docs/
     architecture.md
+    migration/
     vision.md
     worlds.md
     provider-hosts.md
@@ -29,6 +30,8 @@ pulse/
     hello-peer/
   hosts/
     provider/
+  legacy/
+    weaving-app/
   packages/
     address/
     core/
@@ -72,6 +75,7 @@ pulse/
 4. Build the browser app for users.
 5. Build the provider console for hosts.
 6. Validate world profiles: Earth, Moon, Mars.
+7. Extract the useful interaction patterns from the legacy Knitweb weaving app.
 
 ## Design Rules
 
