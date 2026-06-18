@@ -36,7 +36,16 @@ The crypto is built and operable end to end. Highlights:
 - `pouw/job.py` issuance note updated: mint is shipped in `token/mint.py` (demand-gated,
   bounded), not "deferred"; this module only transfers escrow.
 
-### Notes
+### Consistency pass — residual items closed
+- The `### Net` heading in `docs/IDENTITY_AND_ACCOUNTS.md` (read against the "never
+  net/network" rule) is now `### Bottom line` (#65).
+- Sweep-coverage completed for the five docs the original pass skipped
+  (`CRYPTO_CORPUS_STUDY`, `IDENTITY_AND_ACCOUNTS`, `COLLECTIVE_INTELLIGENCE`,
+  `MULTI_AGENT_WORKFLOW`, `DEPENDENCY_READINESS`): checked against the PLS/Fiber/web/FBR
+  + premine vocabulary gate — **no violations**. The remaining `network`/`net`/`FBR`
+  hits are all legitimate (external-network comparison, the economics term, the rule
+  statement, the `network` id field, branch names); these allowed uses are now spelled
+  out in `CLAUDE.md` so future sweeps don't re-flag them.
 - Repository home moving to `github.com/knitweb/pulse` (org `knitweb`, package `knitweb`);
   the `pulse` repo name is retained.
 - The active token is **PLS**; the ticker **FBR is reserved and not active**.
