@@ -1,0 +1,34 @@
+name: "✨ Feature request"
+description: "Propose a capability or improvement"
+labels: ["enhancement", "triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What are you trying to do, and why is it hard today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should happen? Sketch the API/behaviour if you can.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options: [core, ledger, p2p, fabric, pouw, knitwebs, token, anchor, synaptic, edge, sdk, app/CLI, docs, other]
+    validations:
+      required: true
+  - type: checkboxes
+    id: invariants
+    attributes:
+      label: Does it respect the non-negotiables?
+      description: See CONTRIBUTING.md.
+      options:
+        - label: It does not change canonical/signed-record bytes (or I flag that it must, and why).
+        - label: No floats on the canonical/hashing path; money & state stay integers.
+        - label: Vocabulary respected (web · knitweb · knit · pulse · fiber; PLS pay-token; never "loom"/"network").

@@ -1,12 +1,31 @@
 # Knitweb
 
+**🌍 Read this in your language:**
+[Deutsch](docs/i18n/de/README.md) ·
+[Español](docs/i18n/es/README.md) ·
+[Español (rioplatense)](docs/i18n/es-AR/README.md) ·
+[Français](docs/i18n/fr/README.md) ·
+[Italiano](docs/i18n/it/README.md) ·
+[Nederlands](docs/i18n/nl/README.md) ·
+[Norsk bokmål](docs/i18n/nb/README.md) ·
+[Polski](docs/i18n/pl/README.md) ·
+[Português (PT)](docs/i18n/pt-PT/README.md) ·
+[Português (BR)](docs/i18n/pt-BR/README.md) ·
+[Suomi](docs/i18n/fi/README.md) ·
+[Svenska](docs/i18n/sv/README.md) ·
+[Türkçe](docs/i18n/tr/README.md) ·
+[Bahasa Indonesia](docs/i18n/id/README.md) ·
+[Bosanski](docs/i18n/bs/README.md) ·
+[Русский](docs/i18n/ru/README.md) ·
+[简体中文](docs/i18n/zh-CN/README.md)
+
 A peer-to-peer crypto **web** whose pay-token is **PLS** ("pulses") and whose value
 unit of connections is counted with **Fiber**. (The ticker **FBR** is reserved for a possible later
 regional token — it is not the active token.) Knitweb is a credibly-neutral DePIN
 where p2p web-workers ("spiders") sell **verifiable GPU compute** and weave a
 knowledge + resource **fabric** — a *Synaptic Web* whose
 verified relations compile to edge-executable bytecode (see
-[`docs/SYNAPTIC_WEB.md`](docs/SYNAPTIC_WEB.md)). Vocabulary is **Web · Loom · Knit
+[`docs/SYNAPTIC_WEB.md`](docs/SYNAPTIC_WEB.md)). Vocabulary is **Web · Knitweb · Knit
 · Pulse · Fiber** — never "network"/"net". It complements
 [OriginTrail](https://github.com/origintrail)'s Decentralised Knowledge Graph and
 anchors/bridges to the major blockchains.
@@ -28,7 +47,7 @@ anchors/bridges to the major blockchains.
 ## The seven core primitives
 
 `Blob` (account balance state) · `Fiber` (content-addressed **account-state
-commitment**) · `Loom` (validation) · `Knit` (two-party transfer) · `Braid` (local
+commitment**) · `Knitweb` (validation) · `Knit` (two-party transfer) · `Braid` (local
 history) · **`Web`** (the woven global graph) · **`Pulse`** (the web's heartbeat;
 useful work is paid in **PLS**). Workers are **spiders**.
 
@@ -42,25 +61,25 @@ useful work is paid in **PLS**). Workers are **spiders**.
 | Layer | Module | Language |
 |---|---|---|
 | L0 core | crypto (secp256k1 ECDSA + SHA-256), canonical CBOR, CID | Python |
-| L1 ledger | blob / fiber / loom / knit / braid / node (integer PLS-wei balances) | Python |
+| L1 ledger | blob / fiber / knitweb / knit / braid / node (integer PLS-wei balances) | Python |
 | L2 p2p | asyncio signed-feed sync + static peers; py-libp2p/DHT optional later | Python |
 | L3 fabric | Web + items + agent / scorer / masterdata | Python |
 | L4 pouw | proof-of-useful-work, sampled re-execution | Python + Julia + WGSL |
-| L5 looms | finance / operational / supply-chain / chemistry | Python (+Julia) |
+| L5 knitwebs | finance / operational / supply-chain / chemistry | Python (+Julia) |
 | L6 token | PLS pay-token + Fiber value unit + user tokens + anchors | Python |
 
 ## Status
 
 Implemented and property-tested end to end across **L0–L6**:
 - **L0/L3** core crypto, float-free canonical CBOR + CIDv1, Pulse, Web;
-- **L1** the integer settlement ledger (blob/fiber/loom/knit/braid/node, network-id replay protection);
+- **L1** the integer settlement ledger (blob/fiber/knitweb/knit/braid/node, network-id replay protection);
 - **L2** stdlib-`asyncio` signed-feed replication, conflict quarantine, two-party Knit handshakes, and peer-exchange discovery;
 - **L4** proof-of-useful-work — sampled re-execution, commit-before-sample challenge, tolerance digests, escrow + a compute guardrail;
-- **L5** four domain looms (finance, operational, supply-chain, chemistry);
+- **L5** four domain knitwebs (finance, operational, supply-chain, chemistry);
 - **L6** the PLS token (demand-gated bounded mint), plus OriginTrail anchoring and a provenance walker over the Web.
 
 A `knitweb` CLI runs a node, pays PLS, and compiles / verifies / edge-loads signed
-bytecode; node state persists across restarts. ~250 property/interop/loom proofs green.
+bytecode; node state persists across restarts. ~250 property/interop/knitweb proofs green.
 See [`docs/`](docs/) for the language-architecture decisions and
 [`docs/research/08-knitweb.md`](docs/research/08-knitweb.md) for the KnitWeb concept
 paper (knitweb beside blockchain/hashgraph; the pulses/draft compute layer; the
@@ -77,6 +96,17 @@ python3 tools/loc_report.py                          # print the LOC record (unt
 
 Requires Python ≥ 3.12 and `cryptography`. The hash-critical canonical encoder is
 hand-rolled (zero external surface). License: Apache-2.0.
+
+## Community
+
+Knitweb is a credibly-neutral, community project — contributions are welcome.
+
+- 🤝 **[Contributing guidelines](CONTRIBUTING.md)** — setup, how we work, and the protocol non-negotiables.
+- 📜 **[Code of Conduct](CODE_OF_CONDUCT.md)** — Contributor Covenant; be kind, assume good faith.
+- 🔒 **[Security policy](SECURITY.md)** — report vulnerabilities privately (not as public issues).
+- ⚖️ **[License](LICENSE)** — Apache-2.0.
+- 🐛 **Issues** use [structured templates](.github/ISSUE_TEMPLATE/); PRs use the [PR template](.github/PULL_REQUEST_TEMPLATE.md).
+- 🌍 **Translations** of the project overview: [`docs/i18n/`](docs/i18n/).
 
 ## Repo, org & package names
 

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 🔒 Report a security vulnerability
+    url: https://github.com/knitweb/pulse/security/advisories/new
+    about: Please report security issues privately via a GitHub Security Advisory — not as a public issue. See SECURITY.md.
+  - name: 💬 Questions & discussion
+    url: https://github.com/knitweb/pulse/discussions
+    about: Ask questions, share ideas, and discuss the protocol with the community.
