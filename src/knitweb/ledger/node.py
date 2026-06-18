@@ -34,6 +34,28 @@ class AccountNode:
         self.address = crypto.address(pub)
         self.braid = Braid(genesis_fiber(pub, genesis_balances))
 
+    @classmethod
+    def from_seed(
+        cls,
+        seed: str,
+        genesis_balances: dict[str, int] | None = None,
+        network: int = MAINNET,
+    ) -> "AccountNode":
+        """A **deterministic** account derived from an arbitrary external seed/id.
+
+        The same ``seed`` always yields the same account (key + address), so an app can
+        bridge an external identity (a wallet id, a username, a device id) to a stable
+        knitweb account across sessions and machines — without storing a key. The seed is
+        domain-separated and SHA-256'd into a secp256k1 private scalar.
+
+        ``genesis_balances`` is dev/test seeding only (the native PLS layer has no premine).
+        """
+        import hashlib
+
+        priv = hashlib.sha256(f"knitweb:account:seed:{seed}".encode()).hexdigest()
+        return cls(priv=priv, pub=crypto.public_from_private(priv),
+                   genesis_balances=genesis_balances, network=network)
+
     # -- views -------------------------------------------------------------
 
     @property
