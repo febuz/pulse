@@ -1,22 +1,19 @@
-# Dependencies
-node_modules/
-.pnpm-store/
-
-# Build output
-dist/
+__pycache__/
+*.py[cod]
+*.egg-info/
 build/
-.next/
-coverage/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
 
-# Local state
-.env
-.env.*
-*.log
-*.db
-*.sqlite
+# Local experiment databases (not public-OSS artifacts)
+experiments/*.sqlite
+experiments/*.sqlite-wal
+experiments/*.sqlite-shm
+mlruns/
 
-# OS/editor
-.DS_Store
-.idea/
-.vscode/
-
+# Generated on demand, not version-controlled (run tools/loc_report.py to view)
+docs/LOC_BY_LANGUAGE.md

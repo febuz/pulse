@@ -1,0 +1,134 @@
+"""Canonical-CBOR wire helpers for the stdlib asyncio P2P transport.
+
+The Phase 3 MVP deliberately keeps the transport boring: a message is canonical
+CBOR, prefixed by a 4-byte big-endian length, then read over an asyncio stream.
+The interesting security properties stay in the feed and ledger primitives; the
+wire layer only preserves their bytes without adding a dependency.
+"""
+
+from __future__ import annotations
+
+import asyncio
+
+from ..core import canonical
+from ..fabric.feed import FeedHead
+from ..ledger.knit import Knit
+
+__all__ = [
+    "MAX_FRAME_BYTES",
+    "WireError",
+    "feed_head_to_record",
+    "feed_head_from_record",
+    "knit_to_record",
+    "knit_from_record",
+    "read_frame",
+    "write_frame",
+]
+
+MAX_FRAME_BYTES = 8 * 1024 * 1024
+
+
+class WireError(ValueError):
+    """Raised for malformed or unsafe wire data."""
+
+
+def _require_dict(value) -> dict:
+    if not isinstance(value, dict):
+        raise WireError(f"expected map, got {type(value).__name__}")
+    return value
+
+
+def _require_str(record: dict, key: str) -> str:
+    value = record.get(key)
+    if not isinstance(value, str):
+        raise WireError(f"{key} must be str")
+    return value
+
+
+def _require_int(record: dict, key: str) -> int:
+    value = record.get(key)
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise WireError(f"{key} must be int")
+    return value
+
+
+def _optional_str(record: dict, key: str) -> str | None:
+    value = record.get(key)
+    if value is None or isinstance(value, str):
+        return value
+    raise WireError(f"{key} must be str or null")
+
+
+def feed_head_to_record(head: FeedHead) -> dict:
+    """Return the canonical wire map for a signed feed head."""
+    return {
+        "feed": head.feed,
+        "root": head.root,
+        "length": head.length,
+        "fork": head.fork,
+        "sig": head.sig,
+    }
+
+
+def feed_head_from_record(record: dict) -> FeedHead:
+    """Parse a feed-head wire map."""
+    record = _require_dict(record)
+    return FeedHead(
+        feed=_require_str(record, "feed"),
+        root=_require_str(record, "root"),
+        length=_require_int(record, "length"),
+        fork=_require_int(record, "fork"),
+        sig=_require_str(record, "sig"),
+    )
+
+
+def knit_to_record(knit: Knit) -> dict:
+    """Return the canonical wire map for a Knit, including signatures."""
+    out = knit.to_record()
+    out["from_sig"] = knit.from_sig
+    out["to_sig"] = knit.to_sig
+    return out
+
+
+def knit_from_record(record: dict) -> Knit:
+    """Parse a Knit wire map."""
+    record = _require_dict(record)
+    return Knit(
+        from_pub=_require_str(record, "from"),
+        to_pub=_require_str(record, "to"),
+        symbol=_require_str(record, "symbol"),
+        amount=_require_int(record, "amount"),
+        from_nonce=_require_int(record, "from_nonce"),
+        timestamp=_require_int(record, "timestamp"),
+        network=_require_int(record, "network"),
+        from_sig=_optional_str(record, "from_sig"),
+        to_sig=_optional_str(record, "to_sig"),
+    )
+
+
+async def read_frame(reader: asyncio.StreamReader) -> dict:
+    """Read one length-prefixed canonical-CBOR message."""
+    try:
+        header = await reader.readexactly(4)
+        n = int.from_bytes(header, "big")
+        if n <= 0:
+            raise WireError("empty frame")
+        if n > MAX_FRAME_BYTES:
+            raise WireError(f"frame too large: {n} > {MAX_FRAME_BYTES}")
+        raw = await reader.readexactly(n)
+    except asyncio.IncompleteReadError as exc:
+        raise WireError("truncated frame") from exc
+    try:
+        msg = canonical.decode(raw)
+    except canonical.CanonicalError as exc:
+        raise WireError(f"non-canonical frame: {exc}") from exc
+    return _require_dict(msg)
+
+
+async def write_frame(writer: asyncio.StreamWriter, message: dict) -> None:
+    """Write one length-prefixed canonical-CBOR message."""
+    raw = canonical.encode(message)
+    if len(raw) > MAX_FRAME_BYTES:
+        raise WireError(f"frame too large: {len(raw)} > {MAX_FRAME_BYTES}")
+    writer.write(len(raw).to_bytes(4, "big") + raw)
+    await writer.drain()

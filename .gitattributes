@@ -1,6 +1,0 @@
-# Preserve historical imports without normal whitespace enforcement.
-legacy/weaving-app/** -whitespace linguist-generated=true
-
-# Treat media artifacts as binary assets.
-*.pdf binary
-*.mp4 binary

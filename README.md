@@ -1,86 +1,87 @@
-# Pulse
+# Knitweb
 
-Pulse is a peer-to-peer web for people, places, devices, and services across multiple worlds.
+A peer-to-peer crypto **web** whose pay-token is **PLS** ("pulses") and whose value
+unit of connections is counted with **Fiber**. (The ticker **FBR** is reserved for a possible later
+regional token — it is not the active token.) Knitweb is a credibly-neutral DePIN
+where p2p web-workers ("spiders") sell **verifiable GPU compute** and weave a
+knowledge + resource **fabric** — a *Synaptic Web* whose
+verified relations compile to edge-executable bytecode (see
+[`docs/SYNAPTIC_WEB.md`](docs/SYNAPTIC_WEB.md)). Vocabulary is **Web · Loom · Knit
+· Pulse · Fiber** — never "network"/"net". It complements
+[OriginTrail](https://github.com/origintrail)'s Decentralised Knowledge Graph and
+anchors/bridges to the major blockchains.
 
-It starts on Earth, but the design assumes future links to the Moon and Mars:
+## What makes it unique — and sound
 
-- local-first by default
-- useful while offline
-- tolerant of long delays
-- readable and operable by ordinary users
-- hospitable to providers that contribute storage, routing, relay, compute, or availability
+- **Resource coordination, not consensus-only.** PLS is an *access right* to real
+  hardware capacity (GPU compute first), not a speculative instrument.
+- **Spiders weave the fabric.** P2P workers crawl the Web to find funded demand,
+  perform useful work (GPU jobs, validation, curation), and earn PLS.
+- **Proof-of-Useful-Work with sampled re-execution.** A fraction of every
+  worker's proofs are independently re-run by peers; mismatches are slashed.
+- **No founder premine.** PLS genesis is `mintable=false`, `premine=0`. Founders
+  earn PLS like anyone and monetize only via side projects and the *first*
+  user-issued ERC20-like tokens on the fabric.
+- **Tiny deterministic surface.** Money and state are integers (wei-style base
+  units), encoded as float-free canonical CBOR, so every client agrees byte-for-byte.
 
-Pulse is not a platform-first system. It is a web: addresses, pages, identities, links, peers,
-replication, routing, hosting, and user agents.
+## The seven core primitives
 
-## Repository Shape
+`Blob` (account balance state) · `Fiber` (content-addressed **account-state
+commitment**) · `Loom` (validation) · `Knit` (two-party transfer) · `Braid` (local
+history) · **`Web`** (the woven global graph) · **`Pulse`** (the web's heartbeat;
+useful work is paid in **PLS**). Workers are **spiders**.
 
-```text
-pulse/
-  apps/
-    browser/            user-facing Pulse web client
-    provider-console/   dashboard for hosts and providers
-  docs/
-    architecture.md
-    migration/
-    vision.md
-    worlds.md
-    provider-hosts.md
-  examples/
-    hello-peer/
-  hosts/
-    provider/
-  legacy/
-    weaving-app/
-  packages/
-    address/
-    core/
-    identity/
-    protocol/
-    routing/
-    sdk-js/
-    storage/
-    sync/
-  peer/
-    configs/
-  services/
-    bootstrap/
-    directory/
-    relay/
-  specs/
-    address.md
-    peer-session.md
-    sync.md
-  tools/
-    cli/
-  worlds/
-    earth/
-    moon/
-    mars/
+> *Fiber* is the brand coin, but the `Fiber` **primitive** is an immutable snapshot
+> of one account's state (a link in its `Braid`) — it is never itself transferred.
+> The transferable value is an integer balance of a *symbol* (native symbol = `PLS`)
+> moved between accounts by a `Knit`.
+
+## Architecture (layers)
+
+| Layer | Module | Language |
+|---|---|---|
+| L0 core | crypto (secp256k1 ECDSA + SHA-256), canonical CBOR, CID | Python |
+| L1 ledger | blob / fiber / loom / knit / braid / node (integer PLS-wei balances) | Python |
+| L2 p2p | asyncio signed-feed sync + static peers; py-libp2p/DHT optional later | Python |
+| L3 fabric | Web + items + agent / scorer / masterdata | Python |
+| L4 pouw | proof-of-useful-work, sampled re-execution | Python + Julia + WGSL |
+| L5 looms | finance / operational / supply-chain / chemistry | Python (+Julia) |
+| L6 token | PLS pay-token + Fiber value unit + user tokens + anchors | Python |
+
+## Status
+
+Implemented and property-tested end to end across **L0–L6**:
+- **L0/L3** core crypto, float-free canonical CBOR + CIDv1, Pulse, Web;
+- **L1** the integer settlement ledger (blob/fiber/loom/knit/braid/node, network-id replay protection);
+- **L2** stdlib-`asyncio` signed-feed replication, conflict quarantine, two-party Knit handshakes, and peer-exchange discovery;
+- **L4** proof-of-useful-work — sampled re-execution, commit-before-sample challenge, tolerance digests, escrow + a compute guardrail;
+- **L5** four domain looms (finance, operational, supply-chain, chemistry);
+- **L6** the PLS token (demand-gated bounded mint), plus OriginTrail anchoring and a provenance walker over the Web.
+
+A `knitweb` CLI runs a node, pays PLS, and compiles / verifies / edge-loads signed
+bytecode; node state persists across restarts. ~250 property/interop/loom proofs green.
+See [`docs/`](docs/) for the language-architecture decisions and
+[`docs/research/08-knitweb.md`](docs/research/08-knitweb.md) for the KnitWeb concept
+paper (knitweb beside blockchain/hashgraph; the pulses/draft compute layer; the
+blockchain + hashgraph + knitweb cooperation; the OriginTrail interlock). Run
+`python3 tools/loc_report.py` for the per-language LOC record (generated on demand,
+not version-controlled).
+
+## Develop
+
+```bash
+PYTHONPATH=src python3 -m pytest tests/property -q   # fast core proofs
+python3 tools/loc_report.py                          # print the LOC record (untracked)
 ```
 
-## Roles
+Requires Python ≥ 3.12 and `cryptography`. The hash-critical canonical encoder is
+hand-rolled (zero external surface). License: Apache-2.0.
 
-- **User**: browses, publishes, follows, saves, and shares.
-- **Peer**: any device participating in Pulse.
-- **Host**: a peer that stays available and serves content for others.
-- **Provider**: an operator that offers capacity such as relay, storage, discovery, or regional presence.
-- **World profile**: operational settings for Earth, Moon, Mars, or other environments.
+## Repo, org & package names
 
-## First Milestones
-
-1. Define Pulse addresses and identity rules.
-2. Build a local peer that can publish and fetch a page.
-3. Add relay and directory services for easier peer discovery.
-4. Build the browser app for users.
-5. Build the provider console for hosts.
-6. Validate world profiles: Earth, Moon, Mars.
-7. Extract the useful interaction patterns from the legacy Knitweb weaving app.
-
-## Design Rules
-
-- The web remains usable without a central service.
-- A peer should be able to carry its own identity and content.
-- Publishing should be understandable to non-technical users.
-- Providers help the network, but users should not depend on a single provider.
-- Long-delay links are normal, not exceptional.
+The project is moving to the **`knitweb`** org as **`github.com/knitweb/pulse`** and
+installs as the **`knitweb`** package (`pip install knitweb`, `import knitweb`). The
+repo keeps the name `pulse` while the package and protocol/brand are *Knitweb*:
+*Pulse*/PLS is the pay-token, *Knitweb* is the protocol/brand. (Currently developed
+at `febuz/pulse`; history transfers to the `knitweb` org with redirects intact.)
