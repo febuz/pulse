@@ -12,6 +12,13 @@ license = { text = "Apache-2.0" }
 authors = [{ name = "febuz", email = "develuse@gmail.com" }]
 keywords = ["p2p", "crypto", "depin", "knowledge-graph", "provenance", "origintrail", "pls"]
 
+# Runtime deps deliberately minimal for the credibly-neutral core.
+# `cryptography` provides secp256k1 ECDSA + SHA-256; canonical CBOR is hand-rolled
+# (see knitweb.core.canonical) so the hash-critical path has zero external surface.
+dependencies = [
+    "cryptography>=42",
+]
+
 [project.urls]
 Homepage = "https://github.com/knitweb/pulse"
 Repository = "https://github.com/knitweb/pulse"
@@ -19,13 +26,7 @@ Documentation = "https://github.com/knitweb/pulse/tree/main/docs"
 
 [project.scripts]
 knitweb = "knitweb.app.cli:main"
-
-# Runtime deps deliberately minimal for the credibly-neutral core.
-# `cryptography` provides secp256k1 ECDSA + SHA-256; canonical CBOR is hand-rolled
-# (see knitweb.core.canonical) so the hash-critical path has zero external surface.
-dependencies = [
-    "cryptography>=42",
-]
+pulse = "knitweb.app.cli:main"
 
 [project.optional-dependencies]
 # Heavier layers, installed per role. The base ledger never needs these.

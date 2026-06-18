@@ -24,16 +24,23 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from datetime import datetime, timezone
 import json
+import os
+import re
 import time
+from urllib.error import URLError
+from urllib.request import urlopen
 
 from .. import sdk, store
+from ..core import canonical
 from ..edge.runtime import EdgeBundle
 from ..ledger.node import AccountNode
 from ..p2p.node import AsyncioP2PNode, PeerAddress
 
 __all__ = [
     "main", "cmd_wallet_new", "cmd_address", "cmd_balance", "cmd_pay", "run_node",
+    "cmd_identity_create", "cmd_page_publish", "cmd_peer_status", "cmd_host_status",
     "cmd_compile", "cmd_verify_bundle", "cmd_edge_load",
 ]
 
@@ -54,6 +61,57 @@ def _parse_addr(s: str) -> tuple[str, int]:
     if not host or not port.isdigit():
         raise ValueError(f"address must be HOST:PORT, got {s!r}")
     return host, int(port)
+
+
+def _iso_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _pulse_home() -> str:
+    return os.environ.get("PULSE_HOME", os.path.join(os.path.expanduser("~"), ".pulse"))
+
+
+def _default_identity_path() -> str:
+    return os.path.join(_pulse_home(), "identity.cbor")
+
+
+def _default_pages_path() -> str:
+    return os.path.join(_pulse_home(), "pages")
+
+
+def _identity_view(node: AccountNode, path: str, *, created: bool) -> dict:
+    return {
+        "kind": "identity",
+        "version": 1,
+        "createdAt": _iso_now() if created else None,
+        "publicKey": node.pub,
+        "address": node.address,
+        "balance": node.balance("PLS"),
+        "path": os.path.abspath(path),
+        "created": created,
+    }
+
+
+def _slugify(title: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+    return slug or "page"
+
+
+def _print_record(record: dict, as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(record, indent=2, sort_keys=True))
+        return
+    kind = record.get("kind")
+    if kind == "identity":
+        print(f"{record['address']}\nidentity: {record['path']}")
+    elif kind == "page":
+        print(f"published {record['cid']}\npage: {record['path']}")
+    elif kind == "host-status":
+        print(f"{record['address']} {record.get('listen') or 'offline'} ({record['pages']} pages)")
+    elif kind == "peer-status":
+        print(f"{record['peer']}: {record['status']}")
+    else:
+        print(json.dumps(record, indent=2, sort_keys=True))
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +139,116 @@ def cmd_address(path: str) -> tuple[str, str]:
 def cmd_balance(path: str, symbol: str = "PLS") -> int:
     """Return the wallet's integer balance for ``symbol``."""
     return store.load_node(path).balance(symbol)
+
+
+def cmd_identity_create(
+    path: str | None = None,
+    *,
+    genesis: int = 0,
+    network: int = 1,
+    force: bool = False,
+) -> dict:
+    """Create or reuse the default Pulse identity wallet.
+
+    This is the pure-Python compatibility surface for ``pulse identity create``.
+    It persists a real :class:`AccountNode` wallet but returns only public fields,
+    so subprocess callers never receive a private key on stdout.
+    """
+    out = os.path.abspath(path or _default_identity_path())
+    if os.path.exists(out) and not force:
+        return _identity_view(store.load_node(out), out, created=False)
+    node = cmd_wallet_new(out, genesis=genesis, network=network)
+    return _identity_view(node, out, created=True)
+
+
+def cmd_page_publish(
+    *,
+    title: str,
+    body: str,
+    identity_path: str | None = None,
+    out_dir: str | None = None,
+) -> dict:
+    """Publish a small local Pulse page and return its content id + path."""
+    identity = store.load_node(os.path.abspath(identity_path or _default_identity_path()))
+    published_at = _iso_now()
+    record = {
+        "kind": "page",
+        "version": 1,
+        "title": title,
+        "body": body,
+        "author": identity.address,
+        "publishedAt": published_at,
+    }
+    cid = canonical.cid(record)
+    record["cid"] = cid
+    directory = os.path.abspath(out_dir or _default_pages_path())
+    os.makedirs(directory, exist_ok=True)
+    path = os.path.join(directory, f"{_slugify(title)}-{cid[-10:]}.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(record, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    os.chmod(path, 0o600)
+    return {**record, "path": path}
+
+
+def cmd_peer_status(peer: str | None = None) -> dict:
+    """Return a best-effort status for a peer identifier or URL."""
+    peer_id = peer or "local"
+    if peer_id.startswith(("http://", "https://")):
+        try:
+            with urlopen(peer_id, timeout=3) as res:
+                return {
+                    "kind": "peer-status",
+                    "peer": peer_id,
+                    "status": "reachable",
+                    "httpStatus": res.status,
+                }
+        except URLError as exc:
+            return {
+                "kind": "peer-status",
+                "peer": peer_id,
+                "status": "unreachable",
+                "error": str(exc.reason),
+            }
+        except OSError as exc:
+            return {
+                "kind": "peer-status",
+                "peer": peer_id,
+                "status": "unreachable",
+                "error": str(exc),
+            }
+    return {
+        "kind": "peer-status",
+        "peer": peer_id,
+        "status": "unknown",
+        "note": "no peer transport configured for this identifier",
+    }
+
+
+def cmd_host_status(
+    *,
+    identity_path: str | None = None,
+    listen: str | None = None,
+    pages_dir: str | None = None,
+) -> dict:
+    """Return local host status for the Pulse CLI compatibility surface."""
+    wallet = os.path.abspath(identity_path or _default_identity_path())
+    if not os.path.exists(wallet):
+        identity = cmd_identity_create(wallet, genesis=0)
+    else:
+        identity = _identity_view(store.load_node(wallet), wallet, created=False)
+    pages_path = os.path.abspath(pages_dir or _default_pages_path())
+    pages = 0
+    if os.path.isdir(pages_path):
+        pages = len([name for name in os.listdir(pages_path) if name.endswith(".json")])
+    return {
+        "kind": "host-status",
+        "address": identity["address"],
+        "identity": wallet,
+        "listen": listen,
+        "balance": identity["balance"],
+        "pages": pages,
+    }
 
 
 async def cmd_pay(
@@ -214,6 +382,39 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="knitweb", description="Knitweb node + PLS wallet")
     sub = p.add_subparsers(dest="cmd", required=True)
 
+    identity = sub.add_parser("identity", help="manage a Pulse identity wallet")
+    identity_sub = identity.add_subparsers(dest="identity_cmd", required=True)
+    identity_create = identity_sub.add_parser("create", help="create or reuse an identity")
+    identity_create.add_argument("--out", default=None)
+    identity_create.add_argument("--genesis", type=int, default=0)
+    identity_create.add_argument("--network", type=int, default=1)
+    identity_create.add_argument("--force", action="store_true")
+    identity_create.add_argument("--json", action="store_true")
+
+    page = sub.add_parser("page", help="publish and inspect Pulse pages")
+    page_sub = page.add_subparsers(dest="page_cmd", required=True)
+    page_publish = page_sub.add_parser("publish", help="publish a local page")
+    page_publish.add_argument("--title", required=True)
+    page_publish.add_argument("--body")
+    page_publish.add_argument("--file")
+    page_publish.add_argument("--identity", default=None)
+    page_publish.add_argument("--out", default=None)
+    page_publish.add_argument("--json", action="store_true")
+
+    peer = sub.add_parser("peer", help="inspect Pulse peers")
+    peer_sub = peer.add_subparsers(dest="peer_cmd", required=True)
+    peer_status = peer_sub.add_parser("status", help="show peer reachability")
+    peer_status.add_argument("--peer", default=None)
+    peer_status.add_argument("--json", action="store_true")
+
+    host = sub.add_parser("host", help="inspect a Pulse host")
+    host_sub = host.add_subparsers(dest="host_cmd", required=True)
+    host_status = host_sub.add_parser("status", help="show local host status")
+    host_status.add_argument("--identity", default=None)
+    host_status.add_argument("--listen", default=None)
+    host_status.add_argument("--pages", default=None)
+    host_status.add_argument("--json", action="store_true")
+
     w = sub.add_parser("wallet", help="create a new persisted wallet")
     w.add_argument("--out", required=True)
     w.add_argument("--genesis", type=int, default=0, help="dev/test only: seed PLS")
@@ -256,7 +457,40 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
-    if args.cmd == "wallet":
+    if args.cmd == "identity":
+        if args.identity_cmd == "create":
+            record = cmd_identity_create(
+                args.out, genesis=args.genesis, network=args.network, force=args.force
+            )
+            _print_record(record, args.json)
+    elif args.cmd == "page":
+        if args.page_cmd == "publish":
+            if bool(args.body) == bool(args.file):
+                raise SystemExit("page publish requires exactly one of --body or --file")
+            if args.file:
+                with open(args.file, encoding="utf-8") as fh:
+                    body = fh.read()
+            else:
+                body = args.body
+            record = cmd_page_publish(
+                title=args.title,
+                body=body,
+                identity_path=args.identity,
+                out_dir=args.out,
+            )
+            _print_record(record, args.json)
+    elif args.cmd == "peer":
+        if args.peer_cmd == "status":
+            _print_record(cmd_peer_status(args.peer), args.json)
+    elif args.cmd == "host":
+        if args.host_cmd == "status":
+            record = cmd_host_status(
+                identity_path=args.identity,
+                listen=args.listen,
+                pages_dir=args.pages,
+            )
+            _print_record(record, args.json)
+    elif args.cmd == "wallet":
         node = cmd_wallet_new(args.out, genesis=args.genesis, network=args.network)
         print(f"created wallet {node.address}\n  public key: {node.pub}\n  saved to: {args.out}")
     elif args.cmd == "address":

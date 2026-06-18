@@ -6,6 +6,7 @@ stdlib-asyncio P2P node, and confirm both sides' balances are persisted and cons
 """
 
 import asyncio
+import json
 
 import pytest
 
@@ -22,6 +23,55 @@ def test_wallet_create_persists_address_and_balance(tmp_path):
     assert cli.cmd_balance(p) == 42
     # reloading is stable (same address across processes)
     assert cli.cmd_address(p)[0] == addr
+
+
+@pytest.mark.interop
+def test_pulse_identity_and_host_status_json_contract(tmp_path, capsys):
+    wallet = str(tmp_path / "identity.cbor")
+
+    assert cli.main(["identity", "create", "--out", wallet, "--genesis", "11", "--json"]) == 0
+    identity = json.loads(capsys.readouterr().out)
+    assert identity["kind"] == "identity"
+    assert identity["created"] is True
+    assert identity["balance"] == 11
+    assert identity["address"].startswith("pls1")
+    assert identity["publicKey"]
+    assert "secret" not in identity and "privateKey" not in identity and "priv" not in identity
+
+    assert cli.main([
+        "host", "status", "--identity", wallet, "--listen", "127.0.0.1:8765", "--json"
+    ]) == 0
+    status = json.loads(capsys.readouterr().out)
+    assert status == {
+        "address": identity["address"],
+        "balance": 11,
+        "identity": wallet,
+        "kind": "host-status",
+        "listen": "127.0.0.1:8765",
+        "pages": 0,
+    }
+
+
+@pytest.mark.interop
+def test_pulse_page_publish_json_contract(tmp_path, capsys):
+    wallet = str(tmp_path / "identity.cbor")
+    pages = str(tmp_path / "pages")
+    cli.cmd_identity_create(wallet, genesis=1)
+
+    assert cli.main([
+        "page", "publish",
+        "--identity", wallet,
+        "--out", pages,
+        "--title", "Hello Pulse",
+        "--body", "First page",
+        "--json",
+    ]) == 0
+    page = json.loads(capsys.readouterr().out)
+    assert page["kind"] == "page"
+    assert page["title"] == "Hello Pulse"
+    assert page["author"].startswith("pls1")
+    assert page["cid"].startswith("b")
+    assert page["path"].startswith(pages)
 
 
 @pytest.mark.interop

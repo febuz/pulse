@@ -11,6 +11,9 @@ verified relations compile to edge-executable bytecode (see
 [OriginTrail](https://github.com/origintrail)'s Decentralised Knowledge Graph and
 anchors/bridges to the major blockchains.
 
+The active implementation is pure Python. Legacy JavaScript material is archival
+only and is not the runtime path for the protocol, CLI, or Molgang integration.
+
 ## What makes it unique — and sound
 
 - **Resource coordination, not consensus-only.** PLS is an *access right* to real
@@ -45,8 +48,8 @@ useful work is paid in **PLS**). Workers are **spiders**.
 | L1 ledger | blob / fiber / loom / knit / braid / node (integer PLS-wei balances) | Python |
 | L2 p2p | asyncio signed-feed sync + static peers; py-libp2p/DHT optional later | Python |
 | L3 fabric | Web + items + agent / scorer / masterdata | Python |
-| L4 pouw | proof-of-useful-work, sampled re-execution | Python + Julia + WGSL |
-| L5 looms | finance / operational / supply-chain / chemistry | Python (+Julia) |
+| L4 pouw | proof-of-useful-work, sampled re-execution | Python |
+| L5 looms | finance / operational / supply-chain / chemistry | Python |
 | L6 token | PLS pay-token + Fiber value unit + user tokens + anchors | Python |
 
 ## Status
@@ -68,6 +71,10 @@ blockchain + hashgraph + knitweb cooperation; the OriginTrail interlock). Run
 `python3 tools/loc_report.py` for the per-language LOC record (generated on demand,
 not version-controlled).
 
+Feature descriptions are tracked in [`docs/FEATURES.md`](docs/FEATURES.md).
+Hard engineering requirements are tracked in
+[`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md).
+
 ## Develop
 
 ```bash
@@ -80,8 +87,7 @@ hand-rolled (zero external surface). License: Apache-2.0.
 
 ## Repo, org & package names
 
-The project is moving to the **`knitweb`** org as **`github.com/knitweb/pulse`** and
-installs as the **`knitweb`** package (`pip install knitweb`, `import knitweb`). The
-repo keeps the name `pulse` while the package and protocol/brand are *Knitweb*:
-*Pulse*/PLS is the pay-token, *Knitweb* is the protocol/brand. (Currently developed
-at `febuz/pulse`; history transfers to the `knitweb` org with redirects intact.)
+The canonical repository is **`github.com/knitweb/pulse`** and the Python package
+is **`knitweb`** (`pip install knitweb`, `import knitweb`). The repository keeps
+the name `pulse` while the package and protocol/brand are *Knitweb*: *Pulse*/PLS
+is the pay-token, *Knitweb* is the protocol/brand.
