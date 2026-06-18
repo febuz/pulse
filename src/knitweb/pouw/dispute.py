@@ -71,7 +71,7 @@ class Submission:
     escrow: int           # PLS-wei paid to the worker on a clean release
     collateral: int       # PLS-wei the worker staked; slashed (burned) on detected fraud
     submit_beat: int
-    status: str = "pending"          # "pending" | "slashed" | "released"
+    status: str = "pending"          # "pending" | "slashed" | "released" | "refunded"
     resolved_beat: Optional[int] = None
 
 
@@ -245,6 +245,35 @@ class DisputeWindowLedger:
         self.collateral_returned += sub.collateral
         return True, "released"
 
+    # ── Refund (declared fault — honest self-report, no slash) ──────────────
+
+    def refund_declared_fault(self, sid: str, beat: int) -> Tuple[bool, str]:
+        """Settle a worker's *declared* fault: refund the consumer, return the stake, no slash.
+
+        The third settlement outcome, completing the verdict space ``quorum`` produces: a
+        ``DETECTED_FAULT`` slashes (:meth:`dispute`), a clean run releases (:meth:`release`), and a
+        worker that **honestly self-declares** it could not complete the job is refunded here —
+        the escrow returns to the consumer and the worker's collateral is returned **unslashed**
+        (you are never slashed for a fault you owned up to; see ``pouw/quorum`` DECLARED_FAULT).
+
+        Allowed while the submission is pending (a worker may own up any time before settlement).
+        On success the worker is paid nothing, the consumer is made whole, and the stake is freed.
+        Pair it with a ``DECLARED_FAULT`` verdict from :meth:`dispute_by_quorum`.
+        """
+        _require_int("beat", beat)
+        sub = self._subs.get(sid)
+        if sub is None:
+            return False, "unknown submission"
+        if sub.status != "pending":
+            return False, f"already {sub.status}"
+        if beat < sub.submit_beat:
+            return False, "refund precedes submission"
+        sub.status = "refunded"
+        sub.resolved_beat = beat
+        self.escrow_refunded += sub.escrow       # consumer made whole
+        self.collateral_returned += sub.collateral  # honest fault → stake returned, NOT slashed
+        return True, "refunded"
+
     # ── Queries ───────────────────────────────────────────────────────────
 
     def _sub(self, sid: str) -> Submission:
@@ -268,6 +297,7 @@ class DisputeWindowLedger:
             "pending": sum(1 for s in self._subs.values() if s.status == "pending"),
             "slashed": sum(1 for s in self._subs.values() if s.status == "slashed"),
             "released": sum(1 for s in self._subs.values() if s.status == "released"),
+            "refunded": sum(1 for s in self._subs.values() if s.status == "refunded"),
             "escrow_paid": self.escrow_paid,
             "escrow_refunded": self.escrow_refunded,
             "collateral_slashed": self.collateral_slashed,
