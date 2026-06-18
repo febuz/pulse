@@ -33,7 +33,10 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Dict, List, Optional, Tuple
 
+from typing import Iterable
+
 from .collateral import Margin, is_sufficiently_collateralized, payout_at_risk
+from .quorum import Outcome, Verdict, tally
 
 __all__ = [
     "DEFAULT_DISPUTE_WINDOW",
@@ -190,6 +193,34 @@ class DisputeWindowLedger:
         self.collateral_slashed += sub.collateral
         self.escrow_refunded += sub.escrow
         return True, "slashed"
+
+    def dispute_by_quorum(
+        self,
+        sid: str,
+        verdicts: Iterable[Verdict],
+        beat: int,
+        *,
+        worker_declared_fault: bool = False,
+        threshold: Optional[int] = None,
+    ) -> Tuple[bool, str]:
+        """Decide a dispute from a **committee of verifier verdicts**, not a single mismatch.
+
+        Aggregates ``verdicts`` (``pouw/quorum.tally``) and slashes only on a genuine
+        ``DETECTED_FAULT`` — a quorum of mismatches against a worker that claimed success —
+        reusing :meth:`dispute`'s timing + slashing. A ``CONFIRMED``/``INCONCLUSIVE``/
+        ``DECLARED_FAULT`` outcome is **not** a slashable detected fault, so nothing is slashed
+        (the submission stays pending for the caller to ``release`` once the window closes, or to
+        refund on a declared fault — a separate settlement path). This replaces the trusting
+        single-verifier trigger so no lone verifier can slash honest work.
+        """
+        result = tally(
+            verdicts, worker_declared_fault=worker_declared_fault, threshold=threshold
+        )
+        counts = f"{result.confirms}c/{result.mismatches}m/{result.abstains}a of {result.n}, k={result.threshold}"
+        if result.outcome is Outcome.DETECTED_FAULT:
+            slashed, reason = self.dispute(sid, beat)
+            return slashed, f"quorum detected fault ({counts}): {reason}"
+        return False, f"no slash — quorum {result.outcome.value} ({counts})"
 
     # ── Release (clean settlement) ─────────────────────────────────────────
 
