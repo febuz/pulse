@@ -33,12 +33,19 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Dict, List, Optional, Tuple
 
+from .collateral import Margin, is_sufficiently_collateralized, payout_at_risk
+
 __all__ = [
     "DEFAULT_DISPUTE_WINDOW",
     "DEFAULT_RELEASE_DELAY",
     "Submission",
     "DisputeWindowLedger",
+    "UnderCollateralizedError",
 ]
+
+
+class UnderCollateralizedError(ValueError):
+    """Raised when ``enforce_collateral`` is on and a worker's stake can't cover its risk."""
 
 DEFAULT_DISPUTE_WINDOW = 10   # beats a detected-mismatch dispute may still land
 DEFAULT_RELEASE_DELAY = 11    # beats until escrow may release (must exceed the window)
@@ -78,6 +85,9 @@ class DisputeWindowLedger:
         self,
         dispute_window: int = DEFAULT_DISPUTE_WINDOW,
         release_delay: int = DEFAULT_RELEASE_DELAY,
+        *,
+        enforce_collateral: bool = False,
+        margin: Optional[Margin] = None,
     ) -> None:
         _require_int("dispute_window", dispute_window, minimum=1)
         _require_int("release_delay", release_delay, minimum=1)
@@ -87,8 +97,16 @@ class DisputeWindowLedger:
                 f"release while a dispute could still land (got release_delay={release_delay}, "
                 f"dispute_window={dispute_window})"
             )
+        if not isinstance(enforce_collateral, bool):
+            raise TypeError("enforce_collateral must be bool")
+        if margin is not None and not isinstance(margin, Margin):
+            raise TypeError("margin must be a pouw.collateral.Margin")
         self.dispute_window = dispute_window
         self.release_delay = release_delay
+        # When on, submit() rejects a worker whose staked collateral can't cover the
+        # cumulative escrow at risk across its open windows (pouw/collateral.py invariant).
+        self.enforce_collateral = enforce_collateral
+        self.margin = margin or Margin(1, 1)
         self._subs: Dict[str, Submission] = {}
         # Audit totals (PLS-wei)
         self.escrow_paid = 0        # released to workers
@@ -115,6 +133,18 @@ class DisputeWindowLedger:
         _require_int("submit_beat", submit_beat)
         if worker == consumer:
             raise ValueError("worker and consumer must differ")
+        if self.enforce_collateral:
+            # Cumulative: a worker's total stake must cover the total escrow it could
+            # collect-then-flee across all its still-open windows (this new one included).
+            pending = [s for s in self._subs.values()
+                       if s.worker == worker and s.status == "pending"]
+            at_risk = payout_at_risk([s.escrow for s in pending] + [escrow])
+            total_stake = sum(s.collateral for s in pending) + collateral
+            if not is_sufficiently_collateralized(total_stake, at_risk, self.margin):
+                raise UnderCollateralizedError(
+                    f"worker {worker}: staked {total_stake} cannot cover payout-at-risk "
+                    f"{at_risk} at margin {self.margin.num}/{self.margin.den}"
+                )
         sub = Submission(
             sid=sid,
             worker=worker,
