@@ -40,6 +40,12 @@ anchoring/bridging to the major blockchains.
   signed `Knit` (an EIP-155-style chain id that namespaces a PLS web for replay
   protection). It is **hash-critical — never rename it**. Everywhere else in prose,
   say *web* / *fabric*, never "network"/"net".
+  - *Also legitimate — do **not** flag these in a consistency sweep:* naming
+    **external** networks in a comparison (the Akash/Filecoin/Livepeer/EigenLayer
+    table in `docs/CRYPTO_CORPUS_STUDY.md`); the economics term "net" (e.g.
+    "net-profitable"); the vocabulary **rule statement** itself; and
+    identifiers/branch names such as `ledger-network-id`. The violation is only
+    Knitweb-the-project described as "a network"/"net".
 - **No founder premine.** Founders earn PLS like anyone and monetize only via side
   projects and the first user-issued tokens on the fabric.
 - **Proofs-first.** Every phase ends with a runnable test + a commit + an
