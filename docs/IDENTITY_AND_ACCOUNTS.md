@@ -57,7 +57,7 @@ secrets, permissions, dependency bumps) and halves visibility, for a separation
 that has no concrete driver yet. Keep the *option* open by reserving names; take it
 when a real boundary exists.
 
-### Net
+### Bottom line
 
 > **Build under `knitweb`. Reserve `pulse` and `fiber`. Split to a token/foundation
 > org only when governance, legal, or community structure actually demands it.**

@@ -51,10 +51,10 @@ check if the same input deterministically yields the same output. Two regimes:
 | **Second-preimage / tree forgery** | Forge a Merkle path by confusing leaf and internal nodes | `\x00`/`\x01` leaf/node domain tags (avoids the CVE-2012-2459 shape) | ✅ `pouw/challenge.py` (#24) |
 | **Work-reward replay** | A colluding consumer+worker resubmits the *same* verified proof to mint repeatedly (escrow just cycles between them) → unbounded issuance | `Treasury` records rewarded **proof digests**; a duplicate is refused (no settle, no mint) — the "no-infinite-mint" guard | ✅ `token/mint.py` (#17) |
 | **Cross-web replay** | Replay a settlement Knit on another PLS web | `network` id bound into the signed Knit (EIP-155-style) | ✅ `ledger/knit.py` |
-| **Withdraw-before-dispute** | Worker is paid, then withdraws before a verifier can re-execute and slash | Escrow release delay **strictly exceeds** the dispute window; slashing reaches pending withdrawals | 📐 designed (Sprint 2) |
-| **Single corrupt verifier** | One verifier whitewashes fraud or steals stake | **k-of-n** verifier quorum (~55% confirm, tolerate ~33% adversary) | 📐 designed (Sprint 2) |
-| **Faked-digest batch** | Worker submits many fake proofs hoping few are sampled | Collateral ≥ one settlement window's payout-at-risk; faked batches are never net-profitable | 📐 designed (Sprint 2) |
-| **Salt grinding** | A colluding verifier grinds the salt to a favourable sample | Beacon-seeded / commit-revealed salt rather than free verifier choice | 📐 designed (Sprint 2) |
+| **Withdraw-before-dispute** | Worker is paid, then withdraws before a verifier can re-execute and slash | Escrow release delay **strictly exceeds** the dispute window; slashing reaches pending withdrawals | ✅ `pouw/dispute.py` (#32) |
+| **Single corrupt verifier** | One verifier whitewashes fraud or steals stake | **k-of-n** verifier quorum (~55% confirm, tolerate ~33% adversary) | ✅ `pouw/quorum.py` + `pouw/committee.py` (#50, #58) |
+| **Faked-digest batch** | Worker submits many fake proofs hoping few are sampled | Collateral ≥ one settlement window's payout-at-risk; faked batches are never net-profitable | ✅ `pouw/collateral.py` + `pouw/sampling.py` (#51, #55) |
+| **Salt grinding** | A colluding verifier grinds the salt to a favourable sample | Beacon-seeded committee + fresh commit-revealed salt rather than free verifier choice | ✅ `pouw/committee.py` (#58) + `pouw/challenge.py` |
 
 ## 4. Layer by layer
 
@@ -90,7 +90,7 @@ the issuance CID, so the braid's spent-knit guard makes it un-replayable. No
 premine, no admin mint. Per-epoch emission bounding and the 1-pulse-per-bundle
 access payment remain (Sprint 3).
 
-### 4.4 Dispute, quorum & collateral (designed — Sprint 2)
+### 4.4 Dispute, quorum & collateral (shipped — #32 dispute · #50 quorum · #51 collateral · #55 sampling · #58 committee)
 The challenge protocol yields a *verdict*; this layer turns a verdict into safe
 settlement timing and slashing.
 
@@ -145,8 +145,10 @@ value than 51% attacks).
 | Tolerance digest | `pouw/digest.py` | `tests/property/test_pouw_determinism.py` | ✅ #24 |
 | Commit-before-sample | `pouw/challenge.py` | `tests/property/test_pouw_determinism.py` | ✅ #24 |
 | Demand-gated bounded mint + anti-replay | `token/mint.py` | `tests/property/test_token_mint.py` | ✅ #17 |
-| Dispute window | `pouw/dispute.py` | _planned_ | 📐 Sprint 2 |
-| k-of-n quorum | `pouw/quorum.py` | _planned_ | 📐 Sprint 2 |
-| Collateral / winning-ticket | `pouw/escrow.py` (ext) | _planned_ | 📐 Sprint 2 |
+| Dispute window | `pouw/dispute.py` | `tests/property/test_pouw_dispute.py` | ✅ #32 |
+| k-of-n quorum | `pouw/quorum.py` | `tests/property/test_pouw_quorum.py` | ✅ #50 |
+| Verifier committee selection | `pouw/committee.py` | `tests/property/test_pouw_committee.py` | ✅ #58 |
+| Collateral sizing | `pouw/collateral.py` | `tests/property/test_pouw_collateral.py` | ✅ #51 |
+| Sample-size sizing | `pouw/sampling.py` | `tests/property/test_pouw_sampling.py` | ✅ #55 |
 | Synaptic compile as job class | `pouw/job.py` (ext) | _planned_ | 📐 Sprint 3 |
 | Per-epoch mint cap + access payment | `token/` (ext) | _planned_ | 📐 Sprint 3 |

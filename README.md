@@ -47,7 +47,7 @@ useful work is paid in **PLS**). Workers are **spiders**.
 | L3 fabric | Web + items + agent / scorer / masterdata | Python |
 | L4 pouw | proof-of-useful-work, sampled re-execution | Python + Julia + WGSL |
 | L5 looms | finance / operational / supply-chain / chemistry | Python (+Julia) |
-| L6 token | PLS pay-token + Fiber value unit + user LoomTokens + anchors | Python |
+| L6 token | PLS pay-token + Fiber value unit + user tokens + anchors | Python |
 
 ## Status
 
