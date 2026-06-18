@@ -9,8 +9,8 @@ shouldn't have to re-solve all of this:
      keys → `App.actor(external_id)` (built on `AccountNode.from_seed`).
   2. **A persistent, shared web.** The fabric `Web` is in-memory with no save/load, so the
      woven knowledge vanishes on restart and can't be shared between processes → `App` persists
-     every woven record/edge and rebuilds the `Web` on load (and `store=` makes two instances
-     share one web).
+     every woven record/edge, and can back the Web with a p2p `FabricNode`
+     (`listen=`, `peers=`, `sync_from`) so separate processes converge.
   3. **Turnkey economy / validation / provenance.** Faucet, balances, transfers, BFT-quorum
      validation, and OriginTrail anchoring all existed as separate primitives that each app
      re-wired → `App` exposes them as one intuitive object.
@@ -34,35 +34,109 @@ SECURITY
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import threading
+from collections.abc import Mapping
 
 from .anchor import Notary
 from .anchor.origintrail import OriginTrailAnchorBackend
 from .core.pulse import Pulse
 from .fabric.items import checkpoint, web_state_root
+from .fabric.node import FabricNode
 from .fabric.web import Web
 from .ledger.node import AccountNode
+from .p2p.node import PeerAddress
 from .pouw import quorum
 
 _NOTARY_PRIV = "0" * 63 + "1"  # fixed dev notary → reproducible UAL per web state
+
+
+PeerSpec = PeerAddress | tuple[str, int]
+
+
+def _peer(peer: PeerSpec) -> PeerAddress:
+    if isinstance(peer, PeerAddress):
+        return peer
+    host, port = peer
+    return PeerAddress(str(host), int(port))
+
+
+class _FabricRuntime:
+    """Run an async FabricNode behind the synchronous App API."""
+
+    def __init__(self, node: FabricNode) -> None:
+        self.node = node
+        self._loop = asyncio.new_event_loop()
+        self._ready = threading.Event()
+        self._closed = False
+        self._thread = threading.Thread(
+            target=self._run_loop,
+            name="knitweb-gateway-fabric",
+            daemon=True,
+        )
+        self._thread.start()
+        if not self._ready.wait(timeout=5):
+            raise RuntimeError("fabric runtime did not start")
+        self.run(self.node.start())
+
+    def _run_loop(self) -> None:
+        asyncio.set_event_loop(self._loop)
+        self._ready.set()
+        self._loop.run_forever()
+
+    def run(self, coro):
+        if self._closed:
+            raise RuntimeError("fabric runtime is closed")
+        fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return fut.result(timeout=10)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        try:
+            self.run(self.node.stop())
+        finally:
+            self._closed = True
+            self._loop.call_soon_threadsafe(self._loop.stop)
+            self._thread.join(timeout=5)
+            self._loop.close()
 
 
 class App:
     """A knitweb application: stable identities, a token economy, a persistent shared web,
     peer validation and provenance — all wired for you."""
 
-    def __init__(self, name: str = "app", *, store: str | None = None, faucet: int = 50) -> None:
+    def __init__(
+        self,
+        name: str = "app",
+        *,
+        store: str | None = None,
+        faucet: int = 50,
+        listen: PeerSpec | None = None,
+        peers: Mapping[str, PeerSpec] | None = None,
+        fabric: FabricNode | None = None,
+    ) -> None:
         self.name = name
         self.store = os.path.expanduser(store) if store else None
         self.faucet = faucet
         self._accounts: dict[str, AccountNode] = {}
         self._balances: dict[str, int] = {}     # persisted PLS balances, keyed by external id
-        self.web = Web()
+        self._fabric = fabric
+        self._fabric_runtime: _FabricRuntime | None = None
+        if self._fabric is None and (listen is not None or peers):
+            bind = _peer(listen or ("127.0.0.1", 0))
+            self._fabric = FabricNode(host=bind.host, port=bind.port)
+        self.web = self._fabric.web if self._fabric is not None else Web()
         self._records: list[dict] = []           # woven records/edges (for persistence + replay)
         self._term_cid: dict[str, str] = {}
         self._clock = 0
         self._beat = 0
+        if self._fabric is not None:
+            self._fabric_runtime = _FabricRuntime(self._fabric)
+            for name_, peer in (peers or {}).items():
+                self.add_peer(name_, peer)
         if self.store and os.path.exists(self.store):
             self._load()
 
@@ -102,19 +176,107 @@ class App:
         return {"knit": knit.id, "from": self.balance(frm), "to": self.balance(to)}
 
     # -- the shared, persistent web ----------------------------------------
-    def _term(self, term: str) -> str:
+    @property
+    def fabric_address(self) -> PeerAddress | None:
+        """The listening p2p fabric address when this App is p2p-backed."""
+        return self._fabric.address if self._fabric is not None else None
+
+    def add_peer(self, name: str, peer: PeerSpec) -> None:
+        """Register a p2p fabric peer for future App weaves."""
+        if self._fabric is None:
+            raise RuntimeError("App was not created with a p2p fabric node")
+        self._fabric.add_peer(name, _peer(peer))
+
+    def sync_from(self, peer: PeerSpec) -> int:
+        """Pull a peer App/FabricNode's records and rebuild this App's Web view."""
+        if self._fabric is None or self._fabric_runtime is None:
+            raise RuntimeError("App was not created with a p2p fabric node")
+        added = self._fabric_runtime.run(self._fabric.sync_from(_peer(peer)))
+        self._refresh_from_web()
+        self._save()
+        return added
+
+    def close(self) -> None:
+        if self._fabric_runtime is not None:
+            self._fabric_runtime.close()
+            self._fabric_runtime = None
+
+    def __enter__(self) -> "App":
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb) -> None:
+        self.close()
+
+    def _weave(self, record: dict, *, publish: bool = True) -> str:
+        if publish and self._fabric is not None and self._fabric_runtime is not None:
+            return self._fabric_runtime.run(self._fabric.weave(record))
+        return self.web.weave(record)
+
+    def _term(self, term: str, *, publish: bool = True) -> str:
         key = term.casefold()
         cid = self._term_cid.get(key)
         if cid is None:
-            cid = self.web.weave({"kind": "term", "term": term})
+            cid = self._weave({"kind": "term", "term": term}, publish=publish)
             self._term_cid[key] = cid
         return cid
+
+    @staticmethod
+    def _link_record(subject: str, obj: str, relation: str, weight: int) -> dict:
+        return {
+            "kind": "app-link",
+            "subject": subject,
+            "object": obj,
+            "relation": relation,
+            "weight": max(1, int(weight)),
+        }
+
+    def _apply_link_record(self, record: dict, *, publish_terms: bool = False):
+        return self.web.link(
+            self._term(str(record["subject"]), publish=publish_terms),
+            self._term(str(record["object"]), publish=publish_terms),
+            rel=str(record.get("relation", "links")),
+            weight=max(1, int(record.get("weight", 1))),
+        )
+
+    @staticmethod
+    def _record_entry(record: dict) -> dict | None:
+        kind = record.get("kind")
+        if kind == "term":
+            return None
+        if kind == "app-link":
+            return {
+                "t": "link",
+                "subject": record["subject"],
+                "object": record["object"],
+                "relation": record.get("relation", "links"),
+                "weight": max(1, int(record.get("weight", 1))),
+            }
+        return {"t": "record", "data": record}
+
+    def _refresh_from_web(self) -> None:
+        """Derive App records and edges from p2p-woven node records."""
+        seen = {json.dumps(r, sort_keys=True, separators=(",", ":")) for r in self._records}
+        for record in list(self.web.nodes.values()):
+            if record.get("kind") == "term":
+                term = str(record.get("term", ""))
+                if term:
+                    self._term_cid.setdefault(term.casefold(), self.web.weave(record))
+                continue
+            if record.get("kind") == "app-link":
+                self._apply_link_record(record, publish_terms=False)
+            entry = self._record_entry(record)
+            if entry is None:
+                continue
+            key = json.dumps(entry, sort_keys=True, separators=(",", ":"))
+            if key not in seen:
+                self._records.append(entry)
+                seen.add(key)
 
     def attest(self, author: str, record: dict) -> dict:
         """Weave an app record (a fact / production / claim) into the shared web."""
         self.actor(author)
         rec = {**record, "by": author}
-        cid = self.web.weave(rec)
+        cid = self._weave(rec)
         self._records.append({"t": "record", "data": rec})
         self._save()
         n, e = self.web.size
@@ -122,9 +284,11 @@ class App:
 
     def link(self, subject: str, obj: str, relation: str = "links", weight: int = 1) -> dict:
         """Knit two terms together — a typed, weighted edge between two nodes."""
-        edge = self.web.link(self._term(subject), self._term(obj), rel=relation, weight=max(1, weight))
+        record = self._link_record(subject, obj, relation, weight)
+        edge = self._apply_link_record(record, publish_terms=True)
+        self._weave(record)
         self._records.append({"t": "link", "subject": subject, "object": obj,
-                              "relation": relation, "weight": weight})
+                              "relation": relation, "weight": max(1, int(weight))})
         self._save()
         n, e = self.web.size
         return {"edge": edge.cid, "nodes": n, "edges": e}
@@ -138,6 +302,7 @@ class App:
 
     def anchor(self) -> dict:
         """Anchor the current web to OriginTrail — a verifiable UAL + notary receipt."""
+        self._refresh_from_web()
         n, e = self.web.size
         if n == 0:
             return {"ual": None, "verified": False, "nodes": 0, "edges": 0}
@@ -149,12 +314,14 @@ class App:
                 "nodes": n, "edges": e}
 
     def web_state(self, limit: int = 50) -> dict:
+        self._refresh_from_web()
         n, e = self.web.size
         return {"nodes": n, "edges": e, "state_root": web_state_root(self.web),
                 "records": self._records[-limit:][::-1]}
 
     # -- persistence (replay records, restore balances) --------------------
     def save(self) -> None:
+        self._refresh_from_web()
         self._save()
 
     def _save(self) -> None:
@@ -171,10 +338,20 @@ class App:
         self._balances = d.get("balances", {})
         for r in d.get("records", []):
             if r["t"] == "link":
-                self.web.link(self._term(r["subject"]), self._term(r["object"]),
-                              rel=r.get("relation", "links"), weight=max(1, r.get("weight", 1)))
+                self._apply_link_record(self._link_record(
+                    r["subject"],
+                    r["object"],
+                    r.get("relation", "links"),
+                    r.get("weight", 1),
+                ))
+                self._weave(self._link_record(
+                    r["subject"],
+                    r["object"],
+                    r.get("relation", "links"),
+                    r.get("weight", 1),
+                ), publish=False)
             else:
-                self.web.weave(r["data"])
+                self._weave(r["data"], publish=False)
             self._records.append(r)
 
 
