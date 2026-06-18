@@ -14,7 +14,7 @@ Layered architecture:
   L3  fabric    — Web (woven global graph) + items + agent/scorer/masterdata
   L4  pouw      — proof-of-useful-work (Julia + WebGPU), sampled re-execution
   L5  looms     — finance / operational / supply-chain / chemistry plugins
-  L6  token     — PLS access token + ERC20-like user-issued LoomTokens + anchors
+  L6  token     — PLS access/pay-token + demand-gated, bounded minting (`token.mint`) + anchors
 
 Core modules (the seven primitives): Blob, Fiber, Loom, Knit, Braid, Web, Pulse.
 """
