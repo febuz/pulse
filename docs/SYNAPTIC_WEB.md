@@ -1,6 +1,10 @@
 # Fiber & the Synaptic Web
 
-**Coin:** Fiber · **Pay-token:** PLS (pulses) · **Fabric:** the Knitweb (Web · Loom · Knit · Pulse)
+**Brand coin:** Fiber · **Pay-token:** PLS (pulses) · **Brand vocabulary:** Web · Loom · Knit · Pulse · Fiber (the seven code primitives: Blob · Fiber · Loom · Knit · Braid · Web · Pulse)
+
+> Note: *Fiber* is the brand coin, but the `Fiber` **primitive** is an immutable,
+> content-addressed account-state commitment (a `Braid` link) — never itself
+> transferred. Value moves as an integer balance of a *symbol* (native `"PLS"`) via `Knit`.
 
 > Token note: you pay in **PLS** ("pulses") for activity — not for fibers or knits.
 > FBR is reserved (a possible separate regional token later).
@@ -66,7 +70,8 @@ guarantees):
   `sign_bundle` / `verify_bundle` let an edge device verify origin *before*
   executing. A tampered bundle fails verification and is refused.
 - **Compact** — string interning + varints. The win scales with graph size and
-  URI repetition (a 4-source toy is ~24% smaller than its JSON; large graphs with
+  URI repetition (the 4-source toy in `tests/property/test_synaptic.py` is ~58%
+  smaller than the equivalent `json.dumps` of its relations; large graphs with
   shared URIs compress far more). We report real ratios, never inflated ones.
 
 ## Where PLS (the pay-token) fits — the economic loop

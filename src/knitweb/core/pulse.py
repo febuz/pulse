@@ -1,11 +1,13 @@
-"""Pulse — the network heartbeat (one of the seven core primitives).
+"""Pulse — the web's heartbeat (one of the seven core primitives).
 
 The Pulse is Knitweb's rhythmic clock. It divides time into **epochs** and emits
 content-addressed **beats**, each anchoring an epoch to a state root and chaining
 to the previous beat. Higher layers ride the Pulse to drive:
 
   * checkpoint propagation (a Merkle root of fabric state per epoch),
-  * demand-gated FBR mint windows (mint is bounded *per epoch*),
+  * demand-gated PLS mint windows (today the mint in ``token.mint`` is bounded by
+    escrowed demand plus an optional ``max_supply`` cap; binding a mint cap to a
+    Beat/epoch is a future wiring, not yet implemented),
   * liveness / availability probes and sampled re-execution scheduling.
 
 Time is *injected* (the caller supplies the timestamp), never read from a global

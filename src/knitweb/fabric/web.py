@@ -6,7 +6,7 @@ typed **nodes** (any canonical record, identified by its CID) and first-class
 resource offers, work receipts, and Pulse beats all live here as nodes.
 
 The Web is deliberately generic: it stores *content-addressed records* and the
-relationships between them, with no knowledge of FBR ledger semantics. The ledger
+relationships between them, with no knowledge of PLS/Fiber ledger semantics. The ledger
 (braids/knits) and the fabric item schemas weave *into* the Web; domain looms add
 their own node and edge types at the edges. This keeps the shared ontology minimal
 (KnitNet principle 10) while making the graph queryable and composable.

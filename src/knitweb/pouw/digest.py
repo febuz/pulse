@@ -7,7 +7,8 @@ job, so byte-equality silently slashes honest work — the #1 existential risk i
 breaks under GPU non-determinism").
 
 The fix is to digest a *quantized* view of the output: every value is snapped to
-a fixed grid of size ``eps`` (its integer bucket ``round(value / eps)``) and the
+a fixed grid of size ``eps`` (its integer bucket ``floor(value/eps + 0.5)``,
+deterministic round-half-up — see ``quantize``) and the
 resulting **integers** are hashed via canonical CBOR. Outputs that agree to
 within ``eps`` land in the same bucket and produce an identical digest; genuinely
 different work lands in different buckets and mismatches. No float ever reaches

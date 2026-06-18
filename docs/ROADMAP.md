@@ -83,6 +83,22 @@ Builds on #24's challenge verdict. Spec: [`PROOF_OF_USEFUL_WORK.md`](PROOF_OF_US
 | `token/pls-mint` | token | per-Pulse-epoch mint bounding + wire 1-pulse-per-bundle access payment (core mint shipped in #17) | #17, Sprint 2 |
 | `p2p/partial-range-merkle` | feed | partial-range Merkle proofs over the wire; DHT/pubsub stays an optional backend | — |
 
+## Naming follow-ups (decided — dedicated rename PR)
+
+- **`loom` → `knitweb` rename (owner-decided 2026-06-17): literal, repo-wide.** Rename the
+  `looms/` domain plugins **and** the core `Loom` validation primitive to `knitweb` naming
+  (`ledger/loom.py` → `ledger/knitweb.py`, `Loom`/`LoomError` → `Knitweb`/`KnitwebError`,
+  `*Loom` classes → `*Knitweb`, the `loom` pytest marker → `knitweb`, all prose). Done as a
+  dedicated PR, **not** this consistency pass. Hard gate: **no signed-record `kind`/field
+  contains "loom"** (verified — kinds are `reaction-knowledge`/`supplychain-process`/
+  `capacity-allocation`/`journal-entry`/`invoice`), so the rename is identifier/docs-only with
+  zero CID/signature impact; the PR must assert a sample record's `cid` is byte-identical
+  before/after. Note the accepted overload: the core validator becomes
+  `knitweb.ledger.knitweb.Knitweb`. ("Loom" also collides with the unrelated *Loom Network*
+  brand — another reason to retire it.)
+- **User-token name** (`LoomToken`): folds into the same rename → `KnitwebToken` (or drop, since
+  the `token-loomtoken` branch is not merged per owner "Maak geen loomtoken").
+
 ## Conventions
 
 - Every PR: what/why + the proof (`PYTHONPATH=src pytest -q`, green count) + explicit

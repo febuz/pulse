@@ -4,13 +4,18 @@ build-backend = "hatchling.build"
 
 [project]
 name = "knitweb"
-version = "0.0.1"
-description = "Knitweb: a pure-Python peer-to-peer crypto web with native token PLS — verifiable compute + a knowledge/resource fabric woven by p2p spiders."
+version = "0.6.0"
+description = "Knitweb: a pure-Python peer-to-peer crypto web with native token PLS — verifiable compute + a traceable knowledge/resource fabric woven by p2p spiders, with OriginTrail symbiosis."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
-authors = [{ name = "Knitweb" }]
-keywords = ["p2p", "crypto", "depin", "knowledge-graph", "webgpu", "pls"]
+authors = [{ name = "febuz", email = "develuse@gmail.com" }]
+keywords = ["p2p", "crypto", "depin", "knowledge-graph", "provenance", "origintrail", "pls"]
+
+[project.urls]
+Homepage = "https://github.com/knitweb/pulse"
+Repository = "https://github.com/knitweb/pulse"
+Documentation = "https://github.com/knitweb/pulse/tree/main/docs"
 
 [project.scripts]
 knitweb = "knitweb.app.cli:main"

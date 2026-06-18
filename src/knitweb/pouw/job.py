@@ -12,9 +12,10 @@ the spider required. The heavy work (resolve + compile) stays off the ledger; on
 the integer verdict (match? signature valid?) touches settlement.
 
 Issuance note: this module settles work by **transferring** the consumer's escrow
-to the worker (conservation-preserving). New PLS *issuance* (mint) is intentionally
-deferred until the bootstrap-emission policy is decided — see the plan's open
-question on demand-gated mint. Escrow settlement is the sound subset we can prove now.
+to the worker (conservation-preserving) — it never mints. New PLS *issuance* is
+handled separately by `token/mint.py` (demand-gated, bounded per Pulse epoch;
+shipped in #17). Escrow settlement here is the proven subset; mint stays off this
+path.
 """
 
 from __future__ import annotations

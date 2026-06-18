@@ -8,6 +8,19 @@
 
 > **Vocabulary rule.** This project is a **web**, never a "network"/"net" — a network is static nodes; a *web*, like a brain, lives through the **pulses** between its connections. The brand terms are **Web · Loom · Knit · Pulse · Fiber**, the coined data-structure word is **knitweb**, and the heavy companion graph is **OriginTrail**.
 
+> **Normative note (reconciles this paper with the code — read before the narrative).**
+> This is a *concept paper*; the code in `src/knitweb/` is authoritative where they differ.
+> - **Seven primitives (normative):** `Blob` · `Fiber` · `Loom` · `Knit` · `Braid` · `Web` · `Pulse`.
+>   **`Yarn` and `stitch` are narrative aliases only** — not primitives, not in code (a *yarn* ≈ an
+>   account's secp256k1 keypair/identity; a *stitch* ≈ a signed, content-addressed record).
+> - **`Fiber` is a *state commitment*, not a transferable coin.** A `Fiber` is an immutable snapshot of
+>   one account's state (a `Braid` link). The transferable value is an integer balance of a *symbol*
+>   (native symbol = **PLS**) moved by a `Knit`; "Fiber" is the brand coin name, never itself transferred.
+> - **PLS is the active pay-token; the ticker FBR is reserved and *not active*.** Read every "Fiber (FBR)"
+>   below as "Fiber (value unit; ticker FBR reserved — not active)".
+> - **L2 today is stdlib-`asyncio`** signed-feed sync + static peers; py-libp2p / DHT are optional later
+>   backends, not the current layer.
+
 ---
 
 ## Table of contents
@@ -111,7 +124,7 @@ Every coined term in this paper maps to a real, recognised distributed-systems c
 | **shuttle** | A compute slot on a spider carrying one pulse at a time | Executor thread / CUDA stream |
 | **warper** | The driver peer for one weave (builds the draft, collects results) | Driver program |
 | **reeve** | The decentralised pool scheduler / resource broker | Cluster manager |
-| **Fiber (FBR)** | The content-addressed value unit (the coin) | Native asset / ledger value |
+| **Fiber** | The content-addressed account-state commitment (brand coin "Fiber"; ticker FBR reserved, not active) — value moves as a `symbol` balance (native **PLS**) via `Knit` | Native asset / ledger value |
 | **PLS (pulses)** | The pay-token spent per unit of useful work | Access/utility token |
 | **OriginTrail / UAL** | The companion DKG and its Universal Asset Locator for heavy artifacts | Out-of-band provenance graph + locator |
 
@@ -551,9 +564,9 @@ Benefits: offline-first agents (weave locally, merge later); fork-tolerant colla
 
 ### 13.1 Relationship to the knitweb reference implementation
 
-This paper is the conceptual model; the `febuz/knitweb` reference implementation is the running code. They map as follows (and the implementation's non-negotiables — secp256k1 + SHA-256, integer-only money/state, float-free canonical CBOR, no founder premine — hold throughout this paper).
+This paper is the conceptual model; the `knitweb/pulse` reference implementation is the running code. They map as follows (and the implementation's non-negotiables — secp256k1 + SHA-256, integer-only money/state, float-free canonical CBOR, no founder premine — hold throughout this paper).
 
-**Seven core primitives** (`src/`): `Blob` (account state) · `Fiber` (content-addressed value unit, ticker **FBR**) · `Loom` (validation) · `Knit` (two-party transfer) · `Braid` (local history) · **`Web`** (the woven global graph) · **`Pulse`** (the heartbeat; useful work is paid in **PLS**, "pulses"). Workers are **spiders** (verifiable GPU compute via proof-of-useful-work with sampled re-execution).
+**Seven core primitives** (`src/`): `Blob` (account balance state) · `Fiber` (content-addressed **account-state commitment**; "Fiber" is the brand coin, but the primitive is never itself transferred) · `Loom` (validation) · `Knit` (two-party transfer of a `symbol` balance, native **PLS**) · `Braid` (local history) · **`Web`** (the woven global graph) · **`Pulse`** (the heartbeat; useful work is paid in **PLS**, "pulses"). Workers are **spiders** (verifiable GPU compute via proof-of-useful-work with sampled re-execution).
 
 | This paper | Reference implementation |
 |------------|--------------------------|
@@ -563,17 +576,17 @@ This paper is the conceptual model; the `febuz/knitweb` reference implementation
 | patch / fabric | a materialised view of the `Web` |
 | weave algebra | the CRDT merge over `Web` items |
 | draft / pulse / spider | the proof-of-useful-work job DAG, its tasks, and the workers that run them |
-| Fiber (FBR) / PLS | the value unit and the pay-token |
+| Fiber (value unit; ticker FBR reserved, not active) / PLS | the value unit and the active pay-token |
 | OriginTrail UAL | `knitweb.synaptic.origintrail.resolve_asset` (Knowledge Asset → relations) |
 
-**Layers:** L0 core (crypto, canonical CBOR, CID) → L1 ledger (blob/fiber/loom/knit/braid) → L2 p2p (libp2p signed feeds + DHT) → L3 fabric (Web + items) → L4 pouw (proof-of-useful-work, sampled re-execution) → L5 looms (domain plugins: finance / operational / supply-chain / chemistry) → L6 token (FBR + user tokens + chain anchors). Domain looms — including MOLGANG chemistry — are L5 plugins, never in core.
+**Layers:** L0 core (crypto, canonical CBOR, CID) → L1 ledger (blob/fiber/loom/knit/braid/node) → L2 p2p (stdlib-`asyncio` signed-feed sync + static peers; py-libp2p/DHT optional later) → L3 fabric (Web + items) → L4 pouw (proof-of-useful-work, sampled re-execution) → L5 looms (domain plugins: finance / operational / supply-chain / chemistry) → L6 token (PLS pay-token + Fiber value unit + user tokens + chain anchors). Domain looms — including MOLGANG chemistry — are L5 plugins, never in core.
 
 ---
 
 ## 14. Security considerations
 
 - **Identity:** secp256k1 ECDSA keys (SHA-256); the same keypair as the on-chain account. Key rotation is a special stitch.
-- **Integrity:** every stitch is signed and content-addressed (float-free canonical CBOR); every OriginTrail chunk is SHA-256-verified. Money and state are integers (FBR-wei), never floats.
+- **Integrity:** every stitch is signed and content-addressed (float-free canonical CBOR); every OriginTrail chunk is SHA-256-verified. Money and state are integers (PLS-wei), never floats.
 - **Availability:** content-addressed gossip and DKG swarming make censorship expensive; any peer can replicate. (But see §10.4 — availability needs incentives.)
 - **Confidentiality:** private yarns encrypt stitches to a set of recipient identities; public yarns are plaintext.
 - **Sybil resistance:** web-of-trust endorsements; optional notary looms; trust-/stake-weighted quorum-pulse for compute.
@@ -719,7 +732,7 @@ KnitWeb sits in one woven brand fabric over a single content-addressed, CRDT, tr
 | **Loom** | Validation; a peer node that weaves/serves/validates |
 | **Knit** | A two-party transfer on the ledger |
 | **Pulse** | The heartbeat and the unit of useful work; paid in **PLS** ("pulses") |
-| **Fiber (FBR)** | The content-addressed value unit (the coin; reserved, no premine) |
+| **Fiber** | The content-addressed account-state commitment (brand coin "Fiber"; ticker FBR reserved + not active, no premine) |
 | **Spider** | The p2p web-worker selling verifiable GPU compute |
 | **Braid** | A yarn's local history |
 | **OriginTrail** | The external heavy artifact + provenance DKG |

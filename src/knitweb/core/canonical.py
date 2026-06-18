@@ -1,6 +1,6 @@
 """Canonical, deterministic CBOR encoding + content addressing (CIDv1).
 
-The whole network's soundness rests on every node — Python, Julia, or a browser
+The whole web's soundness rests on every node — Python, Julia, or a browser
 client — producing *identical bytes* for the same logical object, so that hashes
 and signatures agree. We therefore use a strict, deterministic subset of CBOR
 (RFC 8949 §4.2 "Core Deterministic Encoding") and forbid floats entirely:
