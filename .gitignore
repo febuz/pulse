@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+.next/
+coverage/
+
+# Local state
+.env
+.env.*
+*.log
+*.db
+*.sqlite
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
+

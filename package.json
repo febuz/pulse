@@ -1,0 +1,19 @@
+{
+  "name": "@knitweb/pulse",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Pulse: a multi-world peer-to-peer web.",
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "hosts/*",
+    "packages/*",
+    "peer",
+    "services/*",
+    "tools/*"
+  ],
+  "scripts": {
+    "check": "node tools/check-repo-shape.mjs"
+  }
+}
+
