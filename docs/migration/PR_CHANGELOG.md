@@ -260,6 +260,81 @@ record's `cid` is byte-identical before/after. `LoomToken` is dropped ("Maak gee
 
 ---
 
+## Pre-migration build wave (#49–#64) — built on `febuz/pulse` before the move
+
+> **Context / caveat.** These PRs were authored on `febuz/pulse` **before** the migration to
+> `knitweb/knitweb` was executed — earlier than the freeze-above-#40 plan intended. They are
+> recorded here so the migration mirror carries them with full provenance. They are **not yet
+> merged**; the recommended landing order is the primitives first, then the stacked integrations
+> (each integration PR's base is noted). The whole set was verified to compose cleanly with the
+> full suite green (a merge-readiness check across the stack).
+
+### #49 — M1 consistency pass (PLS/Fiber/web/FBR + B1/B2/B9 + compute guardrail) · OPEN · *cloud/Codex agent*
+A parallel consistency pass (`fix/consistency-pass-02`) by the other agent — reconciles
+PLS/Fiber/web/FBR vocabulary across `core/*`, `ledger/*`, `fabric/web.py`, docs and `pyproject`,
+and adds the `pouw/scheduler.py` compute guardrail. Overlaps in intent with the local
+consistency pass (#1 above); the two were kept in disjoint lanes. **Lands first** in the wave.
+
+### PoUW economic-security subsystem — primitives
+The proof-of-useful-work anti-fraud core, each a small integer/exact-only module, base `main`:
+
+- **#50 — k-of-n verifier quorum** · OPEN. Aggregates independent verifier verdicts into one
+  decision (BFT supermajority `⌊2n/3⌋+1`, tolerant to a ⅓ adversary) + declared-vs-detected fault
+  asymmetry. *Why:* a single verifier is a single point of corruption; a quorum stops a minority
+  faking a confirm or a slash.
+- **#51 — collateral sizing** · OPEN. `collateral ≥ cumulative escrow at risk` (exact integer
+  margin) so a *detected* fraud is never net-positive (EigenLayer-style). *Why:* slashing only
+  deters fraud if the stake covers the value at risk.
+- **#55 — sample-size sizing** · OPEN. Exact-rational (`Fraction`) hypergeometric bound: the
+  smallest `k` blocks a verifier must re-run to catch a hypothesised corruption with target
+  confidence. *Why:* the audit-side companion to #51 — makes an *undetected* fraud improbable.
+- **#58 — verifier committee selection** · OPEN. Deterministic, unpredictable-yet-verifiable
+  jury selection (SHA-256 stream over a fresh seed), worker excluded from its own jury. *Why:*
+  the missing upstream stage — who verifies a job; left to the worker it is trivially gamed.
+
+### Feed integrity → P2P safety subsystem
+- **#52 — feed inclusion proofs** · OPEN. Verify one entry against a signed feed head with an
+  O(log n) Merkle path (Hypercore-style partial replication). *Why:* `feed.verify_entries` was
+  all-or-nothing; a signed head exists precisely to allow partial verification.
+- **#53 — feed range multiproof** · OPEN. Bandwidth-optimal O(count + log n) proof for a whole
+  contiguous range (shared sibling paths). *Why:* the per-entry version (#52) costs O(m·log n).
+- **#56 — equivocation fraud proofs** · OPEN. Package a detected feed conflict as a canonical,
+  third-party-verifiable, slashable record (PoS double-sign evidence). *Why:* `feed.py` could
+  *detect* equivocation but it had no portable evidence and no consequence.
+- **#57 — peer reputation** · OPEN. Integer DoS ban-score accounting (Bitcoin `nMisbehavior`);
+  provable offenses → instant ban; deterministic, caller-driven decay. *Why:* detection without
+  a consequence is toothless.
+
+### Integrations (stacked; base noted)
+- **#59 — collateral → dispute ledger** · OPEN · base `#51`. Opt-in `enforce_collateral` on
+  `DisputeWindowLedger.submit` rejects an under-collateralized worker by cumulative payout-at-risk.
+- **#60 — policing (equivocation + conflict → reputation)** · OPEN · base `int/feed-safety-base`
+  (#56+#57). `p2p/policing.py` applies a ban penalty *only* on verified evidence — never on
+  hearsay. Closes the **detect → prove → consequence** loop.
+- **#61 — quorum → dispute** · OPEN · base `int/dispute-base` (#59+#50). `dispute_by_quorum`
+  slashes only on a genuine `DETECTED_FAULT` (a mismatch quorum), not a lone verifier's mismatch.
+- **#62 — verification driver (capstone)** · OPEN · base `int/verify-base` (#50+#55+#58).
+  `pouw/verify.py` composes committee + sampling + challenge into a re-execution verdict stream —
+  exactly what `dispute_by_quorum` consumes.
+- **#63 — declared-fault refund** · OPEN · base `#61`. `refund_declared_fault` — the third
+  settlement outcome (consumer made whole, stake returned **unslashed**), completing the verdict
+  space (slash / release / refund).
+
+### Acceptance
+- **#64 — end-to-end PoUW demo** · OPEN · base `int/full-pouw-base` (#62 ∪ #63). Runnable
+  `examples/pouw_demo.py` proving the full loop across all three outcomes: *honest released ·
+  fraud slashed · declared refunded — fraud never pays.*
+
+### Rejected in this wave
+- **#54 — energy-balance loom (L5)** · **CLOSED / REJECTED · branch pulled back**. Maintainer
+  rationale: *"too close to loom and looms — we have **knitweb**, and features must support
+  functionality, not just mirror a real-world energy notion."* It added more `*Loom` naming
+  surface exactly as we retire "loom"/"looms" for **knitweb** (conflicts with the planned rename),
+  and it was domain breadth rather than protocol functionality. The branch
+  `looms/energy-balance` was deleted from `febuz/pulse`; not migrated.
+
+---
+
 ## Repository move (context)
 
 The whole history above was built in **`github.com/febuz/pulse`**. It is migrating to
