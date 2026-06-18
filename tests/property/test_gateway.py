@@ -1,5 +1,11 @@
 """knitweb.gateway.App — the turnkey app layer (identity, economy, persistent web, provenance)."""
-from knitweb.gateway import App
+import http.client
+import socket
+import threading
+from contextlib import closing, contextmanager
+from http.server import ThreadingHTTPServer
+
+from knitweb.gateway import App, serve
 
 
 def test_actor_is_stable_and_faucet_seeded():
@@ -42,3 +48,81 @@ def test_anchor_provenance():
     app = App(); app.attest("u", {"x": 1})
     pr = app.anchor()
     assert pr["ual"].startswith("did:dkg:knitweb/") and pr["verified"]
+
+
+# -- serve() over HTTP -----------------------------------------------------
+@contextmanager
+def _running(app, *, host="127.0.0.1", token=None):
+    """Run serve(...) in-process on an ephemeral port in a daemon thread.
+
+    serve() binds + blocks via serve_forever(); we capture the bound ThreadingHTTPServer
+    by patching it, then learn the OS-assigned port from server_address.
+    """
+    import http.server as _hs
+
+    captured: dict = {}
+
+    def _factory(addr, handler):
+        srv = ThreadingHTTPServer(addr, handler)
+        captured["srv"] = srv
+        captured["port"] = srv.server_address[1]
+        return srv
+
+    real = _hs.ThreadingHTTPServer
+    _hs.ThreadingHTTPServer = _factory  # serve() imports it locally from http.server
+    try:
+        t = threading.Thread(target=lambda: serve(app, port=0, host=host, token=token), daemon=True)
+        t.start()
+        # wait until the server is bound
+        for _ in range(500):
+            if "srv" in captured:
+                break
+            threading.Event().wait(0.002)
+        assert "srv" in captured, "server did not start"
+        yield captured["port"]
+    finally:
+        if "srv" in captured:
+            captured["srv"].shutdown()
+            captured["srv"].server_close()
+        _hs.ThreadingHTTPServer = real
+
+
+def _get(port, path, headers=None):
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    with closing(c):
+        c.request("GET", path, headers=headers or {})
+        r = c.getresponse()
+        return r.status, r.read()
+
+
+def test_serve_default_bind_is_loopback():
+    app = App()
+    with _running(app) as port:
+        # reachable on loopback
+        status, _ = _get(port, "/")
+        assert status == 200
+        # and the socket is bound to 127.0.0.1, not 0.0.0.0
+        with closing(socket.socket()) as s:
+            assert s.connect_ex(("127.0.0.1", port)) == 0
+
+
+def test_serve_open_when_no_token():
+    app = App()
+    with _running(app) as port:
+        status, _ = _get(port, "/balance?id=alice")
+        assert status == 200
+
+
+def test_serve_token_required_and_accepted():
+    app = App()
+    with _running(app, token="s3cret") as port:
+        # health stays open without a token
+        assert _get(port, "/")[0] == 200
+        # protected path without the header -> 401
+        assert _get(port, "/balance?id=alice")[0] == 401
+        # wrong token -> 401
+        assert _get(port, "/balance?id=alice", {"Authorization": "Bearer nope"})[0] == 401
+        # correct Bearer token -> 200
+        assert _get(port, "/balance?id=alice", {"Authorization": "Bearer s3cret"})[0] == 200
+        # correct X-Auth-Token header -> 200
+        assert _get(port, "/balance?id=alice", {"X-Auth-Token": "s3cret"})[0] == 200

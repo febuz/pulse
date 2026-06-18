@@ -19,6 +19,17 @@ shouldn't have to re-solve all of this:
 
 `App` is the answer: identity + economy + a persistent shared web + validation + provenance,
 in one object, in ~a dozen intuitive methods.
+
+SECURITY
+--------
+* ``serve(...)`` binds **127.0.0.1** by default — it is *not* exposed to the LAN/internet
+  unless you explicitly pass ``host="0.0.0.0"`` (which prints a warning). Pass a ``token=``
+  to require ``Authorization: Bearer <token>`` (or ``X-Auth-Token``) on every request;
+  without a token the gateway runs open and logs a one-line dev-only notice.
+* ``App.actor`` / ``AccountNode.from_seed`` accounts are **deterministic from the seed**:
+  the seed *is* the private key. That is exactly what you want for app/bridge/dev
+  identities, but it means a known seed = a spendable key. Keep seeds secret and never use
+  ``from_seed`` identities for high-value custody.
 """
 
 from __future__ import annotations
@@ -61,7 +72,13 @@ class App:
 
     # -- identity + economy ------------------------------------------------
     def actor(self, external_id: str) -> dict:
-        """A *stable* knitweb account for an external user id (faucet-seeded once)."""
+        """A *stable* knitweb account for an external user id (faucet-seeded once).
+
+        The account is **deterministic from ``external_id``** (via ``AccountNode.from_seed``):
+        the same id always yields the same wallet, with no key to store. The flip side is that
+        the seed *is* the key — fine for app/bridge/dev identities, but the ``external_id`` must
+        be kept secret and must not be used for high-value custody (see the module SECURITY note).
+        """
         if external_id not in self._accounts:
             bal = self._balances.get(external_id, self.faucet)
             self._accounts[external_id] = AccountNode.from_seed(external_id, {"PLS": bal})
@@ -161,9 +178,10 @@ class App:
             self._records.append(r)
 
 
-def serve(app: App, port: int = 8080, host: str = "0.0.0.0"):
+def serve(app: App, port: int = 8080, host: str = "127.0.0.1", *, token: str | None = None):
     """Expose an `App` over plain HTTP/JSON so any runtime (FastAPI, Colyseus, Roblox) can drive it.
 
+        GET  /                                  → {ok} (health, always open)
         GET  /balance?id=…                      → {id,address,pulses}
         POST /actor      {id}                   → actor (faucet-seed)
         POST /transfer   {from,to,amount}       → knit + new balances
@@ -172,10 +190,21 @@ def serve(app: App, port: int = 8080, host: str = "0.0.0.0"):
         POST /validate   {verdicts:[...]}       → quorum outcome
         GET  /web                               → web state
         GET  /provenance                        → OriginTrail UAL
+
+    Security
+    --------
+    * ``host`` defaults to ``127.0.0.1`` (loopback only). Pass ``host="0.0.0.0"`` to expose
+      the gateway on the LAN/internet — a warning is printed when bound to a non-loopback host.
+    * ``token`` (optional): when set, every request must carry ``Authorization: Bearer <token>``
+      or ``X-Auth-Token: <token>`` and otherwise gets a ``401``. ``/`` (health) stays open.
+      When ``token`` is ``None`` the gateway is unauthenticated (dev only) and logs a notice.
     """
+    import hmac
     import json as _json
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from urllib.parse import parse_qs, urlparse
+
+    _OPEN_PATHS = {"/"}  # always reachable without a token (health)
 
     class H(BaseHTTPRequestHandler):
         def _s(self, code, obj):
@@ -183,8 +212,23 @@ def serve(app: App, port: int = 8080, host: str = "0.0.0.0"):
             self.send_response(code); self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
 
+        def _authed(self) -> bool:
+            """True if the request may proceed (no token configured, open path, or valid token)."""
+            if token is None or urlparse(self.path).path in _OPEN_PATHS:
+                return True
+            bearer = self.headers.get("Authorization", "")
+            presented = bearer[7:] if bearer.startswith("Bearer ") else self.headers.get("X-Auth-Token", "")
+            if hmac.compare_digest(presented, token):
+                return True
+            self._s(401, {"error": "unauthorized"})
+            return False
+
         def do_GET(self):  # noqa: N802
+            if not self._authed():
+                return None
             p = urlparse(self.path); q = parse_qs(p.query)
+            if p.path == "/":
+                return self._s(200, {"ok": True, "app": app.name})
             if p.path == "/balance":
                 return self._s(200, app.actor((q.get("id") or [""])[0]))
             if p.path == "/web":
@@ -194,6 +238,8 @@ def serve(app: App, port: int = 8080, host: str = "0.0.0.0"):
             return self._s(404, {"error": "not found"})
 
         def do_POST(self):  # noqa: N802
+            if not self._authed():
+                return None
             n = int(self.headers.get("Content-Length", 0) or 0)
             try:
                 d = _json.loads(self.rfile.read(n) or b"{}")
@@ -216,5 +262,10 @@ def serve(app: App, port: int = 8080, host: str = "0.0.0.0"):
             pass
 
     srv = ThreadingHTTPServer((host, port), H)
-    print(f"knitweb.gateway '{app.name}' on http://localhost:{port}")
+    if host not in ("127.0.0.1", "::1", "localhost"):
+        print(f"knitweb.gateway WARNING: bound to non-loopback host {host!r} — "
+              f"the gateway is reachable from the LAN/internet.")
+    if token is None:
+        print("knitweb.gateway: unauthenticated (no token set) — dev only.")
+    print(f"knitweb.gateway '{app.name}' on http://{host}:{port}")
     srv.serve_forever()

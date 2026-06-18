@@ -49,6 +49,12 @@ class AccountNode:
         domain-separated and SHA-256'd into a secp256k1 private scalar.
 
         ``genesis_balances`` is dev/test seeding only (the native PLS layer has no premine).
+
+        SECURITY: because the derivation is deterministic, **the seed *is* the private key** —
+        anyone who knows the seed can derive the key and spend the account. This is exactly what
+        you want for app/bridge/dev identities (a stable wallet with nothing to store), but it
+        means seeds must be kept secret and ``from_seed`` accounts must not be used for
+        high-value custody. (Use a randomly generated keypair, i.e. ``AccountNode()``, for that.)
         """
         import hashlib
 
