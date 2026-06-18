@@ -30,6 +30,7 @@ __all__ = [
     "AnchorReceipt",
     "Notary",
     "verify_receipt",
+    "verify_anchor",
 ]
 
 
@@ -165,3 +166,56 @@ def verify_receipt(receipt: AnchorReceipt, checkpoint: FabricCheckpoint) -> bool
         and receipt.epoch == checkpoint.epoch
         and receipt.beat_cid == checkpoint.beat_cid
     )
+
+
+def verify_anchor(receipt: AnchorReceipt, against) -> dict:
+    """Verify a provenance anchor and report *what* it covers, as a structured result.
+
+    This is the provenance-explorer primitive (issue #13): given an
+    :class:`AnchorReceipt` and the thing it claims to anchor — either the live
+    :class:`~knitweb.fabric.web.Web` or a :class:`FabricCheckpoint` — answer the two
+    questions an independent auditor cares about:
+
+      1. *Is the receipt authentic?* — the notary address derives from its key and the
+         signature checks (delegates to :meth:`AnchorReceipt.verify`).
+      2. *Does it still cover the current state?* — the receipt's ``state_root`` matches
+         the root we recompute now. Passing a ``Web`` re-derives the **live** root via
+         :func:`~knitweb.fabric.items.web_state_root`, so a web mutated after anchoring
+         no longer verifies; passing a ``FabricCheckpoint`` compares the recorded root
+         (and also binds ``epoch``/``beat_cid``, like :func:`verify_receipt`).
+
+    Returns a dict ``{"verified", "state_root", "covered_root", "signature_ok",
+    "root_match", "target", "external_ref"}``. ``state_root`` is the root we computed
+    from ``against`` (the ground truth); ``covered_root`` is what the receipt claims.
+    ``verified`` is ``True`` only when both the signature and the roots agree — never
+    raises on a mismatch, so the explorer can render a red/green result either way.
+    """
+    # Lazy import: items.py imports fabric.web which we don't want on the module path,
+    # and this keeps the signed/crypto path free of fabric dependencies.
+    from ..fabric.items import web_state_root
+    from ..fabric.web import Web
+
+    signature_ok = receipt.verify()
+
+    if isinstance(against, FabricCheckpoint):
+        current_root = against.state_root
+        root_match = (
+            receipt.state_root == against.state_root
+            and receipt.epoch == against.epoch
+            and receipt.beat_cid == against.beat_cid
+        )
+    elif isinstance(against, Web):
+        current_root = web_state_root(against)
+        root_match = receipt.state_root == current_root
+    else:
+        raise TypeError("against must be a Web or a FabricCheckpoint")
+
+    return {
+        "verified": bool(signature_ok and root_match),
+        "state_root": current_root,
+        "covered_root": receipt.state_root,
+        "signature_ok": signature_ok,
+        "root_match": root_match,
+        "target": receipt.target,
+        "external_ref": receipt.external_ref,
+    }
