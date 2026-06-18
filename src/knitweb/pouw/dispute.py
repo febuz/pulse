@@ -33,12 +33,22 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Dict, List, Optional, Tuple
 
+from typing import Iterable
+
+from .collateral import Margin, is_sufficiently_collateralized, payout_at_risk
+from .quorum import Outcome, Verdict, tally
+
 __all__ = [
     "DEFAULT_DISPUTE_WINDOW",
     "DEFAULT_RELEASE_DELAY",
     "Submission",
     "DisputeWindowLedger",
+    "UnderCollateralizedError",
 ]
+
+
+class UnderCollateralizedError(ValueError):
+    """Raised when ``enforce_collateral`` is on and a worker's stake can't cover its risk."""
 
 DEFAULT_DISPUTE_WINDOW = 10   # beats a detected-mismatch dispute may still land
 DEFAULT_RELEASE_DELAY = 11    # beats until escrow may release (must exceed the window)
@@ -61,7 +71,7 @@ class Submission:
     escrow: int           # PLS-wei paid to the worker on a clean release
     collateral: int       # PLS-wei the worker staked; slashed (burned) on detected fraud
     submit_beat: int
-    status: str = "pending"          # "pending" | "slashed" | "released"
+    status: str = "pending"          # "pending" | "slashed" | "released" | "refunded"
     resolved_beat: Optional[int] = None
 
 
@@ -78,6 +88,9 @@ class DisputeWindowLedger:
         self,
         dispute_window: int = DEFAULT_DISPUTE_WINDOW,
         release_delay: int = DEFAULT_RELEASE_DELAY,
+        *,
+        enforce_collateral: bool = False,
+        margin: Optional[Margin] = None,
     ) -> None:
         _require_int("dispute_window", dispute_window, minimum=1)
         _require_int("release_delay", release_delay, minimum=1)
@@ -87,8 +100,16 @@ class DisputeWindowLedger:
                 f"release while a dispute could still land (got release_delay={release_delay}, "
                 f"dispute_window={dispute_window})"
             )
+        if not isinstance(enforce_collateral, bool):
+            raise TypeError("enforce_collateral must be bool")
+        if margin is not None and not isinstance(margin, Margin):
+            raise TypeError("margin must be a pouw.collateral.Margin")
         self.dispute_window = dispute_window
         self.release_delay = release_delay
+        # When on, submit() rejects a worker whose staked collateral can't cover the
+        # cumulative escrow at risk across its open windows (pouw/collateral.py invariant).
+        self.enforce_collateral = enforce_collateral
+        self.margin = margin or Margin(1, 1)
         self._subs: Dict[str, Submission] = {}
         # Audit totals (PLS-wei)
         self.escrow_paid = 0        # released to workers
@@ -115,6 +136,18 @@ class DisputeWindowLedger:
         _require_int("submit_beat", submit_beat)
         if worker == consumer:
             raise ValueError("worker and consumer must differ")
+        if self.enforce_collateral:
+            # Cumulative: a worker's total stake must cover the total escrow it could
+            # collect-then-flee across all its still-open windows (this new one included).
+            pending = [s for s in self._subs.values()
+                       if s.worker == worker and s.status == "pending"]
+            at_risk = payout_at_risk([s.escrow for s in pending] + [escrow])
+            total_stake = sum(s.collateral for s in pending) + collateral
+            if not is_sufficiently_collateralized(total_stake, at_risk, self.margin):
+                raise UnderCollateralizedError(
+                    f"worker {worker}: staked {total_stake} cannot cover payout-at-risk "
+                    f"{at_risk} at margin {self.margin.num}/{self.margin.den}"
+                )
         sub = Submission(
             sid=sid,
             worker=worker,
@@ -161,6 +194,34 @@ class DisputeWindowLedger:
         self.escrow_refunded += sub.escrow
         return True, "slashed"
 
+    def dispute_by_quorum(
+        self,
+        sid: str,
+        verdicts: Iterable[Verdict],
+        beat: int,
+        *,
+        worker_declared_fault: bool = False,
+        threshold: Optional[int] = None,
+    ) -> Tuple[bool, str]:
+        """Decide a dispute from a **committee of verifier verdicts**, not a single mismatch.
+
+        Aggregates ``verdicts`` (``pouw/quorum.tally``) and slashes only on a genuine
+        ``DETECTED_FAULT`` — a quorum of mismatches against a worker that claimed success —
+        reusing :meth:`dispute`'s timing + slashing. A ``CONFIRMED``/``INCONCLUSIVE``/
+        ``DECLARED_FAULT`` outcome is **not** a slashable detected fault, so nothing is slashed
+        (the submission stays pending for the caller to ``release`` once the window closes, or to
+        refund on a declared fault — a separate settlement path). This replaces the trusting
+        single-verifier trigger so no lone verifier can slash honest work.
+        """
+        result = tally(
+            verdicts, worker_declared_fault=worker_declared_fault, threshold=threshold
+        )
+        counts = f"{result.confirms}c/{result.mismatches}m/{result.abstains}a of {result.n}, k={result.threshold}"
+        if result.outcome is Outcome.DETECTED_FAULT:
+            slashed, reason = self.dispute(sid, beat)
+            return slashed, f"quorum detected fault ({counts}): {reason}"
+        return False, f"no slash — quorum {result.outcome.value} ({counts})"
+
     # ── Release (clean settlement) ─────────────────────────────────────────
 
     def release(self, sid: str, beat: int) -> Tuple[bool, str]:
@@ -183,6 +244,35 @@ class DisputeWindowLedger:
         self.escrow_paid += sub.escrow
         self.collateral_returned += sub.collateral
         return True, "released"
+
+    # ── Refund (declared fault — honest self-report, no slash) ──────────────
+
+    def refund_declared_fault(self, sid: str, beat: int) -> Tuple[bool, str]:
+        """Settle a worker's *declared* fault: refund the consumer, return the stake, no slash.
+
+        The third settlement outcome, completing the verdict space ``quorum`` produces: a
+        ``DETECTED_FAULT`` slashes (:meth:`dispute`), a clean run releases (:meth:`release`), and a
+        worker that **honestly self-declares** it could not complete the job is refunded here —
+        the escrow returns to the consumer and the worker's collateral is returned **unslashed**
+        (you are never slashed for a fault you owned up to; see ``pouw/quorum`` DECLARED_FAULT).
+
+        Allowed while the submission is pending (a worker may own up any time before settlement).
+        On success the worker is paid nothing, the consumer is made whole, and the stake is freed.
+        Pair it with a ``DECLARED_FAULT`` verdict from :meth:`dispute_by_quorum`.
+        """
+        _require_int("beat", beat)
+        sub = self._subs.get(sid)
+        if sub is None:
+            return False, "unknown submission"
+        if sub.status != "pending":
+            return False, f"already {sub.status}"
+        if beat < sub.submit_beat:
+            return False, "refund precedes submission"
+        sub.status = "refunded"
+        sub.resolved_beat = beat
+        self.escrow_refunded += sub.escrow       # consumer made whole
+        self.collateral_returned += sub.collateral  # honest fault → stake returned, NOT slashed
+        return True, "refunded"
 
     # ── Queries ───────────────────────────────────────────────────────────
 
@@ -207,6 +297,7 @@ class DisputeWindowLedger:
             "pending": sum(1 for s in self._subs.values() if s.status == "pending"),
             "slashed": sum(1 for s in self._subs.values() if s.status == "slashed"),
             "released": sum(1 for s in self._subs.values() if s.status == "released"),
+            "refunded": sum(1 for s in self._subs.values() if s.status == "refunded"),
             "escrow_paid": self.escrow_paid,
             "escrow_refunded": self.escrow_refunded,
             "collateral_slashed": self.collateral_slashed,
