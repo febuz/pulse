@@ -132,7 +132,96 @@ def test_web_state_root_empty():
     import hashlib
     web = Web()
     root = web_state_root(web)
-    assert root == hashlib.sha256(b"").hexdigest()
+    # The root now commits to nodes AND edges: sha256(node_root || edge_root).
+    # An empty Web has both an empty node set and an empty edge set, so each side
+    # is sha256(b"") (the canonical empty-set sentinel) and the root is their hash.
+    empty = hashlib.sha256(b"").digest()
+    assert root == hashlib.sha256(empty + empty).hexdigest()
+    assert len(root) == 64
+
+
+@pytest.mark.property
+def test_web_state_root_commits_to_edges():
+    """CORE GAP #49 FIX: identical NODES but different EDGES => different roots.
+
+    Before the fix the root folded only node CIDs, so edge divergence (different
+    relations, weights, or links) was invisible to the root and an anchor over
+    the root did not bind the edges. Now it must.
+    """
+    items = [
+        KnowledgeItem(title="A", body=".", author=_ADDR_A),
+        KnowledgeItem(title="B", body=".", author=_ADDR_A),
+    ]
+
+    def build(linker):
+        web = Web()
+        cids = [it.weave(web) for it in items]
+        linker(web, cids)
+        return web
+
+    # Same two nodes, but different edges in each case.
+    no_edges = build(lambda w, c: None)
+    rel_supports = build(lambda w, c: w.link(c[0], c[1], "supports"))
+    rel_refutes = build(lambda w, c: w.link(c[0], c[1], "refutes"))
+    weight_1 = build(lambda w, c: w.link(c[0], c[1], "supports", weight=1))
+    weight_5 = build(lambda w, c: w.link(c[0], c[1], "supports", weight=5))
+    reversed_dir = build(lambda w, c: w.link(c[1], c[0], "supports"))
+
+    # All webs share an identical node set.
+    node_sets = {frozenset(w.nodes.keys()) for w in (
+        no_edges, rel_supports, rel_refutes, weight_1, weight_5, reversed_dir)}
+    assert len(node_sets) == 1
+
+    # ...yet every edge variation yields a distinct state_root.
+    roots = [web_state_root(w) for w in (
+        no_edges, rel_supports, rel_refutes, weight_5, reversed_dir)]
+    assert len(set(roots)) == len(roots)
+
+    # Same relation + same weight is the same edge, hence the same root.
+    assert web_state_root(weight_1) == web_state_root(rel_supports)
+
+
+@pytest.mark.property
+def test_web_state_root_edge_order_independent():
+    """Same nodes+edges woven/linked in different orders => identical root."""
+    items = [
+        KnowledgeItem(title="A", body=".", author=_ADDR_A),
+        KnowledgeItem(title="B", body=".", author=_ADDR_A),
+        KnowledgeItem(title="C", body=".", author=_ADDR_A),
+    ]
+
+    web1 = Web()
+    c1 = [it.weave(web1) for it in items]
+    web1.link(c1[0], c1[1], "supports", weight=2)
+    web1.link(c1[1], c1[2], "refutes", weight=7)
+    web1.link(c1[0], c1[2], "supports", weight=1)
+
+    web2 = Web()
+    # Weave nodes in reverse, link edges in a different order.
+    c2 = {it.title: it.weave(web2) for it in reversed(items)}
+    web2.link(c2["A"], c2["C"], "supports", weight=1)
+    web2.link(c2["B"], c2["C"], "refutes", weight=7)
+    web2.link(c2["A"], c2["B"], "supports", weight=2)
+
+    assert web_state_root(web1) == web_state_root(web2)
+
+
+@pytest.mark.property
+def test_fresh_knit_cid_unchanged_by_state_root_change():
+    """Signed-record byte-identity is preserved: a record/Knit CID is derived from
+    the record's own canonical bytes, NOT from the web root, so the #49 fix does
+    not change any fresh record CID. Pinned here to catch any regression.
+    """
+    item = KnowledgeItem(title="Fiber conservation", body="Mass is conserved.", author=_ADDR_A)
+    # The CID is purely a function of the record bytes; weaving into a Web with
+    # arbitrary nodes/edges (which now affect the state_root) must not change it.
+    expected = item.cid
+    web = Web()
+    other = KnowledgeItem(title="Other", body="x", author=_ADDR_B).weave(web)
+    woven = item.weave(web)
+    web.link(other, woven, "supports", weight=3)  # edges now affect state_root
+    assert woven == expected
+    assert item.cid == expected
 
 
 @pytest.mark.property

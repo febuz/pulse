@@ -7,8 +7,8 @@ These are the first-class node schemas that spiders weave into the Web.
   * ResourceItem   — a resource offer published by a spider: GPU compute, CPU,
                      storage, or any bounded-capacity service. Price and capacity
                      are integers (PLS-wei per epoch; no floats).
-  * FabricCheckpoint — a snapshot of the Web's state (Merkle root of sorted node
-                       CIDs) anchored to a Pulse Beat.  Checkpoints are woven into
+  * FabricCheckpoint — a snapshot of the Web's state (a root committing to both
+                       node CIDs AND edges) anchored to a Pulse Beat.  Checkpoints are woven into
                        the Web itself so their CIDs chain the fabric's history.
 
 All three are frozen dataclasses that round-trip through canonical CBOR, so their
@@ -123,14 +123,15 @@ class ResourceItem:
 class FabricCheckpoint:
     """A snapshot of the Web's state anchored to a Pulse Beat.
 
-    ``state_root`` is the hex-encoded SHA-256 Merkle root of the sorted node
-    CIDs at checkpoint time.  Weaving the checkpoint into the Web itself creates
-    an auditable, content-addressed history of fabric evolution.
+    ``state_root`` is the hex-encoded SHA-256 root committing to both the node
+    CIDs AND the edges of the Web at checkpoint time.  Weaving the checkpoint
+    into the Web itself creates an auditable, content-addressed history of
+    fabric evolution.
     """
 
     epoch: int
     beat_cid: str   # CID of the Pulse Beat this checkpoint is anchored to
-    state_root: str # Merkle root of sorted Web node CIDs (hex)
+    state_root: str # root committing to Web node CIDs AND edges (hex)
     node_count: int
     edge_count: int
 
@@ -163,17 +164,38 @@ class FabricCheckpoint:
 # ---------------------------------------------------------------------------
 
 def web_state_root(web: Web) -> str:
-    """Return the hex Merkle root of the sorted node CIDs in *web*.
+    """Return the hex state root committing to the FULL web: nodes AND edges.
 
-    An empty Web hashes to sha256(b""), the canonical empty-set sentinel.
-    Sorting the CIDs before building the Merkle tree ensures every peer with
-    the same set of nodes produces the same root regardless of insertion order.
+    The root is ``sha256(node_root || edge_root)`` where:
+
+      * ``node_root`` is the SHA-256 Merkle root of the sorted node CIDs, and
+      * ``edge_root`` is the SHA-256 Merkle root of the canonical-CBOR bytes of
+        every edge's ``to_record()``, with edges in a total canonical order by
+        ``(src, rel, dst, weight)`` — the same ordering Web.traverse relies on.
+
+    Committing to edges (not just nodes) means two Webs with identical node sets
+    but different relations, weights, or links produce *different* roots, so edge
+    divergence is visible to the root and binding under an OriginTrail anchor.
+    Each empty side hashes to sha256(b""), the canonical empty-set sentinel, and
+    both sides use canonical, float-free, integer-weight encoding, so every peer
+    with the same nodes AND edges produces the same root regardless of insertion
+    order. The result is always 64 hex chars.
     """
     sorted_cids = sorted(web.nodes.keys())
     # Hash each CID into a fixed 32-byte leaf so the root is always a real digest
     # (otherwise a single-node Web would return the raw CID bytes unchanged).
-    leaves = [crypto.sha256(cid.encode("utf-8")) for cid in sorted_cids]
-    return crypto.merkle_root(leaves).hex()
+    node_leaves = [crypto.sha256(cid.encode("utf-8")) for cid in sorted_cids]
+    node_root = crypto.merkle_root(node_leaves)
+
+    # Total canonical order over edges matching traverse's (rel, dst) tie-break,
+    # extended to a full (src, rel, dst, weight) key so it is a deterministic
+    # total order across peers regardless of adjacency insertion order.
+    all_edges = [edge for edges in web._out.values() for edge in edges]
+    all_edges.sort(key=lambda e: (e.src, e.rel, e.dst, e.weight))
+    edge_leaves = [crypto.sha256(canonical.encode(e.to_record())) for e in all_edges]
+    edge_root = crypto.merkle_root(edge_leaves)
+
+    return crypto.sha256(node_root + edge_root).hex()
 
 
 def checkpoint(web: Web, beat: Beat) -> FabricCheckpoint:
