@@ -35,8 +35,9 @@ from ..core import canonical, crypto
 from .items import web_state_root
 from .web import Web
 from ..p2p.node import PeerAddress, StaticPeerBook
+from ..p2p.reputation import Offense, PeerReputation
 from ..p2p.transport import Dialer, TcpTransport, Transport
-from ..p2p.wire import WireError
+from ..p2p.wire import WireError, read_frame, write_frame
 
 __all__ = ["FabricNode", "FabricNodeError"]
 
@@ -86,6 +87,10 @@ class FabricNode:
         self.dialer = Dialer()
         for tr in [self.transport, *(extra_transports or [])]:
             self.dialer.register(tr)
+        # The Byzantine-consequence ledger: malformed/oversized frames and
+        # forged record signatures accrue misbehavior points; banned peers are
+        # refused and disconnected (the same loop AsyncioP2PNode runs).
+        self.reputation = PeerReputation()
         self._listening = False
 
     # -- server lifecycle -------------------------------------------------
@@ -234,7 +239,14 @@ class FabricNode:
         return {"kind": "fabric-sync-data", "records": records}
 
     async def _dispatch(self, msg: dict) -> dict:
-        """Transport-agnostic gossip handler: request map in, response map out."""
+        """Transport-agnostic gossip handler: request map in, response map out.
+
+        The handler the listening :class:`Transport` feeds decoded requests to.
+        Routing is carrier-independent; the per-connection reputation gate and the
+        signature-offense penalty live in :meth:`_handle_peer`, the TCP-stream
+        wrapper below (a banned-peer key and a frame penalty are socket concerns
+        the carrier owns).
+        """
         try:
             kind = msg.get("kind")
             if kind == "fabric-record":
@@ -245,3 +257,75 @@ class FabricNode:
             return {"kind": "error", "code": "unknown-kind", "message": str(kind)}
         except (FabricNodeError, WireError, ValueError) as exc:
             return {"kind": "error", "code": "bad-request", "message": str(exc)}
+
+    @staticmethod
+    def _peer_id(writer: asyncio.StreamWriter) -> str:
+        """A stable reputation key for the connected peer (its remote endpoint)."""
+        peername = writer.get_extra_info("peername")
+        if isinstance(peername, tuple) and len(peername) >= 2:
+            return f"{peername[0]}:{peername[1]}"
+        return str(peername)
+
+    async def _handle_peer(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        """Per-connection reputation wrapper over a single TCP stream.
+
+        Refuses a banned peer before any work, penalizes malformed/oversized
+        frames, and (uniquely to the fabric node) turns a forged author signature
+        into an :class:`Offense.INVALID_SIGNATURE` penalty on the relaying peer.
+        Routing of a decoded request matches :meth:`_dispatch` (the carrier path).
+        """
+        peer_id = self._peer_id(writer)
+        try:
+            if self.reputation.is_banned(peer_id):
+                await write_frame(
+                    writer, {"kind": "error", "code": "banned", "message": "peer is banned"}
+                )
+                return
+            try:
+                msg = await read_frame(reader)
+            except WireError as exc:
+                offense = (
+                    Offense.OVERSIZED_FRAME
+                    if "too large" in str(exc)
+                    else Offense.MALFORMED_FRAME
+                )
+                self.reputation.penalize(peer_id, offense)
+                await write_frame(
+                    writer, {"kind": "error", "code": "bad-frame", "message": str(exc)}
+                )
+                return
+            kind = msg.get("kind")
+            if kind == "fabric-record":
+                self._ingest_signed(msg)
+                out = {"kind": "fabric-ack"}
+            elif kind == "fabric-sync-request":
+                out = self._serve_sync()
+            else:
+                out = {"kind": "error", "code": "unknown-kind", "message": str(kind)}
+            await write_frame(writer, out)
+        except FabricNodeError as exc:
+            # A forged author signature (or other ingest fault) is a signature
+            # offense — penalize the relaying peer, then refuse.
+            if "signature" in str(exc):
+                self.reputation.penalize(peer_id, Offense.INVALID_SIGNATURE)
+            await write_frame(
+                writer, {"kind": "error", "code": "bad-request", "message": str(exc)}
+            )
+        except WireError as exc:
+            # Explicit: a routing-time wire fault is refused as a bad request.
+            # (WireError subclasses ValueError, but we keep it explicit so the
+            # handling never silently rides on that subclassing.)
+            await write_frame(
+                writer, {"kind": "error", "code": "bad-request", "message": str(exc)}
+            )
+        except ValueError as exc:
+            await write_frame(
+                writer, {"kind": "error", "code": "bad-request", "message": str(exc)}
+            )
+        finally:
+            writer.close()
+            await writer.wait_closed()

@@ -10,6 +10,7 @@ from .node import (
     StaticPeerBook,
 )
 from .relay import RelayError, RelayTransport
+from .reputation import DEFAULT_BAN_THRESHOLD, Offense, PeerReputation
 from .transport import Dialer, TcpTransport, Transport, parse_peer_uri
 
 __all__ = [
@@ -26,4 +27,7 @@ __all__ = [
     "RelayTransport",
     "RelayError",
     "parse_peer_uri",
+    "Offense",
+    "PeerReputation",
+    "DEFAULT_BAN_THRESHOLD",
 ]

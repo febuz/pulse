@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 
 from ..core import canonical
+from ..fabric.equivocation import EquivocationReport
 from ..fabric.feed import FeedHead
 from ..fabric.feed_multiproof import RangeMultiProof
 from ..ledger.knit import Knit
@@ -24,6 +25,8 @@ __all__ = [
     "multiproof_from_record",
     "knit_to_record",
     "knit_from_record",
+    "equivocation_report_to_record",
+    "equivocation_report_from_record",
     "read_frame",
     "write_frame",
     "read_frame_bytes",
@@ -179,6 +182,47 @@ def read_frame_bytes(frame: bytes) -> dict:
     except canonical.CanonicalError as exc:
         raise WireError(f"non-canonical frame: {exc}") from exc
     return _require_dict(msg)
+
+
+_EQ_HEAD_FIELDS = ("root", "length", "fork", "sig")
+
+
+def equivocation_report_to_record(report: EquivocationReport) -> dict:
+    """Return the canonical wire map for a gossiped equivocation report.
+
+    This is the existing ``equivocation-report`` record kind (see
+    :mod:`knitweb.fabric.equivocation`); the wire layer only relays its bytes.
+    """
+    return report.to_record()
+
+
+def _require_head_fields(record: dict, key: str) -> dict:
+    head = _require_dict(record.get(key))
+    out: dict = {}
+    for field in _EQ_HEAD_FIELDS:
+        if field == "length" or field == "fork":
+            out[field] = _require_int(head, field)
+        else:
+            out[field] = _require_str(head, field)
+    return out
+
+
+def equivocation_report_from_record(record: dict) -> EquivocationReport:
+    """Parse a gossiped ``equivocation-report`` wire map into a report.
+
+    Structural validation only — the cryptographic check (both heads conflict
+    under ``feed``) is :func:`knitweb.fabric.equivocation.verify_equivocation_report`,
+    which the policing layer re-runs from these bytes before any consequence.
+    """
+    record = _require_dict(record)
+    if record.get("kind") != "equivocation-report":
+        raise WireError("not an equivocation-report record")
+    return EquivocationReport(
+        feed=_require_str(record, "feed"),
+        head_a=_require_head_fields(record, "head_a"),
+        head_b=_require_head_fields(record, "head_b"),
+        reporter=_require_str(record, "reporter"),
+    )
 
 
 async def read_frame(reader: asyncio.StreamReader) -> dict:

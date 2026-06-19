@@ -8,9 +8,15 @@ and a two-party Knit exchange over localhost.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
 from ..core import crypto
+from ..fabric.equivocation import (
+    EquivocationReport,
+    prove_equivocation,
+    verify_equivocation_report,
+)
 from ..fabric.feed import (
     Feed,
     FeedHead,
@@ -22,15 +28,21 @@ from ..fabric.feed_multiproof import prove_range, verify_range_multiproof
 from ..ledger import knitweb as kw
 from ..ledger.knit import Knit
 from ..ledger.node import AccountNode
+from .policing import police_equivocation_report
+from .reputation import Offense, PeerReputation
 from .transport import Dialer, PeerAddress, TcpTransport, Transport
 from .wire import (
     WireError,
+    equivocation_report_from_record,
+    equivocation_report_to_record,
     feed_head_from_record,
     feed_head_to_record,
     knit_from_record,
     knit_to_record,
     multiproof_from_record,
     multiproof_to_record,
+    read_frame,
+    write_frame,
 )
 
 __all__ = [
@@ -106,6 +118,13 @@ class AsyncioP2PNode:
         self.feeds: dict[str, Feed] = {}
         self.replicas: dict[str, FeedReplica] = {}
         self.frozen_feeds: dict[str, str] = {}
+        # The Byzantine-consequence ledger this node owns: detected/proven
+        # misbehavior is funnelled here, and the per-connection _handle_peer
+        # wrapper refuses banned peers before _dispatch ever sees a request.
+        self.reputation = PeerReputation()
+        # Equivocation reports this node has built or ingested, keyed by feed,
+        # so they can be re-gossiped as the additive ``equivocation-report`` kind.
+        self.equivocation_reports: dict[str, EquivocationReport] = {}
         self._seen_incoming_nonces: set[tuple[str, int, int]] = set()
         # The listening transport (TCP by default; pass a RelayTransport to be
         # reachable from behind NAT). Outbound dials are routed by the Dialer
@@ -188,7 +207,15 @@ class AsyncioP2PNode:
             raise P2PError(f"{msg.get('code')}: {msg.get('message')}")
         if msg.get("kind") != "feed-data":
             raise P2PError(f"unexpected response kind: {msg.get('kind')!r}")
-        replica = self._replica_from_message(msg)
+        try:
+            replica = self._replica_from_message(msg)
+        except P2PError:
+            # The peer served entries that don't match the signed head, or an
+            # unsupported/forged proof: a stale-or-forged-proof offense.
+            self.reputation.penalize(
+                f"{peer.host}:{peer.port}", Offense.STALE_OR_FORGED_PROOF
+            )
+            raise
         return self._merge_replica(replica)
 
     async def sync_feed_range(
@@ -258,6 +285,7 @@ class AsyncioP2PNode:
         if current is not None:
             reason = self._conflict_reason(current, incoming)
             if reason is not None:
+                self._consequence_on_conflict(current.head, incoming.head, reason)
                 self.frozen_feeds[feed_id] = reason
                 raise FeedConflictError(reason)
             if feed_id in self.feeds:
@@ -273,6 +301,34 @@ class AsyncioP2PNode:
         self.replicas[feed_id] = incoming
         return incoming
 
+    def _consequence_on_conflict(
+        self, head_a: FeedHead, head_b: FeedHead, reason: str
+    ) -> None:
+        """Close the detect→prove→consequence loop for a detected feed conflict.
+
+        If the two heads are a *check_conflict*-style equivocation (same
+        ``(length, fork)``, different root), build a portable
+        :class:`EquivocationReport`, file it for gossip, and feed it through
+        :func:`police_equivocation_report` so the offending feed key is banned in
+        this node's reputation ledger. A prefix conflict (a rewrite of an already
+        signed prefix) is not a one-position double-sign, so it carries the graded
+        ``FEED_CONFLICT`` penalty directly. The offending identity is the feed key.
+        """
+        report = prove_equivocation(head_a, head_b, reporter=self._reporter_id)
+        if report is not None:
+            self.equivocation_reports[report.feed] = report
+            police_equivocation_report(self.reputation, report)
+            return
+        # Prefix conflict: provably bad, but not a single-position equivocation.
+        self.reputation.penalize(head_a.feed, Offense.FEED_CONFLICT)
+
+    @property
+    def _reporter_id(self) -> str:
+        """Identity this node stamps onto equivocation reports it authors."""
+        if self.account is not None:
+            return self.account.pub
+        return f"{self.host}:{self.port}"
+
     @staticmethod
     def _conflict_reason(a: FeedReplica, b: FeedReplica) -> str | None:
         if check_conflict(a.head, b.head):
@@ -284,6 +340,42 @@ class AsyncioP2PNode:
             if check_prefix_conflict(b.head, a.head, a.entries):
                 return "shorter feed conflicts with the stored prefix"
         return None
+
+    # -- equivocation gossip ----------------------------------------------
+
+    async def gossip_equivocation_report(
+        self, peer: PeerAddress, report: EquivocationReport
+    ) -> bool:
+        """Send a proven equivocation report to ``peer``; return its accept ack.
+
+        The receiver re-verifies the report from its own bytes before acting, so a
+        forged or tampered report is rejected with no consequence on its end.
+        """
+        msg = await self._roundtrip(
+            peer,
+            {
+                "kind": "equivocation-report",
+                "report": equivocation_report_to_record(report),
+            },
+        )
+        if msg.get("kind") == "error":
+            raise P2PError(f"{msg.get('code')}: {msg.get('message')}")
+        return msg.get("kind") == "equivocation-ack"
+
+    def _handle_equivocation_report(self, msg: dict) -> dict:
+        """Ingest a gossiped equivocation report: verify, ban, and freeze locally."""
+        try:
+            report = equivocation_report_from_record(msg.get("report"))
+        except WireError as exc:
+            return self._error("bad-report", str(exc))
+        if not verify_equivocation_report(report):
+            return self._error("unverified-report", "report does not prove equivocation")
+        police_equivocation_report(self.reputation, report)
+        self.equivocation_reports[report.feed] = report
+        self.frozen_feeds.setdefault(
+            report.feed, "ingested a verified equivocation report for this feed"
+        )
+        return {"kind": "equivocation-ack", "feed": report.feed}
 
     def _serve_feed(self, msg: dict) -> dict:
         feed_id = msg.get("feed")
@@ -437,7 +529,15 @@ class AsyncioP2PNode:
         return await self.dialer.dial(peer, msg)
 
     async def _dispatch(self, msg: dict) -> dict:
-        """Transport-agnostic request handler: request map in, response map out."""
+        """Transport-agnostic request handler: request map in, response map out.
+
+        This is the handler the listening :class:`Transport` feeds every decoded
+        request to (TCP accept loop or relay mailbox poll alike). Routing is
+        carrier-independent; the per-connection reputation gate and frame-level
+        misbehavior penalties live in :meth:`_handle_peer`, the TCP-stream wrapper
+        below, since a banned-peer key and a malformed-frame penalty are socket
+        concerns the carrier owns before a request is ever decoded.
+        """
         try:
             kind = msg.get("kind")
             if kind == "feed-request":
@@ -446,9 +546,59 @@ class AsyncioP2PNode:
                 return self._handle_knit_proposal(msg)
             if kind == "knit-finalize":
                 return self._handle_knit_finalize(msg)
+            if kind == "equivocation-report":
+                return self._handle_equivocation_report(msg)
             return self._error("unknown-kind", str(kind))
         except (P2PError, WireError, ValueError) as exc:
             return self._error("bad-request", str(exc))
+
+    @staticmethod
+    def _peer_id(writer: asyncio.StreamWriter) -> str:
+        """A stable reputation key for the connected peer (its remote endpoint)."""
+        peername = writer.get_extra_info("peername")
+        if isinstance(peername, tuple) and len(peername) >= 2:
+            return f"{peername[0]}:{peername[1]}"
+        return str(peername)
+
+    async def _handle_peer(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        """Per-connection reputation wrapper over a single TCP stream.
+
+        The Byzantine-consequence loop's connection-level half: it refuses a
+        banned peer before any work, penalizes malformed/oversized frames, then
+        delegates routing of the decoded request to the shared, carrier-agnostic
+        :meth:`_dispatch`. (The relay carrier funnels into ``_dispatch`` directly;
+        peer-keyed banning there is a follow-up, as a mailbox has no socket peer.)
+        """
+        peer_id = self._peer_id(writer)
+        try:
+            # Reputation gate: a peer the node has banned (a proven equivocator,
+            # an accumulated bad-proof seeder, …) is refused and disconnected.
+            if self.reputation.is_banned(peer_id):
+                await write_frame(writer, self._error("banned", "peer is banned"))
+                return
+            try:
+                msg = await read_frame(reader)
+            except WireError as exc:
+                # Malformed or oversized wire frame → graded misbehavior points.
+                offense = (
+                    Offense.OVERSIZED_FRAME
+                    if "too large" in str(exc)
+                    else Offense.MALFORMED_FRAME
+                )
+                self.reputation.penalize(peer_id, offense)
+                await write_frame(writer, self._error("bad-frame", str(exc)))
+                return
+            out = await self._dispatch(msg)
+            await write_frame(writer, out)
+        except (P2PError, ValueError) as exc:
+            await write_frame(writer, self._error("bad-request", str(exc)))
+        finally:
+            writer.close()
+            await writer.wait_closed()
 
     @staticmethod
     def _error(code: str, message: str) -> dict:
