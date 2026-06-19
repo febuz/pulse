@@ -84,6 +84,12 @@ only counts votes upstream produced (e.g. drawn from the `VoteBank`).
   deterministic, cross-node-reproducible value path; the compound `*num//den` per beat is
   exact and bounded.
 
+> **The same shape, generalised.** This recency decay is one instance of a single geometric
+> time-value law that also governs fiat inflation (purchasing-power decay), declining-balance
+> depreciation, discounting, and token emission — all linear in log space. See
+> `docs/research/09-time-value-and-relevance.md` for the crypto/economic treatment and the
+> proposed shared integer primitive.
+
 ## Proofs
 
 `tests/property/test_govern_votebank.py` — no premine; national + freeport both count;

@@ -21,6 +21,16 @@ All notable changes to Knitweb. Versions are representative of implemented layer
 - Docs: `docs/GOVERNANCE_VOTEBANK.md`. Proofs: `tests/property/test_govern_votebank.py`
   (20 tests).
 
+### Research — time, relevance, and value as one geometric law
+- `docs/research/09-time-value-and-relevance.md` — generalises the governance recency-decay
+  into a single geometric time-value primitive that also expresses fiat inflation
+  (purchasing-power decay), declining-balance depreciation, discounting, and crypto emission
+  (BTC halving/stock-to-flow, ETH EIP-1559 burn + staking, PLS demand-gated mint). Shows why
+  constant growth + inflation is linear in **log space** (additive log returns), and how
+  Knitweb keeps it float-free: the canonical artifact is an exact integer ratio per Pulse beat;
+  logarithms stay an analytics/edge lens only. Proposes a shared `econ` primitive (no
+  speculative code yet) reusable by governance, token emission, and L5 finance.
+
 ## 0.6.0 — L0–L6 implemented
 
 The crypto is built and operable end to end. Highlights:
