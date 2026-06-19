@@ -34,7 +34,7 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Protocol, runtime_checkable
 
-from .wire import read_frame, write_frame
+from .wire import WireError, read_frame, write_frame
 
 __all__ = [
     "PeerAddress",
@@ -42,6 +42,8 @@ __all__ = [
     "Transport",
     "Dialer",
     "TcpTransport",
+    "DEFAULT_MAX_INBOUND",
+    "DEFAULT_READ_TIMEOUT_S",
     "parse_peer_uri",
 ]
 
@@ -177,6 +179,19 @@ class Dialer:
         return await self.transport_for(peer).dial(peer, request)
 
 
+#: Default ceiling on concurrently-served inbound connections. A deterministic
+#: integer (no random, no wall-clock) so behavior is reproducible across nodes;
+#: it is a pure carrier-policy knob and never touches a hashed/signed path.
+DEFAULT_MAX_INBOUND = 64
+
+#: Default per-connection read deadline, in **integer** seconds, covering the
+#: time to read the single request frame. A slow-loris peer that dribbles bytes
+#: (or never completes its length-prefixed frame) is dropped at this deadline
+#: instead of pinning a connection slot. Like the cap above this is a transport
+#: policy timeout, not part of any deterministic/state path.
+DEFAULT_READ_TIMEOUT_S = 30
+
+
 class TcpTransport:
     """Direct asyncio TCP transport — the original node behavior, extracted.
 
@@ -184,14 +199,52 @@ class TcpTransport:
     response frame, and closes (matching the prior
     ``asyncio.open_connection`` round-trip). ``listen`` runs an
     ``asyncio.start_server`` accept loop and hands each request to ``handler``.
+
+    BACKPRESSURE / DoS GUARDING
+    ---------------------------
+    The accept loop is bounded by two deterministic, carrier-level knobs so a
+    connection flood or a slow-loris peer cannot exhaust the node:
+
+      * ``max_inbound`` — an :class:`asyncio.Semaphore` caps how many inbound
+        connections are *served* at once. A peer that opens more than the cap is
+        accepted by the kernel but its handler waits for a free slot, and is
+        dropped without ever reaching ``handler`` if the connection breaks while
+        queued. This bounds per-connection memory and handler concurrency.
+
+      * ``read_timeout_s`` — each connection gets a single-frame read deadline.
+        A slow-loris that trickles header/payload bytes (or stalls mid-frame)
+        is closed at the deadline, freeing its slot, rather than holding it
+        open indefinitely.
+
+    Exactly one request frame is read per connection (the original one-shot
+    request/response shape), so a peer cannot pipeline a flood of frames down a
+    single accepted socket to amortize past the connection cap. Both knobs are
+    integers with no randomness and live entirely in the carrier — the wire
+    framing bytes, and thus every signed record's byte-identity, are untouched.
     """
 
     tag = "tcp"
 
-    def __init__(self, *, host: str = "127.0.0.1", port: int = 0) -> None:
+    def __init__(
+        self,
+        *,
+        host: str = "127.0.0.1",
+        port: int = 0,
+        max_inbound: int = DEFAULT_MAX_INBOUND,
+        read_timeout_s: int = DEFAULT_READ_TIMEOUT_S,
+    ) -> None:
+        if max_inbound < 1:
+            raise ValueError("max_inbound must be a positive integer")
+        if read_timeout_s < 1:
+            raise ValueError("read_timeout_s must be a positive integer")
         self.host = host
         self.port = port
+        self.max_inbound = max_inbound
+        self.read_timeout_s = read_timeout_s
         self._server: asyncio.AbstractServer | None = None
+        # Bounds the number of inbound connections served concurrently. Created
+        # lazily in ``listen`` so the semaphore binds to the running loop.
+        self._inbound: asyncio.Semaphore | None = None
 
     async def dial(self, peer: PeerAddress, request: dict) -> dict:
         reader, writer = await asyncio.open_connection(peer.host, peer.port)
@@ -206,14 +259,31 @@ class TcpTransport:
         if self._server is not None:
             return
 
+        self._inbound = asyncio.Semaphore(self.max_inbound)
+
         async def _accept(
             reader: asyncio.StreamReader, writer: asyncio.StreamWriter
         ) -> None:
+            # Gate on a free serving slot before doing any per-connection work,
+            # so a connection flood queues here instead of fanning out unbounded
+            # handler coroutines and buffers.
+            assert self._inbound is not None
+            await self._inbound.acquire()
             try:
-                request = await read_frame(reader)
+                # Read exactly one request frame under a deadline: a slow-loris
+                # peer that stalls mid-frame is dropped here, freeing the slot.
+                request = await asyncio.wait_for(
+                    read_frame(reader), timeout=self.read_timeout_s
+                )
                 response = await handler(request)
                 await write_frame(writer, response)
+            except (asyncio.TimeoutError, OSError, WireError):
+                # Carrier-level drop: a peer that cannot complete its single
+                # frame in time, or whose socket fails, loses its slot quietly
+                # rather than pinning resources. No reputation coupling here.
+                pass
             finally:
+                self._inbound.release()
                 writer.close()
                 await writer.wait_closed()
 
