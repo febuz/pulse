@@ -3,6 +3,24 @@
 All notable changes to Knitweb. Versions are representative of implemented layers
 (L0–L6), not a release cadence.
 
+## Unreleased
+
+### Added — governance: VoteBank, demographic supply, recency-weighted voting (`govern/`)
+- **Demographic vote supply** (`govern/registry.py`) — one vote per registered person,
+  counted **per world**: `max_vote_supply = Σ_world (registered_persons + expected_births)`.
+  Two registration paths, both counted in the cap: **national identity** and a **freedom
+  freeport** on-ramp (IMEI + email + ad-hoc proof of identity) for the unbanked/stateless.
+  One-vote-per-person dedup worldwide; raw PII never stored (digests only).
+- **VoteBank** (`govern/votebank.py`) — keeps the vote supply in treasury and issues it with
+  **no premine**, bounded by the demographic cap, one-vote-per-person, fully auditable
+  (`VoteIssuance` CIDs). Mirrors the native-PLS `Treasury` discipline.
+- **Recency-weighted tally** (`govern/tally.py`) — when agents vote, **more recent votes
+  weigh exponentially more**, via a float-free integer compound decay
+  (`weight = weight * num // den` per beat of age, optional `horizon`). Enforces
+  one-vote-per-subject, rejects future-dated votes, deterministic tie-break.
+- Docs: `docs/GOVERNANCE_VOTEBANK.md`. Proofs: `tests/property/test_govern_votebank.py`
+  (20 tests).
+
 ## 0.6.0 — L0–L6 implemented
 
 The crypto is built and operable end to end. Highlights:
