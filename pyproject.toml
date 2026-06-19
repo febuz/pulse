@@ -5,12 +5,12 @@ build-backend = "hatchling.build"
 [project]
 name = "knitweb"
 version = "0.6.0"
-description = "Knitweb: a pure-Python peer-to-peer crypto web with native token PLS — verifiable compute + a traceable knowledge/resource fabric woven by p2p spiders, with OriginTrail symbiosis."
+description = "Knitweb: a pure-Python peer-to-peer web for verifiable compute and a traceable knowledge/resource fabric woven by p2p spiders, with OriginTrail symbiosis."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
 authors = [{ name = "febuz", email = "develuse@gmail.com" }]
-keywords = ["p2p", "crypto", "depin", "knowledge-graph", "provenance", "origintrail", "pls"]
+keywords = ["p2p", "peer-to-peer", "knowledge-graph", "provenance", "origintrail", "verifiable-compute", "pulse"]
 
 # Runtime deps deliberately minimal for the credibly-neutral core.
 # `cryptography` provides secp256k1 ECDSA + SHA-256; canonical CBOR is hand-rolled
