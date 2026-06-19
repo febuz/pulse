@@ -12,6 +12,7 @@ import asyncio
 
 from ..core import canonical
 from ..fabric.feed import FeedHead
+from ..fabric.feed_multiproof import RangeMultiProof
 from ..ledger.knit import Knit
 
 __all__ = [
@@ -19,6 +20,8 @@ __all__ = [
     "WireError",
     "feed_head_to_record",
     "feed_head_from_record",
+    "multiproof_to_record",
+    "multiproof_from_record",
     "knit_to_record",
     "knit_from_record",
     "read_frame",
@@ -81,6 +84,42 @@ def feed_head_from_record(record: dict) -> FeedHead:
         length=_require_int(record, "length"),
         fork=_require_int(record, "fork"),
         sig=_require_str(record, "sig"),
+    )
+
+
+def _require_str_list(record: dict, key: str) -> list[str]:
+    value = record.get(key)
+    if not isinstance(value, list):
+        raise WireError(f"{key} must be a list")
+    for item in value:
+        if not isinstance(item, str):
+            raise WireError(f"{key} entries must be str")
+    return list(value)
+
+
+def multiproof_to_record(proof: RangeMultiProof) -> dict:
+    """Return the canonical wire map for a contiguous-range Merkle multiproof.
+
+    ``siblings`` is the ordered list of out-of-range sibling hashes (hex); both
+    sides re-derive the consume order from ``(start, count, length)`` so only the
+    hashes themselves travel.
+    """
+    return {
+        "start": proof.start,
+        "count": proof.count,
+        "length": proof.length,
+        "siblings": list(proof.siblings),
+    }
+
+
+def multiproof_from_record(record: dict) -> RangeMultiProof:
+    """Parse a range-multiproof wire map."""
+    record = _require_dict(record)
+    return RangeMultiProof(
+        start=_require_int(record, "start"),
+        count=_require_int(record, "count"),
+        length=_require_int(record, "length"),
+        siblings=_require_str_list(record, "siblings"),
     )
 
 

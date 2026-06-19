@@ -42,6 +42,10 @@ packages = ["src/knitweb"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+# importlib import mode lets same-named test modules coexist across suites
+# (e.g. tests/property and tests/interop both holding a feed-sync test file)
+# without needing __init__.py packages.
+addopts = "--import-mode=importlib"
 markers = [
     "property: deterministic property/parity tests for the core (fast)",
     "interop: two-node networked tests (Phase 3+)",

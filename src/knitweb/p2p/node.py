@@ -18,6 +18,7 @@ from ..fabric.feed import (
     check_prefix_conflict,
     verify_entries,
 )
+from ..fabric.feed_multiproof import prove_range, verify_range_multiproof
 from ..ledger import knitweb as kw
 from ..ledger.knit import Knit
 from ..ledger.node import AccountNode
@@ -28,12 +29,15 @@ from .wire import (
     feed_head_to_record,
     knit_from_record,
     knit_to_record,
+    multiproof_from_record,
+    multiproof_to_record,
 )
 
 __all__ = [
     "PeerAddress",
     "StaticPeerBook",
     "FeedReplica",
+    "FeedSlice",
     "P2PError",
     "FeedConflictError",
     "AsyncioP2PNode",
@@ -69,6 +73,20 @@ class FeedReplica:
     """A verified remote feed state."""
 
     head: FeedHead
+    entries: list[dict]
+
+
+@dataclass(frozen=True)
+class FeedSlice:
+    """A verified contiguous slice ``[start, start+len(entries))`` of a signed feed.
+
+    The slice is authenticated against the feed's *full* signed ``head`` by a range
+    multiproof, so a peer trusts the entries exactly as much as the feed author
+    without holding (or transferring) the whole log.
+    """
+
+    head: FeedHead
+    start: int
     entries: list[dict]
 
 
@@ -154,12 +172,17 @@ class AsyncioP2PNode:
     # -- feed sync --------------------------------------------------------
 
     async def sync_feed(self, peer: PeerAddress, feed_id: str) -> FeedReplica:
-        """Fetch and verify a feed from ``peer``."""
+        """Fetch and verify a whole feed from ``peer``.
+
+        Requests every entry (``count = null``). The full entry set is checked
+        against the signed head via :func:`verify_entries`; ``merkle_nodes`` is
+        empty because no slicing is needed when the reader holds the whole log.
+        """
         msg = await self._roundtrip(peer, {
             "kind": "feed-request",
             "feed": feed_id,
             "start": 0,
-            "end": None,
+            "count": None,
         })
         if msg.get("kind") == "error":
             raise P2PError(f"{msg.get('code')}: {msg.get('message')}")
@@ -168,18 +191,63 @@ class AsyncioP2PNode:
         replica = self._replica_from_message(msg)
         return self._merge_replica(replica)
 
+    async def sync_feed_range(
+        self, peer: PeerAddress, feed_id: str, start: int, count: int
+    ) -> FeedSlice:
+        """Fetch and verify a contiguous slice ``[start, start+count)`` from ``peer``.
+
+        Transfers ``count`` entries plus an O(count + log n) range multiproof
+        instead of the whole log, then verifies the slice against the feed's signed
+        head with :func:`verify_range_multiproof`. This is partial replication for
+        large feeds: a peer can authenticate any window without the full history.
+        """
+        if not isinstance(start, int) or isinstance(start, bool):
+            raise P2PError("start must be int")
+        if not isinstance(count, int) or isinstance(count, bool):
+            raise P2PError("count must be int")
+        if start < 0:
+            raise P2PError("start must be non-negative")
+        if count <= 0:
+            raise P2PError("count must be positive")
+        msg = await self._roundtrip(peer, {
+            "kind": "feed-request",
+            "feed": feed_id,
+            "start": start,
+            "count": count,
+        })
+        if msg.get("kind") == "error":
+            raise P2PError(f"{msg.get('code')}: {msg.get('message')}")
+        if msg.get("kind") != "feed-data":
+            raise P2PError(f"unexpected response kind: {msg.get('kind')!r}")
+        return self._slice_from_message(msg, start, count)
+
     def _replica_from_message(self, msg: dict) -> FeedReplica:
         head = feed_head_from_record(msg.get("head"))
         entries = msg.get("entries")
         if not isinstance(entries, list):
             raise P2PError("feed-data entries must be a list")
-        # Partial Merkle proofs are the next backend step. The Phase 3 MVP serves
-        # full logs and keeps the field present so the wire shape can evolve.
         if msg.get("merkle_nodes") != []:
-            raise P2PError("partial Merkle proofs are not supported by this MVP")
+            raise P2PError("full feed-data must not carry a partial proof")
         if not verify_entries(head, entries):
             raise P2PError("feed entries do not match signed head")
         return FeedReplica(head=head, entries=entries)
+
+    def _slice_from_message(self, msg: dict, start: int, count: int) -> FeedSlice:
+        head = feed_head_from_record(msg.get("head"))
+        entries = msg.get("entries")
+        if not isinstance(entries, list):
+            raise P2PError("feed-data entries must be a list")
+        if len(entries) != count:
+            raise P2PError("peer returned a different number of entries than requested")
+        proof = multiproof_from_record(msg.get("merkle_nodes"))
+        if proof.start != start or proof.count != count:
+            raise P2PError("multiproof does not cover the requested range")
+        # The multiproof reconstructs the *signed* root from the slice + carried
+        # siblings, so a verified slice is trusted as much as the feed author —
+        # without ever holding the full log (O(count + log n), not O(length)).
+        if not verify_range_multiproof(head, entries, proof):
+            raise P2PError("feed slice does not match signed head")
+        return FeedSlice(head=head, start=start, entries=entries)
 
     def _merge_replica(self, incoming: FeedReplica) -> FeedReplica:
         feed_id = incoming.head.feed
@@ -221,18 +289,48 @@ class AsyncioP2PNode:
         feed_id = msg.get("feed")
         if not isinstance(feed_id, str):
             return self._error("bad-request", "feed must be str")
-        if msg.get("start") != 0 or msg.get("end") is not None:
-            return self._error("unsupported-range", "MVP serves full feeds only")
+        start = msg.get("start")
+        count = msg.get("count")
+        if not isinstance(start, int) or isinstance(start, bool):
+            return self._error("bad-request", "start must be int")
+        if not (count is None or (isinstance(count, int) and not isinstance(count, bool))):
+            return self._error("bad-request", "count must be int or null")
         if feed_id in self.frozen_feeds:
             return self._error("frozen-feed", self.frozen_feeds[feed_id])
         replica = self._owned_or_replicated(feed_id)
         if replica is None:
             return self._error("unknown-feed", feed_id)
+
+        head = replica.head
+        if count is None:
+            # Whole-feed request: only the canonical full log (start at 0) is served
+            # this way; the entries verify directly against the signed head.
+            if start != 0:
+                return self._error(
+                    "unsupported-range", "whole-feed request must start at 0"
+                )
+            return {
+                "kind": "feed-data",
+                "head": feed_head_to_record(head),
+                "entries": replica.entries,
+                "merkle_nodes": [],
+            }
+
+        # Range request: serve the slice plus a shared-path multiproof so the peer
+        # can verify it against the signed head without the full log.
+        if count <= 0:
+            return self._error("bad-request", "count must be positive")
+        if start < 0 or start + count > head.length:
+            return self._error(
+                "unsupported-range",
+                f"range [{start},{start + count}) out of bounds for length {head.length}",
+            )
+        proof = prove_range(replica.entries, start, count)
         return {
             "kind": "feed-data",
-            "head": feed_head_to_record(replica.head),
-            "entries": replica.entries,
-            "merkle_nodes": [],
+            "head": feed_head_to_record(head),
+            "entries": replica.entries[start : start + count],
+            "merkle_nodes": multiproof_to_record(proof),
         }
 
     # -- Knit handshake ---------------------------------------------------
