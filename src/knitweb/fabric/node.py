@@ -32,15 +32,14 @@ from __future__ import annotations
 import asyncio
 
 from ..core import canonical, crypto
-from ..p2p.anti_entropy import AntiEntropy, Backoff, SyncRound
+from ..p2p.anti_entropy import SyncRound
+from ..p2p.base_node import BaseNode
 from .items import web_state_root
 from .web import Web
-from ..p2p.metrics import Metrics
 from ..p2p.node import PeerAddress, StaticPeerBook
-from ..p2p.relay import ENVELOPE_PEER_KEY
-from ..p2p.reputation import Offense, PeerReputation
-from ..p2p.transport import Dialer, TcpTransport, Transport
-from ..p2p.wire import WireError, read_frame, write_frame
+from ..p2p.reputation import Offense
+from ..p2p.transport import Transport
+from ..p2p.wire import WireError, write_frame
 
 __all__ = ["FabricNode", "FabricNodeError"]
 
@@ -58,7 +57,7 @@ def _record_signable(record: dict) -> bytes:
     return _RECORD_TAG + canonical.encode(record)
 
 
-class FabricNode:
+class FabricNode(BaseNode):
     """A live p2p fabric peer: a fabric Web plus record gossip + convergence.
 
     Each node has its own author keypair (a fresh secp256k1 key unless one is
@@ -69,6 +68,12 @@ class FabricNode:
     regardless of arrival order or duplicate delivery.
     """
 
+    # The fabric _dispatch catches the fabric error family (plus wire/value).
+    # Banned-branch frames_out: this node does NOT increment (diverges from
+    # AsyncioP2PNode), preserving the existing gossip-path metric exactly.
+    _dispatch_errors = (FabricNodeError, WireError, ValueError)
+    _count_frames_out_on_banned = False
+
     def __init__(
         self,
         *,
@@ -78,69 +83,25 @@ class FabricNode:
         transport: Transport | None = None,
         extra_transports: list[Transport] | None = None,
     ) -> None:
+        super().__init__(
+            host=host,
+            port=port,
+            transport=transport,
+            extra_transports=extra_transports,
+        )
         if priv is None:
             priv, _ = crypto.generate_keypair()
         self._priv = priv
         self.pub = crypto.public_from_private(priv)
         self.web = Web()
         self.peerbook = StaticPeerBook()
-        # Same pluggable carrier as AsyncioP2PNode: TCP by default, or a
-        # RelayTransport so a NAT'd fabric node still gossips and converges.
-        self.transport: Transport = transport or TcpTransport(host=host, port=port)
-        self.dialer = Dialer()
-        for tr in [self.transport, *(extra_transports or [])]:
-            self.dialer.register(tr)
-        # The Byzantine-consequence ledger: malformed/oversized frames and
-        # forged record signatures accrue misbehavior points; banned peers are
-        # refused and disconnected (the same loop AsyncioP2PNode runs).
-        self.reputation = PeerReputation()
-        # Integer-only observability over the gossip path (records woven,
-        # broadcasts sent/failed, sync pulls, frames in/out, malformed/oversized
-        # frames, banned-peer refusals). Node-local bookkeeping only: it touches
-        # no signed record and no hash path, so a woven Knit's CID is unchanged.
-        self.metrics = Metrics()
-        self._listening = False
-        # Opt-in self-healing convergence loop (issue #44). Off by default: a
-        # node only starts re-syncing on a background task once
-        # start_anti_entropy is called, so existing serve behaviour is unchanged.
-        self._anti_entropy_task: "asyncio.Task | None" = None
 
     # -- server lifecycle -------------------------------------------------
-
-    @property
-    def address(self) -> PeerAddress:
-        return self.transport.local_address()
-
-    @property
-    def host(self) -> str:
-        return self.transport.local_address().host
-
-    @property
-    def port(self) -> int:
-        return self.transport.local_address().port
-
-    def add_transport(self, transport: Transport) -> None:
-        """Register an extra outbound transport (e.g. relay:// dialing)."""
-        self.dialer.register(transport)
 
     @property
     def state_root(self) -> str:
         """The Merkle root of this node's woven Web (the convergence witness)."""
         return web_state_root(self.web)
-
-    async def start(self) -> None:
-        """Start listening for gossip frames (one request per connection)."""
-        if self._listening:
-            return
-        await self.transport.listen(self._dispatch)
-        self._listening = True
-
-    async def stop(self) -> None:
-        await self.stop_anti_entropy()
-        if not self._listening:
-            return
-        await self.transport.close()
-        self._listening = False
 
     # -- self-healing anti-entropy (issue #44) ----------------------------
 
@@ -168,41 +129,12 @@ class FabricNode:
         the schedule off rather than crashing the loop; on reconnect the next
         round re-syncs and the node re-converges.
         """
-        if self._anti_entropy_task is not None and not self._anti_entropy_task.done():
-            return self._anti_entropy_task
-        driver = AntiEntropy(
+        return self._spawn_anti_entropy(
             self._anti_entropy_rounds(peers),
-            sleep=sleep or self._anti_entropy_sleep,
-            backoff=Backoff(base=interval, ceiling=ceiling),
+            interval=interval,
+            ceiling=ceiling,
+            sleep=sleep,
         )
-        self._anti_entropy = driver
-        self._anti_entropy_task = asyncio.ensure_future(self._anti_entropy_run(driver))
-        return self._anti_entropy_task
-
-    async def stop_anti_entropy(self) -> None:
-        """Cancel the background anti-entropy loop if one is running."""
-        task = self._anti_entropy_task
-        self._anti_entropy_task = None
-        if task is None or task.done():
-            return
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-
-    @staticmethod
-    async def _anti_entropy_sleep(delay: int) -> None:
-        # The prod clock: a seconds-based asyncio sleep. Tests inject a virtual
-        # clock by driving the AntiEntropy driver directly instead.
-        await asyncio.sleep(delay)
-
-    async def _anti_entropy_run(self, driver: AntiEntropy) -> None:
-        try:
-            while True:
-                await driver.run_cycle()
-        except asyncio.CancelledError:
-            raise
 
     def _anti_entropy_rounds(
         self, peers: "list[PeerAddress] | None"
@@ -231,13 +163,6 @@ class FabricNode:
             return pulled
 
         return [sync_round]
-
-    async def __aenter__(self) -> "FabricNode":
-        await self.start()
-        return self
-
-    async def __aexit__(self, _exc_type, _exc, _tb) -> None:
-        await self.stop()
 
     # -- peer wiring ------------------------------------------------------
 
@@ -351,77 +276,31 @@ class FabricNode:
         records = [self._signed_record_msg(rec) for rec in self.web.nodes.values()]
         return {"kind": "fabric-sync-data", "records": records}
 
-    async def _dispatch(self, msg: dict) -> dict:
-        """Transport-agnostic gossip handler: request map in, response map out.
+    def _route(self, kind, msg: dict) -> dict:
+        """Fabric routing table: ingest a gossiped record, or serve a sync snapshot."""
+        if kind == "fabric-record":
+            self._ingest_signed(msg)
+            return {"kind": "fabric-ack"}
+        elif kind == "fabric-sync-request":
+            return self._serve_sync()
+        return {"kind": "error", "code": "unknown-kind", "message": str(kind)}
 
-        The handler the listening :class:`Transport` feeds decoded requests to.
-        The TCP stream applies its banned-peer gate and the signature-offense
-        penalty in :meth:`_handle_peer` (a socket peer key and a frame penalty are
-        concerns the carrier owns). The relay carrier has no socket, so it stamps
-        the sender's identity onto the request as a transport-envelope key
-        (:data:`ENVELOPE_PEER_KEY`); here we honour the *same* ban gate before any
-        work, then drop the key so it never reaches signed/business logic.
-        """
-        self.metrics.incr("frames_in")
-        peer_id = msg.pop(ENVELOPE_PEER_KEY, None)
-        if isinstance(peer_id, str) and self.reputation.is_banned(peer_id):
-            self.metrics.incr("banned_refusals")
-            return {"kind": "error", "code": "banned", "message": "peer is banned"}
-        try:
-            kind = msg.get("kind")
-            if kind == "fabric-record":
-                self._ingest_signed(msg)
-                out: dict = {"kind": "fabric-ack"}
-            elif kind == "fabric-sync-request":
-                out = self._serve_sync()
-            else:
-                out = {"kind": "error", "code": "unknown-kind", "message": str(kind)}
-        except (FabricNodeError, WireError, ValueError) as exc:
-            out = {"kind": "error", "code": "bad-request", "message": str(exc)}
-        self.metrics.incr("frames_out")
-        return out
-
-    @staticmethod
-    def _peer_id(writer: asyncio.StreamWriter) -> str:
-        """A stable reputation key for the connected peer (its remote endpoint)."""
-        peername = writer.get_extra_info("peername")
-        if isinstance(peername, tuple) and len(peername) >= 2:
-            return f"{peername[0]}:{peername[1]}"
-        return str(peername)
-
-    async def _handle_peer(
+    async def _serve_connection(
         self,
-        reader: asyncio.StreamReader,
+        msg: dict,
         writer: asyncio.StreamWriter,
+        peer_id: str,
     ) -> None:
-        """Per-connection reputation wrapper over a single TCP stream.
+        """Post-prologue TCP body: inline routing + the signature-offense tail.
 
-        Refuses a banned peer before any work, penalizes malformed/oversized
-        frames, and (uniquely to the fabric node) turns a forged author signature
-        into an :class:`Offense.INVALID_SIGNATURE` penalty on the relaying peer.
-        Routing of a decoded request matches :meth:`_dispatch` (the carrier path).
+        Unlike :meth:`AsyncioP2PNode._serve_connection` this does NOT delegate to
+        :meth:`_dispatch` — it re-counts frames_in/frames_out itself and inlines
+        the same routing, plus (uniquely to the fabric node) turns a forged author
+        signature into an :class:`Offense.INVALID_SIGNATURE` penalty on the
+        relaying peer. The shared banned-peer gate and malformed/oversized-frame
+        penalty already ran in the :meth:`BaseNode._handle_peer` prologue.
         """
-        peer_id = self._peer_id(writer)
         try:
-            if self.reputation.is_banned(peer_id):
-                self.metrics.incr("banned_refusals")
-                await write_frame(
-                    writer, {"kind": "error", "code": "banned", "message": "peer is banned"}
-                )
-                return
-            try:
-                msg = await read_frame(reader)
-            except WireError as exc:
-                oversized = "too large" in str(exc)
-                self.metrics.incr(
-                    "frames_oversized" if oversized else "frames_malformed"
-                )
-                offense = Offense.OVERSIZED_FRAME if oversized else Offense.MALFORMED_FRAME
-                self.reputation.penalize(peer_id, offense)
-                await write_frame(
-                    writer, {"kind": "error", "code": "bad-frame", "message": str(exc)}
-                )
-                return
             self.metrics.incr("frames_in")
             kind = msg.get("kind")
             if kind == "fabric-record":
@@ -455,6 +334,3 @@ class FabricNode:
             await write_frame(
                 writer, {"kind": "error", "code": "bad-request", "message": str(exc)}
             )
-        finally:
-            writer.close()
-            await writer.wait_closed()

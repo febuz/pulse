@@ -12,7 +12,8 @@ import asyncio
 from dataclasses import dataclass
 
 from ..core import crypto
-from .anti_entropy import AntiEntropy, Backoff, SyncRound
+from .anti_entropy import SyncRound
+from .base_node import BaseNode
 from ..fabric.equivocation import (
     EquivocationReport,
     prove_equivocation,
@@ -36,11 +37,9 @@ from .discovery import (
     handle_peer_exchange,
     peer_exchange_message,
 )
-from .metrics import Metrics
 from .policing import police_equivocation_report
-from .relay import ENVELOPE_PEER_KEY
-from .reputation import Offense, PeerReputation
-from .transport import Dialer, PeerAddress, TcpTransport, Transport
+from .reputation import Offense
+from .transport import PeerAddress, Transport
 from .wire import (
     WireError,
     equivocation_report_from_record,
@@ -51,7 +50,6 @@ from .wire import (
     knit_to_record,
     multiproof_from_record,
     multiproof_to_record,
-    read_frame,
     write_frame,
 )
 
@@ -112,8 +110,13 @@ class FeedSlice:
     entries: list[dict]
 
 
-class AsyncioP2PNode:
+class AsyncioP2PNode(BaseNode):
     """One Knitweb peer speaking the Phase 3 asyncio wire protocol."""
+
+    # The asyncio _dispatch catches the P2P error family (plus wire/value);
+    # FabricNode catches its own. Banned-branch frames_out: this node increments.
+    _dispatch_errors = (P2PError, WireError, ValueError)
+    _count_frames_out_on_banned = True
 
     def __init__(
         self,
@@ -124,30 +127,20 @@ class AsyncioP2PNode:
         transport: Transport | None = None,
         extra_transports: list[Transport] | None = None,
     ) -> None:
+        super().__init__(
+            host=host,
+            port=port,
+            transport=transport,
+            extra_transports=extra_transports,
+        )
         self.account = account
         self.feeds: dict[str, Feed] = {}
         self.replicas: dict[str, FeedReplica] = {}
         self.frozen_feeds: dict[str, str] = {}
-        # The Byzantine-consequence ledger this node owns: detected/proven
-        # misbehavior is funnelled here, and the per-connection _handle_peer
-        # wrapper refuses banned peers before _dispatch ever sees a request.
-        self.reputation = PeerReputation()
-        # Integer-only observability over the Phase 3 wire path (frames in/out,
-        # malformed/oversized frames, banned-peer refusals, records pulled by a
-        # catch-up feed sync). The same reusable primitive the FabricNode meters
-        # with — node-local bookkeeping only: it touches no signed record and no
-        # hash path, so a synced Knit's CID is byte-identical whether or not this
-        # node is being metered.
-        self.metrics = Metrics()
         # Equivocation reports this node has built or ingested, keyed by feed,
         # so they can be re-gossiped as the additive ``equivocation-report`` kind.
         self.equivocation_reports: dict[str, EquivocationReport] = {}
         self._seen_incoming_nonces: set[tuple[str, int, int]] = set()
-        # The listening transport (TCP by default; pass a RelayTransport to be
-        # reachable from behind NAT). Outbound dials are routed by the Dialer
-        # according to each PeerAddress's transport tag, so a node can hold a mix
-        # of tcp:// and relay:// peers at once.
-        self.transport: Transport = transport or TcpTransport(host=host, port=port)
         self.peerbook = StaticPeerBook()
         # The growing peer set: a PEX directory seeded from the hand-configured
         # StaticPeerBook. Peers learned over ``peer-exchange`` are merged here so the
@@ -155,48 +148,8 @@ class AsyncioP2PNode:
         # peerbook holds at construction; ``bootstrap_peers`` re-seeds before dialing
         # so peers added after __init__ are included.
         self.peers = directory_from_peerbook(self.peerbook)
-        self.dialer = Dialer()
-        for tr in [self.transport, *(extra_transports or [])]:
-            self.dialer.register(tr)
-        self._listening = False
-        # Opt-in self-healing convergence loop (issue #44). Off by default — a
-        # node only starts re-bootstrapping + re-syncing on a background task
-        # once start_anti_entropy is called, so existing serve behaviour is
-        # unchanged. The handle lets stop() cancel the loop cleanly.
-        self._anti_entropy_task: "asyncio.Task | None" = None
 
     # -- server lifecycle -------------------------------------------------
-
-    @property
-    def address(self) -> PeerAddress:
-        return self.transport.local_address()
-
-    @property
-    def host(self) -> str:
-        return self.transport.local_address().host
-
-    @property
-    def port(self) -> int:
-        return self.transport.local_address().port
-
-    def add_transport(self, transport: Transport) -> None:
-        """Register an extra outbound transport (e.g. relay:// dialing)."""
-        self.dialer.register(transport)
-
-    async def start(self) -> None:
-        """Start listening for one-request-per-connection peer calls."""
-        if self._listening:
-            return
-        await self.transport.listen(self._dispatch)
-        self._listening = True
-
-    async def stop(self) -> None:
-        """Stop the listener (and any running anti-entropy loop)."""
-        await self.stop_anti_entropy()
-        if not self._listening:
-            return
-        await self.transport.close()
-        self._listening = False
 
     def start_anti_entropy(
         self,
@@ -222,45 +175,12 @@ class AsyncioP2PNode:
         swallows a failed round, so a refusing/dropped peer never crashes the
         loop. Returns the background task.
         """
-        if self._anti_entropy_task is not None and not self._anti_entropy_task.done():
-            return self._anti_entropy_task
-        rounds = self._anti_entropy_rounds(peers, feeds)
-        driver = AntiEntropy(
-            rounds,
-            sleep=sleep or self._anti_entropy_sleep,
-            backoff=Backoff(base=interval, ceiling=ceiling),
+        return self._spawn_anti_entropy(
+            self._anti_entropy_rounds(peers, feeds),
+            interval=interval,
+            ceiling=ceiling,
+            sleep=sleep,
         )
-        self._anti_entropy = driver
-        self._anti_entropy_task = asyncio.ensure_future(self._anti_entropy_run(driver))
-        return self._anti_entropy_task
-
-    async def stop_anti_entropy(self) -> None:
-        """Cancel the background anti-entropy loop if one is running."""
-        task = self._anti_entropy_task
-        self._anti_entropy_task = None
-        if task is None or task.done():
-            return
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-
-    @staticmethod
-    async def _anti_entropy_sleep(delay: int) -> None:
-        # The prod clock: a seconds-based asyncio sleep. Tests inject a virtual
-        # clock by driving the AntiEntropy driver directly instead.
-        await asyncio.sleep(delay)
-
-    async def _anti_entropy_run(self, driver: AntiEntropy) -> None:
-        # Drive cycles forever (until cancelled). Each cycle re-bootstraps and
-        # re-syncs; the driver already swallows a failed round, so a dropped peer
-        # only backs the schedule off rather than crashing the loop.
-        try:
-            while True:
-                await driver.run_cycle()
-        except asyncio.CancelledError:
-            raise
 
     def _anti_entropy_rounds(
         self,
@@ -300,13 +220,6 @@ class AsyncioP2PNode:
     def _feed_length(self, feed_id: str) -> int:
         replica = self._owned_or_replicated(feed_id)
         return replica.head.length if replica is not None else 0
-
-    async def __aenter__(self) -> "AsyncioP2PNode":
-        await self.start()
-        return self
-
-    async def __aexit__(self, _exc_type, _exc, _tb) -> None:
-        await self.stop()
 
     # -- local state ------------------------------------------------------
 
@@ -713,99 +626,36 @@ class AsyncioP2PNode:
         # way (the carrier never re-encodes the canonical-CBOR payload).
         return await self.dialer.dial(peer, msg)
 
-    async def _dispatch(self, msg: dict) -> dict:
-        """Transport-agnostic request handler: request map in, response map out.
+    def _route(self, kind, msg: dict) -> dict:
+        """Asyncio routing table: feed sync, Knit handshake, equivocation, PEX."""
+        if kind == "feed-request":
+            return self._serve_feed(msg)
+        elif kind == "knit-proposal":
+            return self._handle_knit_proposal(msg)
+        elif kind == "knit-finalize":
+            return self._handle_knit_finalize(msg)
+        elif kind == "equivocation-report":
+            return self._handle_equivocation_report(msg)
+        elif kind == PEER_EXCHANGE_KIND:
+            return self._handle_peer_exchange(msg)
+        return self._error("unknown-kind", str(kind))
 
-        This is the handler the listening :class:`Transport` feeds every decoded
-        request to (TCP accept loop or relay mailbox poll alike). The TCP stream
-        applies its banned-peer gate and frame-level misbehavior penalties in
-        :meth:`_handle_peer` (a socket peer key and a malformed-frame penalty are
-        concerns the carrier owns before a request is ever decoded). The relay
-        carrier has no socket, so it stamps the sender's identity onto the request
-        as a transport-envelope key (:data:`ENVELOPE_PEER_KEY`); here we honour
-        the *same* ban gate before any work, then drop the key so it never reaches
-        signed/business logic.
-        """
-        self.metrics.incr("frames_in")
-        peer_id = msg.pop(ENVELOPE_PEER_KEY, None)
-        if isinstance(peer_id, str) and self.reputation.is_banned(peer_id):
-            self.metrics.incr("banned_refusals")
-            self.metrics.incr("frames_out")
-            return self._error("banned", "peer is banned")
-        try:
-            kind = msg.get("kind")
-            if kind == "feed-request":
-                out = self._serve_feed(msg)
-            elif kind == "knit-proposal":
-                out = self._handle_knit_proposal(msg)
-            elif kind == "knit-finalize":
-                out = self._handle_knit_finalize(msg)
-            elif kind == "equivocation-report":
-                out = self._handle_equivocation_report(msg)
-            elif kind == PEER_EXCHANGE_KIND:
-                out = self._handle_peer_exchange(msg)
-            else:
-                out = self._error("unknown-kind", str(kind))
-        except (P2PError, WireError, ValueError) as exc:
-            out = self._error("bad-request", str(exc))
-        self.metrics.incr("frames_out")
-        return out
-
-    @staticmethod
-    def _peer_id(writer: asyncio.StreamWriter) -> str:
-        """A stable reputation key for the connected peer (its remote endpoint)."""
-        peername = writer.get_extra_info("peername")
-        if isinstance(peername, tuple) and len(peername) >= 2:
-            return f"{peername[0]}:{peername[1]}"
-        return str(peername)
-
-    async def _handle_peer(
+    async def _serve_connection(
         self,
-        reader: asyncio.StreamReader,
+        msg: dict,
         writer: asyncio.StreamWriter,
+        peer_id: str,
     ) -> None:
-        """Per-connection reputation wrapper over a single TCP stream.
+        """Post-prologue TCP body: delegate to the shared carrier-agnostic dispatch.
 
-        The Byzantine-consequence loop's connection-level half: it refuses a
-        banned peer before any work, penalizes malformed/oversized frames, then
-        delegates routing of the decoded request to the shared, carrier-agnostic
-        :meth:`_dispatch`. (The relay carrier funnels into ``_dispatch`` directly;
-        peer-keyed banning there is a follow-up, as a mailbox has no socket peer.)
+        The connection-level half of the Byzantine-consequence loop already
+        refused a banned peer and penalized any malformed/oversized frame in the
+        shared :meth:`BaseNode._handle_peer` prologue; here we route the decoded
+        request through the same carrier-agnostic :meth:`_dispatch` the relay
+        carrier funnels into directly.
         """
-        peer_id = self._peer_id(writer)
         try:
-            # Reputation gate: a peer the node has banned (a proven equivocator,
-            # an accumulated bad-proof seeder, …) is refused and disconnected.
-            if self.reputation.is_banned(peer_id):
-                # Refused before a frame is ever decoded — a carrier-owned ban
-                # gate, so it counts the refusal but no frames_in/out (no request
-                # reached the dispatch path).
-                self.metrics.incr("banned_refusals")
-                await write_frame(writer, self._error("banned", "peer is banned"))
-                return
-            try:
-                msg = await read_frame(reader)
-            except WireError as exc:
-                # Malformed or oversized wire frame → graded misbehavior points,
-                # and the matching frame-fault counter the carrier owns.
-                oversized = "too large" in str(exc)
-                self.metrics.incr(
-                    "frames_oversized" if oversized else "frames_malformed"
-                )
-                offense = (
-                    Offense.OVERSIZED_FRAME if oversized else Offense.MALFORMED_FRAME
-                )
-                self.reputation.penalize(peer_id, offense)
-                await write_frame(writer, self._error("bad-frame", str(exc)))
-                return
             out = await self._dispatch(msg)
             await write_frame(writer, out)
         except (P2PError, ValueError) as exc:
             await write_frame(writer, self._error("bad-request", str(exc)))
-        finally:
-            writer.close()
-            await writer.wait_closed()
-
-    @staticmethod
-    def _error(code: str, message: str) -> dict:
-        return {"kind": "error", "code": code, "message": message}
