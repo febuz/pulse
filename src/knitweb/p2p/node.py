@@ -36,6 +36,7 @@ from .discovery import (
     peer_exchange_message,
 )
 from .policing import police_equivocation_report
+from .relay import ENVELOPE_PEER_KEY
 from .reputation import Offense, PeerReputation
 from .transport import Dialer, PeerAddress, TcpTransport, Transport
 from .wire import (
@@ -590,12 +591,18 @@ class AsyncioP2PNode:
         """Transport-agnostic request handler: request map in, response map out.
 
         This is the handler the listening :class:`Transport` feeds every decoded
-        request to (TCP accept loop or relay mailbox poll alike). Routing is
-        carrier-independent; the per-connection reputation gate and frame-level
-        misbehavior penalties live in :meth:`_handle_peer`, the TCP-stream wrapper
-        below, since a banned-peer key and a malformed-frame penalty are socket
-        concerns the carrier owns before a request is ever decoded.
+        request to (TCP accept loop or relay mailbox poll alike). The TCP stream
+        applies its banned-peer gate and frame-level misbehavior penalties in
+        :meth:`_handle_peer` (a socket peer key and a malformed-frame penalty are
+        concerns the carrier owns before a request is ever decoded). The relay
+        carrier has no socket, so it stamps the sender's identity onto the request
+        as a transport-envelope key (:data:`ENVELOPE_PEER_KEY`); here we honour
+        the *same* ban gate before any work, then drop the key so it never reaches
+        signed/business logic.
         """
+        peer_id = msg.pop(ENVELOPE_PEER_KEY, None)
+        if isinstance(peer_id, str) and self.reputation.is_banned(peer_id):
+            return self._error("banned", "peer is banned")
         try:
             kind = msg.get("kind")
             if kind == "feed-request":

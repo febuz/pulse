@@ -38,7 +38,27 @@ from typing import Any
 from .transport import FrameHandler, PeerAddress
 from .wire import MAX_FRAME_BYTES, WireError, read_frame_bytes, write_frame_bytes
 
-__all__ = ["RelayTransport", "RelayError", "HttpPoster"]
+__all__ = [
+    "RelayTransport",
+    "RelayError",
+    "HttpPoster",
+    "ENVELOPE_PEER_KEY",
+    "relay_peer_id",
+]
+
+# Transport-envelope key carrying the sender's relay identity to the handler.
+# It is a ``_relay_*`` correlation key, so :func:`_strip_envelope` removes it
+# before any signed/business logic runs — it never enters canonical/hashed bytes.
+ENVELOPE_PEER_KEY = "_relay_peer"
+
+# Reputation-key prefix for a relay sender, distinguishing a ``relay://`` mailbox
+# from a TCP ``host:port`` so the two address spaces never collide in the ledger.
+_RELAY_PEER_PREFIX = "relay:"
+
+
+def relay_peer_id(mailbox: str) -> str:
+    """Stable reputation key for a relay sender, derived from its reply mailbox."""
+    return f"{_RELAY_PEER_PREFIX}{mailbox}"
 
 # How long a single fetch poll waits server-side before returning empty, and how
 # long dial() waits overall for a correlated reply.
@@ -234,7 +254,15 @@ class RelayTransport:
         # An inbound request: dispatch to the handler and mail the reply back.
         if self._handler is None:
             return
+        # Stamp a transport-envelope peer id so the carrier-agnostic handler can
+        # apply the same reputation/ban gate the TCP _handle_peer wrapper applies
+        # per-socket. The id is the sender's reply-to mailbox — the only stable
+        # identity a store-and-forward mailbox exposes. It rides as a transport
+        # envelope key (``_relay_*``), so `_strip_envelope` still drops it before
+        # any signed/business logic and it never enters canonical/hashed bytes.
         request = _strip_envelope(decoded)
+        if isinstance(reply_to, str):
+            request[ENVELOPE_PEER_KEY] = relay_peer_id(reply_to)
         try:
             response = await self._handler(request)
         except Exception:  # noqa: BLE001 — never let one bad frame kill the loop

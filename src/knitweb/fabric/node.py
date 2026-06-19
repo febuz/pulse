@@ -36,6 +36,7 @@ from .items import web_state_root
 from .web import Web
 from ..p2p.metrics import Metrics
 from ..p2p.node import PeerAddress, StaticPeerBook
+from ..p2p.relay import ENVELOPE_PEER_KEY
 from ..p2p.reputation import Offense, PeerReputation
 from ..p2p.transport import Dialer, TcpTransport, Transport
 from ..p2p.wire import WireError, read_frame, write_frame
@@ -258,12 +259,18 @@ class FabricNode:
         """Transport-agnostic gossip handler: request map in, response map out.
 
         The handler the listening :class:`Transport` feeds decoded requests to.
-        Routing is carrier-independent; the per-connection reputation gate and the
-        signature-offense penalty live in :meth:`_handle_peer`, the TCP-stream
-        wrapper below (a banned-peer key and a frame penalty are socket concerns
-        the carrier owns).
+        The TCP stream applies its banned-peer gate and the signature-offense
+        penalty in :meth:`_handle_peer` (a socket peer key and a frame penalty are
+        concerns the carrier owns). The relay carrier has no socket, so it stamps
+        the sender's identity onto the request as a transport-envelope key
+        (:data:`ENVELOPE_PEER_KEY`); here we honour the *same* ban gate before any
+        work, then drop the key so it never reaches signed/business logic.
         """
         self.metrics.incr("frames_in")
+        peer_id = msg.pop(ENVELOPE_PEER_KEY, None)
+        if isinstance(peer_id, str) and self.reputation.is_banned(peer_id):
+            self.metrics.incr("banned_refusals")
+            return {"kind": "error", "code": "banned", "message": "peer is banned"}
         try:
             kind = msg.get("kind")
             if kind == "fabric-record":
