@@ -19,5 +19,21 @@ Layered architecture:
 Core modules (the seven primitives): Blob, Fiber, Knitweb, Knit, Braid, Web, Pulse.
 """
 
-__version__ = "0.6.0"
+# Single-sourced version: pyproject's [project].version is the canonical value.
+# When installed, importlib.metadata reflects the real distribution version; when
+# running straight from the source tree (no installed dist) we fall back to the
+# static literal below, which MUST equal pyproject's version (a property test in
+# tests/property/test_tools_cli.py asserts byte-equality so they cannot drift).
+_VERSION_FALLBACK = "0.6.0"
+
+try:  # pragma: no cover - trivial import-time branch
+    from importlib.metadata import PackageNotFoundError, version as _pkg_version
+
+    try:
+        __version__ = _pkg_version("knitweb")
+    except PackageNotFoundError:
+        __version__ = _VERSION_FALLBACK
+except ImportError:  # pragma: no cover - importlib.metadata is stdlib on 3.12+
+    __version__ = _VERSION_FALLBACK
+
 TOKEN = "PLS"        # native pay-token: "pulses". FBR reserved for later/regional use.

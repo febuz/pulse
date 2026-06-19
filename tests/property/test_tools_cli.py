@@ -7,6 +7,9 @@ plain functions, so these run without spawning a subprocess.
 """
 
 import json
+import sys
+import tomllib
+from pathlib import Path
 
 import pytest
 
@@ -14,6 +17,29 @@ import knitweb
 from knitweb import store
 from knitweb.ledger.node import AccountNode
 from knitweb.tools import cli
+
+
+def _pyproject_version():
+    # tests/property/test_tools_cli.py -> repo root is two parents up.
+    pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    if not pyproject.is_file():  # pragma: no cover - only when running from a wheel
+        pytest.skip("pyproject.toml not present (installed dist)")
+    with pyproject.open("rb") as fh:
+        return tomllib.load(fh)["project"]["version"]
+
+
+@pytest.mark.property
+def test_dunder_version_is_single_sourced_from_pyproject():
+    # Guard against version drift (#19): the in-tree __version__ (the static
+    # fallback used when running from src) must byte-equal pyproject's version.
+    assert knitweb.__version__ == _pyproject_version()
+
+
+@pytest.mark.property
+def test_static_fallback_equals_pyproject():
+    # Even if a stray installed dist shadows __version__, the literal fallback
+    # that ships in __init__.py must itself match pyproject.
+    assert knitweb._VERSION_FALLBACK == _pyproject_version()
 
 
 @pytest.mark.property
