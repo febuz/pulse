@@ -27,6 +27,8 @@ from .transport import PeerAddress
 __all__ = [
     "PEER_EXCHANGE_KIND",
     "DEFAULT_SHARE_K",
+    "MAX_PEX_INBOUND",
+    "MAX_DIR_SIZE",
     "PeerDirectory",
     "peers_from_records",
     "peer_exchange_message",
@@ -45,6 +47,18 @@ PEER_EXCHANGE_KIND = "peer-exchange"
 # compute regardless of how large the Web becomes. ``None`` anywhere means "all".
 DEFAULT_SHARE_K = 32
 
+# Maximum number of peer addresses accepted from a single inbound PEX message.
+# Any addresses beyond this cap are silently truncated: a peer that sends more
+# gets only the first MAX_PEX_INBOUND merged, so a flooded PEX message cannot
+# grow the flat directory by more than this many entries per message.
+MAX_PEX_INBOUND = 64
+
+# Hard ceiling on the number of entries the flat PeerDirectory may hold.
+# When a merge would push past this cap the oldest learned entries (in insertion
+# order, non-static first) are dropped to make room — static/seed peers that
+# were seeded at construction are NEVER evicted (the static-peer floor).
+MAX_DIR_SIZE = 4096
+
 
 def _key(peer: PeerAddress) -> str:
     # Carrier-aware key. A relay:// peer routes by its ``params`` mailbox (its
@@ -56,15 +70,54 @@ def _key(peer: PeerAddress) -> str:
 
 
 class PeerDirectory:
-    """A deduplicated, mergeable set of known peers (keyed by host:port)."""
+    """A deduplicated, mergeable set of known peers (keyed by host:port).
+
+    Peers are split into two tiers:
+
+    * **Static peers** — seeded at construction (from the hand-configured
+      ``StaticPeerBook``).  They are marked at ``add`` time (or via
+      :meth:`mark_static`) and are *never* evicted by the size cap.  The
+      static-peer floor ensures that a PEX flood cannot displace the
+      pre-configured seeds a node operator typed in.
+
+    * **Learned peers** — merged in from PEX replies.  When the directory
+      reaches :data:`MAX_DIR_SIZE` the oldest learned entries are dropped to
+      make room; static peers are always kept.
+    """
 
     def __init__(self, seeds: "list[PeerAddress] | tuple[PeerAddress, ...]" = ()) -> None:
         self._peers: dict[str, PeerAddress] = {}
+        # Keys of peers that were explicitly seeded at construction: never evicted.
+        self._static: set[str] = set()
+        # Insertion-ordered list of learned (non-static) keys for LRU eviction.
+        self._learned_order: list[str] = []
         for p in seeds:
-            self.add(p)
+            self.add(p, static=True)
 
-    def add(self, peer: PeerAddress) -> None:
-        self._peers[_key(peer)] = peer
+    def add(self, peer: PeerAddress, *, static: bool = False) -> None:
+        k = _key(peer)
+        is_new = k not in self._peers
+        self._peers[k] = peer
+        if static:
+            self._static.add(k)
+            # If a previously-learned peer is promoted to static, remove it from
+            # the eviction queue so it is never accidentally dropped.
+            try:
+                self._learned_order.remove(k)
+            except ValueError:
+                pass
+        elif is_new and k not in self._static:
+            # Brand-new learned entry: track insertion order for eviction.
+            self._learned_order.append(k)
+
+    def mark_static(self, peer: PeerAddress) -> None:
+        """Promote ``peer`` to the static tier so it is never evicted."""
+        k = _key(peer)
+        self._static.add(k)
+        try:
+            self._learned_order.remove(k)
+        except ValueError:
+            pass
 
     def __len__(self) -> int:
         return len(self._peers)
@@ -76,13 +129,36 @@ class PeerDirectory:
         """All known peers in deterministic (host:port-sorted) order."""
         return [self._peers[k] for k in sorted(self._peers)]
 
-    def merge(self, peers: "list[PeerAddress] | tuple[PeerAddress, ...]") -> int:
-        """Add any peers not already known; return how many were newly learned."""
+    def merge(
+        self,
+        peers: "list[PeerAddress] | tuple[PeerAddress, ...]",
+        *,
+        max_size: int = MAX_DIR_SIZE,
+    ) -> int:
+        """Add any peers not already known; return how many were newly learned.
+
+        When the directory would exceed ``max_size`` after adding a new entry, the
+        oldest *learned* (non-static) peer is evicted to make room — static/seed
+        peers are NEVER removed regardless of directory size (the static-peer floor).
+        If the directory is already at or above ``max_size`` and consists entirely of
+        static peers, the incoming peer is silently skipped.
+        """
         learned = 0
         for p in peers:
-            if _key(p) not in self._peers:
-                self._peers[_key(p)] = p
-                learned += 1
+            k = _key(p)
+            if k in self._peers:
+                continue  # already known — dedup
+            # Enforce the size cap before inserting: evict the oldest learned entry
+            # if needed. If nothing is evictable (all static), skip this peer.
+            while len(self._peers) >= max_size and self._learned_order:
+                evict_key = self._learned_order.pop(0)
+                del self._peers[evict_key]
+            if len(self._peers) >= max_size:
+                # Directory is full and all entries are static — cannot make room.
+                continue
+            self._peers[k] = p
+            self._learned_order.append(k)
+            learned += 1
         return learned
 
     def sample(self, k: "int | None" = DEFAULT_SHARE_K) -> list[PeerAddress]:
@@ -154,15 +230,28 @@ def peer_exchange_message(directory: PeerDirectory, k: "int | None" = DEFAULT_SH
 
 
 def handle_peer_exchange(
-    directory: PeerDirectory, msg: dict, share_k: "int | None" = DEFAULT_SHARE_K
+    directory: PeerDirectory,
+    msg: dict,
+    share_k: "int | None" = DEFAULT_SHARE_K,
+    *,
+    inbound_cap: int = MAX_PEX_INBOUND,
 ) -> dict:
     """Merge the peers in ``msg`` into ``directory`` and return a reply sharing ours.
 
     Pure: no sockets. Raises ValueError on a non-peer-exchange or malformed message.
+
+    At most ``inbound_cap`` addresses (default :data:`MAX_PEX_INBOUND`) are accepted
+    per call — any excess records are silently truncated.  This bounds the per-message
+    memory growth: no single PEX message can grow the flat directory by more than
+    ``inbound_cap`` entries regardless of how many the remote peer sends.
     """
     if not isinstance(msg, dict) or msg.get("kind") != PEER_EXCHANGE_KIND:
         raise ValueError("not a peer-exchange message")
-    directory.merge(peers_from_records(msg.get("peers") or []))
+    raw = msg.get("peers") or []
+    # Truncate before parsing: reject the tail so even malformed excess records
+    # are never touched.
+    truncated = raw[:inbound_cap]
+    directory.merge(peers_from_records(truncated))
     return peer_exchange_message(directory, share_k)
 
 
@@ -175,10 +264,15 @@ def directory_from_peerbook(peerbook, extra: "list[PeerAddress] | None" = None) 
 
     Pure glue: it only reads ``peerbook.all()`` (name -> :class:`PeerAddress`), so it
     works for any peerbook honouring that shape and stays socket-free.
+
+    All peerbook peers and ``extra`` addresses are marked **static** in the resulting
+    directory so the size-cap eviction logic in :meth:`PeerDirectory.merge` never
+    displaces them — the static-peer floor guarantees hand-configured seeds survive
+    any PEX flood.
     """
-    directory = PeerDirectory(list(peerbook.all().values()))
+    directory = PeerDirectory(list(peerbook.all().values()))  # seeds → static via __init__
     for peer in extra or ():
-        directory.add(peer)
+        directory.add(peer, static=True)
     return directory
 
 
@@ -207,6 +301,7 @@ def learn_peers(
     peers: "list[PeerAddress] | tuple[PeerAddress, ...]",
     *,
     source: "PeerAddress | None" = None,
+    static: bool = False,
 ) -> int:
     """Fold ``peers`` into BOTH the flat ``directory`` and the bucketed ``book``.
 
@@ -218,8 +313,23 @@ def learn_peers(
     bounded set of buckets and cannot crowd an honest minority out of
     :meth:`AddrBook.sample`. Returns the count newly learned by the flat directory
     (the historical ``merge`` return, so callers' learned-counts are unchanged).
+
+    Pass ``static=True`` when seeding from a hand-configured peerbook so that the
+    size-cap eviction in :meth:`PeerDirectory.merge` never displaces these peers
+    (the static-peer floor).
     """
-    learned = directory.merge(peers)
+    if static:
+        # Add individually so they are registered in the static tier.
+        learned = 0
+        for p in peers:
+            if p not in directory:
+                directory.add(p, static=True)
+                learned += 1
+            else:
+                # Already known — still promote to static to protect it.
+                directory.mark_static(p)
+    else:
+        learned = directory.merge(peers)
     for p in peers:
         book.add_new(p, source=source)
     return learned
