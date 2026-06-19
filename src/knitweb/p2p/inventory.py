@@ -58,12 +58,16 @@ from . import wire
 __all__ = [
     "InventoryError",
     "SeenSet",
+    "ServeBudget",
     "INV",
     "GETDATA",
     "RECON_REQ",
     "RECON_RANGE",
     "RECON_RESULT",
     "MAX_RECON_FRAMES",
+    "MAX_GETDATA_BATCH",
+    "SERVE_BYTES_PER_WINDOW",
+    "SERVE_WINDOW_SECONDS",
     "record_cid",
     "build_inv_frame",
     "parse_inv_frame",
@@ -115,6 +119,40 @@ MAX_CIDS_PER_FRAME = 50_000
 # batch is small; this bounds a malicious peer from forcing an unbounded batch in
 # one envelope. wire.MAX_FRAME_BYTES is the hard backstop.
 MAX_RECON_FRAMES = 50_000
+
+# ---------------------------------------------------------------------------
+# Outbound serve budget — anti-amplification on the getdata/IWANT serve path (#91)
+# ---------------------------------------------------------------------------
+#
+# The threat: the inv-getdata / mesh-IWANT serve path returns the *full stored
+# body* for every CID a peer asks for, with no per-peer cap on count or bytes.
+# A single ~2 MiB request (a getdata naming tens of thousands of CIDs — or a
+# peer hammering the same whole-inventory request in a tight loop) can elicit
+# hundreds of GiB served (~135,000x amplification): a classic reflected-DoS
+# multiplier. The two caps below bound the OUTBOUND side so a request can never
+# amplify past a fixed, integer budget, while staying generous enough that an
+# honest Erlay reconcile of a realistic symmetric difference always completes.
+
+# (a) Per-REQUEST record cap: a single getdata/IWANT serves at most this many
+# stored bodies, no matter how many CIDs it names. An honest Erlay reconcile
+# pulls exactly ``|diff|`` CIDs; a small-to-moderate diff fits well under this,
+# while a pathological whole-inventory pull (up to MAX_CIDS_PER_FRAME = 50_000)
+# is truncated. A legitimately larger diff still makes progress: the un-served
+# CIDs are simply re-requested on the next reconcile round (the SeenSet keeps it
+# O(remaining-diff)), so it paginates across requests rather than deadlocking.
+MAX_GETDATA_BATCH = 2_048
+
+# (b) Per-PEER byte budget over an integer time window: a token/byte bucket. A
+# peer may be served at most ``SERVE_BYTES_PER_WINDOW`` body bytes per rolling
+# ``SERVE_WINDOW_SECONDS`` window; a request that would exceed the remaining
+# budget is served only up to what the budget allows (and the rest is dropped /
+# deferred to a later window, NOT served). Sized GENEROUSLY for honest use — a
+# moderate reconcile diff of a few thousand ~1 KiB records is a few MiB, far
+# under the per-window allowance — while capping a hammering peer to a fixed
+# bytes/window ceiling that kills the GiB-scale amplification. Integer-only; the
+# clock is an injected monotonic integer (seconds), never a wall-clock.
+SERVE_BYTES_PER_WINDOW = 256 * 1024 * 1024  # 256 MiB / window / peer
+SERVE_WINDOW_SECONDS = 10
 
 
 class InventoryError(ValueError):
@@ -206,6 +244,124 @@ class SeenSet:
             local_seen.add(cid)
             out.append(cid)
         return out
+
+
+# ---------------------------------------------------------------------------
+# ServeBudget — per-peer outbound byte bucket over an integer time window (#91)
+# ---------------------------------------------------------------------------
+
+class ServeBudget:
+    """A per-peer token/byte bucket that caps OUTBOUND served bytes per window.
+
+    This is the anti-amplification governor on the serve side of the lazy relay.
+    Each peer is allotted ``bytes_per_window`` body bytes per rolling
+    ``window_seconds`` window; :meth:`take` debits a peer's bucket by the bytes
+    about to be served and returns how many bytes the budget *permits* right now
+    (which may be less than requested, or zero when the peer is exhausted). The
+    serve path serves only up to the permitted amount and drops/defers the rest —
+    so a request can never amplify past a fixed integer ceiling, no matter how
+    many bodies it names or how hard the peer hammers.
+
+    Determinism: the only notion of time is an injected **monotonic integer
+    clock** (whole seconds); there is no wall-clock and no randomness, so a
+    replayed request sequence debits identically. The window is a hard integer
+    boundary (``now // window_seconds``): crossing into a new window refills the
+    bucket to full. Per-peer state is bounded to the most-recently-active peers
+    by an integer ``max_peers`` LRU so a flood of distinct peer keys cannot leak
+    unbounded buckets.
+    """
+
+    def __init__(
+        self,
+        *,
+        bytes_per_window: int = SERVE_BYTES_PER_WINDOW,
+        window_seconds: int = SERVE_WINDOW_SECONDS,
+        max_peers: int = 4_096,
+        clock: "Callable[[], int] | None" = None,
+    ) -> None:
+        for name, val in (
+            ("bytes_per_window", bytes_per_window),
+            ("window_seconds", window_seconds),
+            ("max_peers", max_peers),
+        ):
+            if not isinstance(val, int) or isinstance(val, bool):
+                raise TypeError(f"{name} must be int")
+            if val < 1:
+                raise ValueError(f"{name} must be >= 1")
+        if clock is not None and not callable(clock):
+            raise TypeError("clock must be callable or None")
+        self._bytes_per_window = bytes_per_window
+        self._window_seconds = window_seconds
+        self._max_peers = max_peers
+        # The default clock is a monotonic integer second counter. Tests inject a
+        # virtual clock so the window boundary is deterministic with no real time.
+        self._clock = clock if clock is not None else _default_monotonic_seconds
+        # peer key -> (window index it was last refilled in, bytes remaining).
+        self._buckets: "OrderedDict[str, Tuple[int, int]]" = OrderedDict()
+
+    @property
+    def bytes_per_window(self) -> int:
+        return self._bytes_per_window
+
+    @property
+    def window_seconds(self) -> int:
+        return self._window_seconds
+
+    def _window_index(self) -> int:
+        now = self._clock()
+        if not isinstance(now, int) or isinstance(now, bool):
+            raise TypeError("clock must return int seconds")
+        # Floor-divide into integer windows; negative clocks floor toward -inf,
+        # which is still monotonic and deterministic.
+        return now // self._window_seconds
+
+    def remaining(self, peer: str) -> int:
+        """Bytes ``peer`` may still be served in the CURRENT window (read-only)."""
+        win = self._window_index()
+        rec = self._buckets.get(peer)
+        if rec is None or rec[0] != win:
+            return self._bytes_per_window
+        return rec[1]
+
+    def take(self, peer: str, want_bytes: int) -> int:
+        """Debit ``peer``'s bucket; return the bytes the budget PERMITS now.
+
+        Refills the bucket to full on crossing into a new integer window. The
+        return value is ``min(want_bytes, remaining)`` and is what the caller is
+        allowed to serve; the caller drops/defers any excess. ``want_bytes`` of 0
+        is a no-op that returns 0 (and still touches LRU recency for the peer).
+        """
+        if not isinstance(peer, str) or not peer:
+            raise InventoryError("peer key must be a non-empty str")
+        if not isinstance(want_bytes, int) or isinstance(want_bytes, bool):
+            raise TypeError("want_bytes must be int")
+        if want_bytes < 0:
+            raise ValueError("want_bytes must be >= 0")
+        win = self._window_index()
+        rec = self._buckets.get(peer)
+        if rec is None or rec[0] != win:
+            remaining = self._bytes_per_window
+        else:
+            remaining = rec[1]
+        granted = want_bytes if want_bytes <= remaining else remaining
+        self._buckets[peer] = (win, remaining - granted)
+        self._buckets.move_to_end(peer)
+        if len(self._buckets) > self._max_peers:
+            self._buckets.popitem(last=False)
+        return granted
+
+
+def _default_monotonic_seconds() -> int:
+    """Prod clock: a monotonic integer-second counter (no wall-clock).
+
+    ``time.monotonic_ns`` is monotonic and unaffected by clock adjustments; we
+    truncate to whole seconds so the budget's window is a pure integer. Imported
+    lazily so the module's import graph stays free of a top-level ``time`` on the
+    socket-free, deterministic core paths that never instantiate a live budget.
+    """
+    import time
+
+    return time.monotonic_ns() // 1_000_000_000
 
 
 # ---------------------------------------------------------------------------
@@ -367,11 +523,17 @@ class InventoryRelay:
         lookup: FrameLookup,
         *,
         seen: SeenSet | None = None,
+        budget: "ServeBudget | None" = None,
     ) -> None:
         if not callable(lookup):
             raise TypeError("lookup must be callable")
         self._lookup = lookup
         self.seen = seen if seen is not None else SeenSet()
+        # Outbound anti-amplification governor (#91). A per-peer byte bucket over
+        # an integer window; ``on_getdata`` debits it before returning bodies so a
+        # single request / a hammering peer can never amplify past a fixed budget.
+        # Default-constructed (prod monotonic clock) unless a test injects one.
+        self.budget = budget if budget is not None else ServeBudget()
 
     # -- outbound announce ------------------------------------------------
 
@@ -416,23 +578,57 @@ class InventoryRelay:
 
     # -- inbound getdata -> outbound record frames ------------------------
 
-    def on_getdata(self, frame: bytes) -> List[bytes]:
+    def on_getdata(self, frame: bytes, *, peer: str | None = None) -> List[bytes]:
         """Handle an inbound ``getdata``; return stored frames for held CIDs.
 
         Each returned element is the **stored frame bytes verbatim** (the exact
         signed wire frame), never a re-encode — so a record's CID is unchanged by
         a relay hop. CIDs we do not hold are silently skipped (the peer may want
         an item we never received); we never fabricate a body.
+
+        Anti-amplification (#91): the serve is bounded on TWO axes so a single
+        request can never reflect an unbounded body multiple back at the requester.
+
+          * **per-request count** — at most :data:`MAX_GETDATA_BATCH` bodies are
+            returned, no matter how many CIDs the frame names. The excess CIDs are
+            simply not served on this request; an honest peer re-requests the
+            remaining diff on its next reconcile round (the SeenSet keeps that
+            O(remaining-diff)), so a legitimately large diff paginates across
+            requests rather than amplifying or deadlocking.
+          * **per-peer bytes/window** — when ``peer`` is supplied, each body's
+            bytes are debited from that peer's :class:`ServeBudget` bucket; once
+            the peer's window budget is exhausted, no further bodies are served
+            this window (they are dropped/deferred, NOT served). ``peer=None``
+            (no identified sender) skips only the byte bucket — the per-request
+            count cap still applies — so an unidentifiable carrier cannot use
+            anonymity to bypass the hard count ceiling.
+
+        The byte budget is checked *before* a body is appended, so the returned
+        list never exceeds the peer's remaining budget; verbatim bytes are
+        otherwise untouched, so byte-identity is preserved exactly.
         """
         wanted = parse_getdata_frame(frame)
         out: List[bytes] = []
         for cid in wanted:
+            if len(out) >= MAX_GETDATA_BATCH:
+                # Per-request count cap reached: stop serving. Remaining CIDs are
+                # re-requested next round (O(remaining-diff)); nothing deadlocks.
+                break
             stored = self._lookup(cid)
             if stored is None:
                 continue
             if not isinstance(stored, (bytes, bytearray)):
                 raise InventoryError("frame lookup must return bytes or None")
-            out.append(bytes(stored))
+            body = bytes(stored)
+            if peer is not None:
+                # Debit the per-peer byte bucket. ``take`` returns how many bytes
+                # the budget permits right now; if it cannot cover this whole
+                # body, the peer is out of budget for this window — stop serving
+                # (defer the rest to a later window) rather than partial-serving a
+                # frame, which would corrupt byte-identity.
+                if self.budget.take(peer, len(body)) < len(body):
+                    break
+            out.append(body)
         return out
 
     # -- inbound record ---------------------------------------------------

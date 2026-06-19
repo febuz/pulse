@@ -39,7 +39,15 @@ from knitweb.core import canonical
 from knitweb.fabric.items import web_state_root
 from knitweb.fabric.node import FabricNode
 from knitweb.p2p import wire
-from knitweb.p2p.inventory import GETDATA, RECON_REQ, RECON_RANGE, RECON_RESULT
+from knitweb.p2p.inventory import (
+    GETDATA,
+    MAX_GETDATA_BATCH,
+    RECON_REQ,
+    RECON_RANGE,
+    RECON_RESULT,
+    ServeBudget,
+)
+from knitweb.p2p.relay import ENVELOPE_PEER_KEY
 from knitweb.p2p.transport import PeerAddress
 
 
@@ -394,5 +402,186 @@ def test_anti_entropy_still_converges_what_reconcile_is_not_run_for():
         # b pulled via the full-sync backstop, issuing no reconcile or getdata.
         assert b.transport.sent_kinds.get(RECON_REQ, 0) == 0
         assert b.transport.sent_kinds.get(GETDATA, 0) == 0
+
+    run(scenario())
+
+
+# ── 8. anti-amplification budget on the live serve path (#91) ─────────────────
+#
+# The reconcile PULL leg (``_serve_getdata``) and the mesh-IWANT serve return the
+# verbatim stored body for every CID a peer names, with (pre-#91) no per-peer cap
+# on count or bytes. A single ~2 MiB getdata naming the whole inventory — or a
+# peer hammering it — could reflect hundreds of GiB. These prove the per-request
+# batch cap and the per-peer byte budget are WIRED into the live FabricNode serve
+# path, while an honest reconcile of a realistic diff still converges.
+
+
+class _IdMemTransport(_MemTransport):
+    """A mem carrier that ALSO stamps the sender's stable identity per dial.
+
+    The byte budget keys per peer; the live carrier stamps the sender id as
+    ``ENVELOPE_PEER_KEY`` (a TCP carrier does this from the remote IP). We stamp a
+    fixed id so the responder's #91 byte bucket is keyed and debited exactly as in
+    production — without it the dispatch would see an unidentified sender and only
+    the count cap would apply.
+    """
+
+    def __init__(self, registry: dict, node_id: int, sender_id: str) -> None:
+        super().__init__(registry, node_id)
+        self._sender_id = sender_id
+
+    async def dial(self, peer: PeerAddress, request: dict) -> dict:
+        target = self._registry[int(peer.params["id"])]
+        kind = str(request.get("kind"))
+        self.sent_kinds[kind] = self.sent_kinds.get(kind, 0) + 1
+        if kind == GETDATA:
+            cids = request.get("cids")
+            self.getdata_cid_counts.append(len(cids) if isinstance(cids, list) else 0)
+        raw = wire.write_frame_bytes(request)
+        decoded = wire.read_frame_bytes(raw)
+        # Stamp the carrier-identified sender so the responder keys its budget.
+        decoded[ENVELOPE_PEER_KEY] = self._sender_id
+        resp = await asyncio.wait_for(target._node._dispatch(decoded), timeout=5)
+        return wire.read_frame_bytes(wire.write_frame_bytes(resp))
+
+
+class _Clock:
+    def __init__(self, t: int = 0) -> None:
+        self._t = t
+
+    def __call__(self) -> int:
+        return self._t
+
+    def advance(self, secs: int) -> None:
+        self._t += secs
+
+
+@pytest.mark.interop
+def test_live_getdata_serve_is_capped_at_the_batch_not_the_whole_store():
+    """A getdata naming FAR more CIDs than the batch cap serves AT MOST the cap.
+
+    LOAD-BEARING at the NODE level: the responder holds 2x the batch cap; an
+    attacker dials one getdata naming every held CID. The live ``_serve_getdata``
+    returns at most ``MAX_GETDATA_BATCH`` records — the whole store does NOT
+    reflect back, so the ~135,000x amplification is dead.
+    """
+    async def scenario():
+        reg: dict = {}
+        attacker = _IdMemTransport(reg, 1, sender_id="tcp:attacker")
+        victim_tr = _IdMemTransport(reg, 2, sender_id="tcp:victim")
+        attacker_node = FabricNode(transport=attacker)
+        attacker.bind(attacker_node)
+        victim = FabricNode(transport=victim_tr)
+        victim_tr.bind(victim)
+
+        # Victim holds 2x the batch cap of records.
+        n = MAX_GETDATA_BATCH * 2
+        all_cids = []
+        for i in range(n):
+            all_cids.append(await victim.weave(_knowledge(i, victim.pub)))
+
+        # Attacker dials ONE getdata naming every held CID (the amplification req).
+        resp = await attacker.dial(victim.address, {"kind": GETDATA, "cids": all_cids})
+        records = resp.get("records", [])
+        assert resp.get("kind") == "inv-data"
+        # AT MOST the batch cap is served — not the whole 2x-cap store.
+        assert len(records) == MAX_GETDATA_BATCH
+        assert len(records) < n
+
+    run(scenario())
+
+
+@pytest.mark.interop
+def test_live_byte_budget_throttles_a_hammering_peer():
+    """A peer hammering getdata is throttled by the live per-peer byte budget.
+
+    With a tiny injected byte budget, the first request serves up to the byte
+    ceiling and a second request in the SAME window serves nothing; crossing into
+    the next window refills. Proves the bucket is wired into the live serve path.
+    """
+    async def scenario():
+        reg: dict = {}
+        attacker = _IdMemTransport(reg, 1, sender_id="tcp:hammer")
+        clock = _Clock(0)
+        # Hold a few records; size the budget to ~2 bodies/window.
+        victim_tr = _IdMemTransport(reg, 2, sender_id="tcp:victim")
+        victim = FabricNode(
+            transport=victim_tr,
+            serve_budget=ServeBudget(
+                bytes_per_window=1, window_seconds=5, clock=clock
+            ),
+        )
+        victim_tr.bind(victim)
+        attacker_node = FabricNode(transport=attacker)
+        attacker.bind(attacker_node)
+
+        cids = [await victim.weave(_knowledge(i, victim.pub)) for i in range(6)]
+        # Size the budget to EXACTLY the first two served bodies (serve order is
+        # request order), so a window admits 2 whole bodies and no more — proving
+        # the bucket stops on a whole-body boundary, never truncating a frame.
+        two_bodies = len(victim._frames[cids[0]]) + len(victim._frames[cids[1]])
+        third_body = len(victim._frames[cids[2]])
+        victim._serve_budget = ServeBudget(
+            # Room for 2 whole bodies but NOT a 3rd (a fraction short of body #3).
+            bytes_per_window=two_bodies + third_body - 1,
+            window_seconds=5,
+            clock=clock,
+        )
+        victim._inv.budget = victim._serve_budget
+
+        req = {"kind": GETDATA, "cids": cids}
+        first = await attacker.dial(victim.address, req)
+        assert len(first.get("records", [])) == 2  # capped to the byte budget
+
+        second = await attacker.dial(victim.address, req)
+        # Same window, budget exhausted -> nothing more served (drop/defer).
+        assert second.get("kind") == "inv-ack"
+        assert second.get("records", []) == []
+
+        clock.advance(5)  # next window refills the bucket
+        third = await attacker.dial(victim.address, req)
+        assert len(third.get("records", [])) == 2
+
+    run(scenario())
+
+
+@pytest.mark.interop
+def test_honest_reconcile_still_converges_under_the_serve_budget():
+    """An honest Erlay reconcile of a moderate diff STILL pulls all its CIDs.
+
+    The #91 cap must NOT starve honest reconcile: with the (generous) prod budget
+    active and the live carrier stamping identities, a node reconciling a moderate
+    symmetric difference still fetches every missing CID and converges. This is the
+    Erlay-preserved proof under the new budget.
+    """
+    async def scenario():
+        reg: dict = {}
+        a_tr = _IdMemTransport(reg, 1, sender_id="tcp:a")
+        b_tr = _IdMemTransport(reg, 2, sender_id="tcp:b")
+        # Prod-default generous byte budget on the responder.
+        a = FabricNode(transport=a_tr, serve_budget=ServeBudget())
+        a_tr.bind(a)
+        b = FabricNode(transport=b_tr, serve_budget=ServeBudget())
+        b_tr.bind(b)
+
+        # 300 shared, a moderate diff b holds that a lacks (well under the cap).
+        shared = [_knowledge(i, a.pub) for i in range(300)]
+        for rec in shared:
+            await a.weave(rec)
+            await b.weave(rec)
+        diff_n = 250
+        b_only = set()
+        for i in range(700000, 700000 + diff_n):
+            b_only.add(await b.weave(_knowledge(i, b.pub)))
+
+        a.add_peer("b", b.address)
+        fetched = await a.reconcile_with(b.address)
+
+        # Honest reconcile converged under the budget: every missing CID pulled.
+        assert fetched == diff_n
+        for cid in b_only:
+            assert a.web.get(cid) is not None
+        # And it pulled exactly the diff via getdata (O(diff), Erlay intact).
+        assert sum(a.transport.getdata_cid_counts) == diff_n
 
     run(scenario())

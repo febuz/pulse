@@ -73,6 +73,7 @@ from ..p2p.inventory import (
 )
 from ..p2p import mesh
 from ..p2p.mesh import GRAFT, PRUNE, IHAVE, IWANT, Gossipsub
+from ..p2p.relay import ENVELOPE_PEER_KEY, ENVELOPE_ID_PROOF_KEY
 from ..p2p.reconcile import ReconcileSession
 from .items import web_state_root
 from .web import Web
@@ -149,6 +150,7 @@ class FabricNode(BaseNode):
         extra_transports: list[Transport] | None = None,
         gossip: Gossipsub | None = None,
         gossip_seed: int | None = None,
+        serve_budget: "inventory.ServeBudget | None" = None,
     ) -> None:
         super().__init__(
             host=host,
@@ -173,8 +175,24 @@ class FabricNode(BaseNode):
         self._frames: dict[str, bytes] = {}
         # One inventory relay per node; its SeenSet is the announce/want dedup.
         # The lookup is into the frame store above (returns None for a CID we do
-        # not hold, so on_getdata never fabricates a body).
-        self._inv = InventoryRelay(lambda cid: self._frames.get(cid))
+        # not hold, so on_getdata never fabricates a body). It also owns the #91
+        # anti-amplification ServeBudget: a per-peer byte bucket over an integer
+        # window plus a per-request batch cap, enforced on the getdata/IWANT serve
+        # path so a single ~2 MiB request can no longer reflect hundreds of GiB.
+        # A test injects ``serve_budget`` with a virtual clock so the window
+        # boundary is deterministic; prod default uses a monotonic integer clock.
+        self._serve_budget = (
+            serve_budget if serve_budget is not None else inventory.ServeBudget()
+        )
+        self._inv = InventoryRelay(
+            lambda cid: self._frames.get(cid), budget=self._serve_budget
+        )
+        # The per-peer serve key for the request currently being dispatched. Set by
+        # the :meth:`_dispatch` override (from the carrier-stamped sender identity)
+        # so the serve handlers can debit the right peer's byte bucket; ``None``
+        # when the carrier could not identify the sender (the per-request count cap
+        # still applies, so anonymity cannot bypass the hard ceiling).
+        self._serve_peer_key: "str | None" = None
         # Erlay activation (#60): per-(peer, session) RESPONDER state. A reconcile
         # session is a multi-round bisection; on the one-shot dict carrier each
         # round is one dial, so the side being dialed must keep its
@@ -210,6 +228,38 @@ class FabricNode(BaseNode):
     def state_root(self) -> str:
         """The Merkle root of this node's woven Web (the convergence witness)."""
         return web_state_root(self.web)
+
+    async def _dispatch(self, msg: dict) -> dict:
+        """Resolve the per-peer serve key, then delegate to the shared dispatch.
+
+        The #91 anti-amplification byte budget is keyed PER PEER, but the shared
+        :meth:`BaseNode._dispatch` pops the carrier identity (and any piggybacked
+        identity proof) BEFORE it calls :meth:`_route`, so the serve handlers
+        downstream would otherwise have no peer to debit. We therefore resolve the
+        reputation key here — through the SAME single identity-keying authority the
+        base uses (:meth:`_resolve_verdict`, reading the carrier id and the OPTIONAL
+        proof NON-destructively so the base still pops and judges them itself) —
+        and stash it for the serve path. The proven ``node:<pubkey>`` is used when a
+        valid+fresh proof rode along (so a peer cannot dodge its budget by hopping
+        carrier ids), else the carrier id, else ``None`` (unidentified sender: only
+        the per-request count cap applies). We never mutate ``msg`` and we delegate
+        verbatim, so the ban gate, the INVALID_SIGNATURE penalty, and every other
+        dispatch behaviour are byte-for-byte the base's.
+        """
+        carrier_id = msg.get(ENVELOPE_PEER_KEY)
+        if not isinstance(carrier_id, str):
+            carrier_id = None
+        if carrier_id is None:
+            self._serve_peer_key = None
+        else:
+            self._serve_peer_key = self._resolve_peer_id(
+                carrier_id, msg.get(ENVELOPE_ID_PROOF_KEY)
+            )
+        try:
+            return await super()._dispatch(msg)
+        finally:
+            # Scope the key to this dispatch only; never let it leak to the next.
+            self._serve_peer_key = None
 
     # -- self-healing anti-entropy (issue #44) ----------------------------
 
@@ -615,8 +665,15 @@ class FabricNode(BaseNode):
             raise FabricNodeError("inv-getdata cids must be a list")
         # Serve exactly the wanted CIDs as verbatim stored frames, decoded to
         # their envelope maps to ride the dict carrier (canonical CBOR is
-        # deterministic, so the inner record + its CID are byte-stable).
-        frames = self._inv.on_getdata(inventory.build_getdata_frame(wanted))
+        # deterministic, so the inner record + its CID are byte-stable). The same
+        # #91 outbound budget applies: when this push is itself answering an
+        # inbound IWANT (``_serve_iwant_response``), ``_serve_peer_key`` names that
+        # peer so its byte bucket is debited; on a locally-initiated eager weave it
+        # is None and only the per-request count cap applies. Either way a serve
+        # can never amplify past the fixed batch/byte ceiling.
+        frames = self._inv.on_getdata(
+            inventory.build_getdata_frame(wanted), peer=self._serve_peer_key
+        )
         if not frames:
             return
         records = [wire.read_frame_bytes(fr) for fr in frames]
@@ -956,7 +1013,16 @@ class FabricNode(BaseNode):
         cids = msg.get("cids")
         if not isinstance(cids, list):
             raise FabricNodeError("inv-getdata cids must be a list")
-        frames = self._inv.on_getdata(inventory.build_getdata_frame(cids))
+        # Serve under the #91 per-peer outbound budget: at most MAX_GETDATA_BATCH
+        # bodies, and at most the requesting peer's remaining bytes/window. The
+        # peer key is the one this dispatch resolved (proven node id when a proof
+        # rode along, else carrier id, else None -> count-cap-only). Un-served CIDs
+        # are re-requested next reconcile round (O(remaining-diff)), so an honest
+        # large diff still converges across windows; a pathological whole-inventory
+        # pull is capped here instead of reflecting hundreds of GiB.
+        frames = self._inv.on_getdata(
+            inventory.build_getdata_frame(cids), peer=self._serve_peer_key
+        )
         if not frames:
             return {"kind": "inv-ack"}
         records = [wire.read_frame_bytes(fr) for fr in frames]

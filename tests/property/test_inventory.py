@@ -21,12 +21,17 @@ import pytest
 from knitweb.core import canonical, crypto
 from knitweb.ledger import knit as knit_mod
 from knitweb.p2p import wire
+from knitweb.p2p import inventory as inventory_mod
 from knitweb.p2p.inventory import (
     GETDATA,
     INV,
+    MAX_GETDATA_BATCH,
+    SERVE_BYTES_PER_WINDOW,
+    SERVE_WINDOW_SECONDS,
     InventoryError,
     InventoryRelay,
     SeenSet,
+    ServeBudget,
     build_getdata_frame,
     build_inv_frame,
     parse_getdata_frame,
@@ -323,3 +328,189 @@ def test_relay_drives_as_a_sync_round_callback():
     assert asyncio.run(sync_round()) == 2
     # Second round: everything already announced -> zero progress (deterministic).
     assert asyncio.run(sync_round()) == 0
+
+
+# ── 7. anti-amplification: per-request batch cap + per-peer byte budget (#91) ──
+#
+# A single inv-getdata / mesh-IWANT can name tens of thousands of CIDs; the serve
+# path returns the FULL stored body for each, with (pre-#91) no per-peer cap on
+# count or bytes. A ~2 MiB request could elicit hundreds of GiB served. These
+# tests pin the two caps that kill that amplification while leaving an honest
+# (small/moderate) diff fully servable.
+
+
+class _VirtualClock:
+    """A deterministic, injectable monotonic integer-second clock for the budget.
+
+    No wall-clock, no randomness: ``advance`` is the ONLY way time moves, so the
+    budget's window boundary is fully replayable.
+    """
+
+    def __init__(self, t: int = 0) -> None:
+        self._t = t
+
+    def __call__(self) -> int:
+        return self._t
+
+    def advance(self, secs: int) -> None:
+        self._t += secs
+
+
+def _bulk_store(n: int) -> "tuple[FrameStore, list[str]]":
+    """A store of ``n`` distinct records; return it and the ordered CID list."""
+    store = FrameStore()
+    cids = []
+    for i in range(n):
+        cid, _ = store.put_record(_record(i))
+        cids.append(cid)
+    return store, cids
+
+
+def test_getdata_serves_at_most_the_batch_cap_not_the_whole_store():
+    """A getdata for FAR more than the batch cap serves AT MOST the cap.
+
+    LOAD-BEARING: the store holds 3x the batch cap and the peer asks for ALL of
+    them in one request, yet at most ``MAX_GETDATA_BATCH`` bodies come back — the
+    whole store does NOT reflect back. Reverting the cap (serving every wanted
+    CID) makes this serve 3x the cap, so the assertion is load-bearing.
+    """
+    n = MAX_GETDATA_BATCH * 3
+    store, cids = _bulk_store(n)
+    # No per-peer key here -> only the per-request COUNT cap applies (an
+    # unidentified carrier still cannot bypass the hard ceiling).
+    relay = InventoryRelay(store.lookup)
+
+    served = relay.on_getdata(build_getdata_frame(cids))
+
+    assert len(served) == MAX_GETDATA_BATCH
+    # Dramatically less than the whole store (the amplification that #91 kills).
+    assert len(served) < n
+    # Sanity: had there been NO cap, every one of the n held CIDs would serve.
+    # (We prove the un-capped count directly off the store to keep the contrast.)
+    assert sum(1 for c in cids if store.lookup(c) is not None) == n
+
+
+def test_per_peer_byte_budget_throttles_a_hammering_peer_then_refills():
+    """A peer hammering getdata is throttled to a fixed bytes/window ceiling.
+
+    The byte bucket grants at most ``SERVE_BYTES_PER_WINDOW`` body bytes per
+    integer window. We size a tiny budget and oversize bodies so a single request
+    of many bodies exhausts the window; further requests in the SAME window serve
+    nothing; crossing into the NEXT window refills and serves again.
+    """
+    store, cids = _bulk_store(20)
+    body_len = len(store.lookup(cids[0]))
+    assert body_len > 0
+    # Budget allows exactly 3 bodies per window for this peer.
+    per_window = body_len * 3
+    clock = _VirtualClock(0)
+    budget = ServeBudget(
+        bytes_per_window=per_window, window_seconds=5, clock=clock
+    )
+    relay = InventoryRelay(store.lookup, budget=budget)
+    frame = build_getdata_frame(cids)
+
+    # First request in window 0: served up to the byte budget (3 bodies), then the
+    # bucket is exhausted and the remaining wanted bodies are deferred, NOT served.
+    first = relay.on_getdata(frame, peer="peerX")
+    assert len(first) == 3
+
+    # Hammering again in the SAME window: budget exhausted -> nothing served.
+    again = relay.on_getdata(frame, peer="peerX")
+    assert again == []
+
+    # A DIFFERENT peer has its own independent bucket (per-peer, not global).
+    other = relay.on_getdata(frame, peer="peerY")
+    assert len(other) == 3
+
+    # Crossing into the next integer window refills peerX's bucket -> serves again.
+    clock.advance(5)
+    refilled = relay.on_getdata(frame, peer="peerX")
+    assert len(refilled) == 3
+
+
+def test_byte_budget_never_partial_serves_a_body_preserving_identity():
+    """The budget stops on a whole-body boundary: a served body is never truncated.
+
+    A peer with budget for 2.5 bodies serves exactly 2 WHOLE bodies (never half a
+    third) — so every served frame is byte-identical to what was stored, and the
+    cap can never corrupt a signed record's bytes.
+    """
+    store, cids = _bulk_store(10)
+    body_len = len(store.lookup(cids[0]))
+    clock = _VirtualClock(0)
+    budget = ServeBudget(
+        bytes_per_window=body_len * 2 + body_len // 2,  # 2.5 bodies
+        window_seconds=5,
+        clock=clock,
+    )
+    relay = InventoryRelay(store.lookup, budget=budget)
+
+    served = relay.on_getdata(build_getdata_frame(cids), peer="p")
+    assert len(served) == 2
+    # Each served frame is the verbatim stored frame (byte-identity sacred).
+    for cid, fr in zip(cids, served):
+        assert fr == store.lookup(cid)
+
+
+def test_byte_budget_under_honest_moderate_diff_serves_the_whole_diff():
+    """An honest moderate diff is served IN FULL under the generous prod budget.
+
+    Sizes the diff at the prod batch cap and confirms the default prod byte budget
+    (256 MiB/window) is generous enough that an honest reconcile of that diff is
+    served completely in ONE window — the cap must not starve honest reconcile.
+    """
+    n = MAX_GETDATA_BATCH  # a full honest batch
+    store, cids = _bulk_store(n)
+    body_len = len(store.lookup(cids[0]))
+    # The prod byte budget must comfortably cover a full honest batch.
+    assert SERVE_BYTES_PER_WINDOW > body_len * n
+    clock = _VirtualClock(0)
+    budget = ServeBudget(clock=clock)  # prod-default byte/window caps
+    relay = InventoryRelay(store.lookup, budget=budget)
+
+    served = relay.on_getdata(build_getdata_frame(cids), peer="honest")
+    # Served fully (count cap == batch size, byte budget not the limiter).
+    assert len(served) == n
+
+
+def test_serve_budget_is_deterministic_across_replays():
+    """Two budgets driven by identical virtual clocks debit identically.
+
+    No wall-clock, no randomness: replaying the same request/clock sequence yields
+    byte-for-byte identical serve decisions.
+    """
+    store, cids = _bulk_store(12)
+    body_len = len(store.lookup(cids[0]))
+    frame = build_getdata_frame(cids)
+
+    def replay():
+        clk = _VirtualClock(100)
+        relay = InventoryRelay(
+            store.lookup,
+            budget=ServeBudget(
+                bytes_per_window=body_len * 4, window_seconds=3, clock=clk
+            ),
+        )
+        out = []
+        out.append(len(relay.on_getdata(frame, peer="q")))
+        out.append(len(relay.on_getdata(frame, peer="q")))
+        clk.advance(3)
+        out.append(len(relay.on_getdata(frame, peer="q")))
+        return out
+
+    assert replay() == replay()
+
+
+def test_serve_budget_rejects_bad_construction_and_input():
+    with pytest.raises(TypeError):
+        ServeBudget(bytes_per_window=1.5)  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        ServeBudget(window_seconds=0)
+    with pytest.raises(TypeError):
+        ServeBudget(clock="nope")  # type: ignore[arg-type]
+    b = ServeBudget(clock=_VirtualClock(0))
+    with pytest.raises(InventoryError):
+        b.take("", 10)
+    with pytest.raises(ValueError):
+        b.take("p", -1)
