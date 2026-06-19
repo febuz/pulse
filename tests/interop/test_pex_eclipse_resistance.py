@@ -23,7 +23,11 @@ import pytest
 
 from knitweb.core import canonical
 from knitweb.p2p import AsyncioP2PNode, PeerAddress
-from knitweb.p2p.discovery import PEER_EXCHANGE_KIND, records_from_peers
+from knitweb.p2p.discovery import (
+    MAX_PEX_INBOUND,
+    PEER_EXCHANGE_KIND,
+    records_from_peers,
+)
 
 
 def run(coro):
@@ -80,9 +84,14 @@ def test_pex_flood_does_not_eclipse_honest_minority_from_dial_sample():
         await asyncio.wait_for(node.bootstrap_peers(seeds=[ATTACKER_SEED]), timeout=5)
         await asyncio.wait_for(node.bootstrap_peers(seeds=[HONEST_SEED]), timeout=5)
 
-        # The flat directory did learn everything (membership is not the defence) ...
+        # The honest minority is known in the flat directory (membership is not the
+        # eclipse defence — the bucketed sampler is). The flat directory is now bounded
+        # PER REPLY: each seed's reply can contribute at most MAX_PEX_INBOUND learned
+        # addresses (#98), so the 4000-address attacker flood is truncated rather than
+        # absorbed wholesale. Two replies (attacker + honest) each capped at the inbound
+        # bound, plus the two reached seeds, keep the flat directory well under the flood.
         assert all(p in node.peers for p in HONEST)
-        assert len(node.peers) > 4000  # flood + honest are all known
+        assert len(node.peers) <= 2 * MAX_PEX_INBOUND + 8  # << 4000: the flood is capped
 
         # ... but the BUCKETED book is bounded: the flood cannot exceed the new-table
         # capacity, no matter how many thousands were pushed.
@@ -117,6 +126,52 @@ def test_pex_flood_does_not_eclipse_honest_minority_from_dial_sample():
         # propagate an attacker-only view of the Web.
         advertised = node.addrbook.sample(32)
         assert any(p in set(HONEST) for p in advertised)
+
+    run(scenario())
+
+
+@pytest.mark.interop
+def test_bootstrap_peers_reply_is_capped_to_max_pex_inbound():
+    """A SINGLE bootstrap reply cannot contribute more than MAX_PEX_INBOUND learned
+    addresses to the flat directory (#98).
+
+    #87/#95 capped the ``bootstrap_round`` helper and #85 capped
+    ``handle_peer_exchange``, but the LIVE node path (``bootstrap_peers``) ingested a
+    reply's peers via ``peers_from_records`` + ``learn_peers`` with NO per-reply
+    truncation — so a malicious bootstrap reply could grow the flat directory by far
+    more than the cap (bounded only by the dir-size/static-floor eviction afterwards).
+    This proves the per-reply bound is now applied on the live path too.
+
+    Load-bearing: the reply carries 50x MAX_PEX_INBOUND distinct addresses, yet the
+    flat directory (the dedup/membership truth) must grow by AT MOST MAX_PEX_INBOUND.
+    Reverting the truncation in ``bootstrap_peers`` makes the flat directory absorb the
+    whole flood (>> cap), so this assertion fails — i.e. the test actually exercises the
+    cap rather than passing vacuously.
+    """
+    async def scenario():
+        node = AsyncioP2PNode()
+        # A fresh node's flat directory starts empty (no peerbook seeds).
+        assert len(node.peers) == 0
+        baseline = len(node.peers)
+
+        flood = _attacker_flood(MAX_PEX_INBOUND * 50)
+        assert len(flood) > MAX_PEX_INBOUND  # the reply far exceeds the cap
+
+        replies = {node.addrbook._peer_key(ATTACKER_SEED): _reply(flood)}
+
+        async def fake_roundtrip(peer: PeerAddress, msg: dict) -> dict:
+            return replies[node.addrbook._peer_key(peer)]
+
+        node._roundtrip = fake_roundtrip
+
+        learned = await asyncio.wait_for(
+            node.bootstrap_peers(seeds=[ATTACKER_SEED]), timeout=5
+        )
+
+        # At most MAX_PEX_INBOUND addresses are learned from this one reply — the rest
+        # of the flood's tail is truncated before it is ever parsed.
+        assert learned <= MAX_PEX_INBOUND
+        assert len(node.peers) - baseline <= MAX_PEX_INBOUND
 
     run(scenario())
 

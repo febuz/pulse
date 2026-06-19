@@ -32,6 +32,7 @@ from ..ledger.knit import Knit
 from ..ledger.node import AccountNode
 from .addrbook import AddrBook
 from .discovery import (
+    MAX_PEX_INBOUND,
     PEER_EXCHANGE_KIND,
     addrbook_share_message,
     directory_from_peerbook,
@@ -486,7 +487,14 @@ class AsyncioP2PNode(BaseNode):
                 # path: every address a flooding seed pushes shares that seed's source
                 # group, so they compete for a bounded set of new-table buckets and
                 # cannot crowd an honest minority out of the dial sample.
-                peers = peers_from_records(reply.get("peers") or [])
+                #
+                # Cap the reply BEFORE parsing — mirroring bootstrap_round (#95) and
+                # handle_peer_exchange — so a single malicious bootstrap reply cannot
+                # contribute more than MAX_PEX_INBOUND learned entries (#98). The
+                # dir-size/static-floor eviction below stays as the second line of
+                # defence; this is the per-reply bound the live path was missing.
+                truncated = (reply.get("peers") or [])[:MAX_PEX_INBOUND]
+                peers = peers_from_records(truncated)
             except (ValueError, WireError):
                 continue
             learned += learn_peers(self.peers, self.addrbook, peers, source=seed)
