@@ -64,6 +64,11 @@ JSONLD_CONTEXT: dict = {
     "weight": "knit:weight",
     "src": {"@id": "knit:src", "@type": "@id"},
     "dst": {"@id": "knit:dst", "@type": "@id"},
+    "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
+    # rdfs:label as a *set* of JSON-LD i18n value objects ({@value, @language, @direction}),
+    # so DKG/JSON-LD consumers read every language (and the RTL base direction), not just the
+    # English projection. All-string / float-free, so the document stays canonical-CBOR-encodable.
+    "label": {"@id": "rdfs:label", "@container": "@set"},
 }
 
 
@@ -76,14 +81,49 @@ def ual_for_node(node_cid: str) -> str:
     return f"{DKG_NAMESPACE}/{node_cid}"
 
 
+# Languages written right-to-left — their label literals carry ``@direction: "rtl"`` so a
+# JSON-LD/DKG consumer renders (and round-trips) the script correctly. Arabic is the live
+# case (the woven chemistry graph is EN/RU/ZH/AR); the rest are included so the exporter is
+# correct for any RTL term-node, not just today's data.
+_RTL_LANGS = frozenset({"ar", "he", "fa", "ur", "ps", "sd", "dv", "yi", "ckb", "ug"})
+
+
+def _label_literals(record: dict) -> list[dict]:
+    """A term-node's multilingual labels as JSON-LD language-tagged value objects.
+
+    A node carries its labels as a ``labels`` map on its record — ``{"en": "atom",
+    "ru": "атом", "zh": "原子", "ar": "ذرة"}`` (the lang-tagged term-node shape, molgang
+    #32). Each entry becomes ``{"@value": text, "@language": lang[, "@direction": "rtl"]}``
+    so a DKG/JSON-LD consumer reads *every* language and the RTL base direction, instead of
+    an opaque English-only projection (#39, and #22 as titled).
+
+    This is a **pure projection** of the record (already exported losslessly under
+    ``record``), so emitting it keeps ``export_web(import_web(doc)) == doc`` byte-for-byte.
+    """
+    labels = record.get("labels") if isinstance(record, dict) else None
+    if not isinstance(labels, dict):
+        return []
+    out = []
+    for lang in sorted(labels):
+        text = labels[lang]
+        if not (isinstance(lang, str) and isinstance(text, str)):
+            continue
+        obj = {"@value": text, "@language": lang}
+        if lang in _RTL_LANGS:
+            obj["@direction"] = "rtl"
+        out.append(obj)
+    return out
+
+
 def _node_object(web: Web, node_cid: str) -> dict:
     """One JSON-LD node object: the record under a content-derived ``@id`` + its edges.
 
     Outgoing edges are emitted in ``(rel, dst)`` order — the canonical traversal order —
-    so the serialization is deterministic regardless of link insertion order.
+    so the serialization is deterministic regardless of link insertion order. Multilingual
+    labels are additionally surfaced as ``rdfs:label`` language-tagged literals (#39).
     """
     out_edges = sorted(web._out.get(node_cid, []), key=lambda e: (e.rel, e.dst, e.weight))
-    return {
+    obj = {
         "id": node_cid,
         "type": NODE_TYPE,
         "ual": ual_for_node(node_cid),
@@ -98,6 +138,10 @@ def _node_object(web: Web, node_cid: str) -> dict:
             for e in out_edges
         ],
     }
+    labels = _label_literals(web.nodes[node_cid])
+    if labels:
+        obj["label"] = labels
+    return obj
 
 
 def export_web(web: Web) -> dict:

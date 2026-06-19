@@ -140,3 +140,28 @@ def test_empty_web_round_trips():
     doc = export_web(Web())
     assert doc["@graph"] == []
     assert export_web(import_web(doc)) == doc
+
+
+def test_multilingual_labels_become_language_tagged_literals():
+    """#39 / #22: a term-node's EN/RU/ZH/AR labels export as JSON-LD ``@language`` literals,
+    Arabic carrying ``@direction: 'rtl'``; the projection is lossless on round-trip and the
+    document stays canonical-CBOR-encodable."""
+    web = Web()
+    atom = web.weave(
+        {"kind": "concept", "key": "atom",
+         "labels": {"en": "atom", "ru": "атом", "zh": "原子",
+                    "ar": "ذرة"}}
+    )
+    plain = web.weave({"kind": "concept", "key": "n", "n": 1})  # no labels -> no `label` key
+    doc = export_web(web)
+    nodes = {n["id"]: n for n in doc["@graph"]}
+    labels = {o["@language"]: o for o in nodes[atom]["label"]}
+    assert set(labels) == {"en", "ru", "zh", "ar"}
+    assert labels["ar"]["@value"] == "ذرة"
+    assert labels["ar"]["@direction"] == "rtl"          # RTL base direction preserved
+    assert "@direction" not in labels["en"]             # LTR languages carry no direction
+    assert "label" not in nodes[plain]                  # label-less nodes are unchanged
+    assert "rdfs" in JSONLD_CONTEXT and "label" in JSONLD_CONTEXT
+    # lossless: `label` is a pure projection of the record, so the round-trip is byte-identical
+    assert canonical.encode(export_web(import_web(doc))) == canonical.encode(doc)
+    canonical.encode(doc)  # whole document stays canonical-CBOR-encodable (string/int only)
