@@ -28,6 +28,13 @@ from ..fabric.feed_multiproof import prove_range, verify_range_multiproof
 from ..ledger import knitweb as kw
 from ..ledger.knit import Knit
 from ..ledger.node import AccountNode
+from .discovery import (
+    PEER_EXCHANGE_KIND,
+    bootstrap_round,
+    directory_from_peerbook,
+    handle_peer_exchange,
+    peer_exchange_message,
+)
 from .policing import police_equivocation_report
 from .reputation import Offense, PeerReputation
 from .transport import Dialer, PeerAddress, TcpTransport, Transport
@@ -132,6 +139,12 @@ class AsyncioP2PNode:
         # of tcp:// and relay:// peers at once.
         self.transport: Transport = transport or TcpTransport(host=host, port=port)
         self.peerbook = StaticPeerBook()
+        # The growing peer set: a PEX directory seeded from the hand-configured
+        # StaticPeerBook. Peers learned over ``peer-exchange`` are merged here so the
+        # node discovers endpoints beyond the ones typed in. Seeded from whatever the
+        # peerbook holds at construction; ``bootstrap_peers`` re-seeds before dialing
+        # so peers added after __init__ are included.
+        self.peers = directory_from_peerbook(self.peerbook)
         self.dialer = Dialer()
         for tr in [self.transport, *(extra_transports or [])]:
             self.dialer.register(tr)
@@ -341,6 +354,51 @@ class AsyncioP2PNode:
                 return "shorter feed conflicts with the stored prefix"
         return None
 
+    # -- peer discovery (PEX) ---------------------------------------------
+
+    def _handle_peer_exchange(self, msg: dict) -> dict:
+        """Inbound ``peer-exchange``: merge the sender's peers, reply with ours.
+
+        Carrier-agnostic — this is reached from :meth:`_dispatch` whether the request
+        arrived over a TCP stream or a relay mailbox, and the reply frame bytes are
+        identical either way. Pure logic lives in :func:`handle_peer_exchange`.
+        """
+        try:
+            return handle_peer_exchange(self.peers, msg)
+        except (ValueError, WireError) as exc:
+            return self._error("bad-peer-exchange", str(exc))
+
+    async def bootstrap_peers(self, seeds: "list[PeerAddress] | None" = None) -> int:
+        """Dial seed peers, exchange known peers, and grow the directory.
+
+        Re-seeds the directory from the current ``StaticPeerBook`` (so peers added
+        after construction are included), then runs one PEX round against each seed
+        (the peerbook's peers by default): send our share, merge the reply. Returns
+        the total number of *newly* learned peers across all seeds.
+
+        Routes through the shared :class:`Dialer`, so a ``tcp://`` seed and a
+        ``relay://`` seed are dialed over their own carriers with identical frame
+        bytes — discovery is carrier-independent. A seed that errors or returns a
+        non-PEX reply is skipped without aborting the whole round.
+        """
+        self.peers.merge(list(self.peerbook.all().values()))
+        targets = seeds if seeds is not None else list(self.peerbook.all().values())
+        learned = 0
+        for seed in targets:
+            request = peer_exchange_message(self.peers)
+            try:
+                reply = await self._roundtrip(seed, request)
+            except (P2PError, WireError, OSError):
+                # An unreachable or misbehaving seed must not sink the bootstrap.
+                continue
+            if reply.get("kind") != PEER_EXCHANGE_KIND:
+                continue
+            try:
+                learned += bootstrap_round(self.peers, reply)
+            except (ValueError, WireError):
+                continue
+        return learned
+
     # -- equivocation gossip ----------------------------------------------
 
     async def gossip_equivocation_report(
@@ -548,6 +606,8 @@ class AsyncioP2PNode:
                 return self._handle_knit_finalize(msg)
             if kind == "equivocation-report":
                 return self._handle_equivocation_report(msg)
+            if kind == PEER_EXCHANGE_KIND:
+                return self._handle_peer_exchange(msg)
             return self._error("unknown-kind", str(kind))
         except (P2PError, WireError, ValueError) as exc:
             return self._error("bad-request", str(exc))
