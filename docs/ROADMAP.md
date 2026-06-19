@@ -12,11 +12,11 @@ PR per increment, off the current `main`, in a disjoint lane.
 | Layer | Module | State |
 |---|---|---|
 | L0 core | `core/{canonical,crypto,pulse}.py` | ✅ implemented + property-tested |
-| L1 ledger | `ledger/{blob,fiber,loom,knit,braid,node}.py` | ✅ incl. network-id anti-replay |
+| L1 ledger | `ledger/{blob,fiber,knitweb,knit,braid,node}.py` | ✅ incl. network-id anti-replay |
 | L2 p2p | `p2p/{node,wire}.py` | ✅ stdlib-`asyncio` MVP |
 | L3 fabric | `fabric/{web,items,feed,attest,spatial}.py` | ✅ signed feed + attestation |
 | L4 pouw | `pouw/{job,escrow,digest,challenge}.py` | 🟡 determinism foundations done; economics next |
-| L5 looms | `looms/` | 🟡 chemistry + supply-chain + operational shipped; finance pending |
+| L5 knitwebs | `knitwebs/` | 🟡 chemistry + supply-chain + operational shipped; finance pending |
 | L6 token | `token/mint.py` | 🟡 demand-gated bounded mint shipped (#17); per-epoch cap + access payment pending |
 | app | `app/cli.py` | ✅ `knitweb` CLI + node daemon (#19) |
 | store | `store.py` | ✅ durable node persistence (#18) |
@@ -34,7 +34,7 @@ repo has no CI):
 | [#18](https://github.com/febuz/pulse/pull/18) | M3 store | `store.py` — durable canonical-CBOR persistence |
 | [#19](https://github.com/febuz/pulse/pull/19) | M2 app | `app/cli.py` — runnable node + wallet CLI |
 | [#20](https://github.com/febuz/pulse/pull/20) | M5 demo | `examples/mvp_demo.py` — end-to-end acceptance |
-| [#25](https://github.com/febuz/pulse/pull/25) | L5 operational | `looms/operational` — signed capacity allocations |
+| [#25](https://github.com/febuz/pulse/pull/25) | L5 operational | `knitwebs/operational` — signed capacity allocations |
 | [#28](https://github.com/febuz/pulse/pull/28) | anchors | `anchor/` — notary-signed checkpoint receipts |
 
 ## Consolidated backlog
@@ -85,19 +85,18 @@ Builds on #24's challenge verdict. Spec: [`PROOF_OF_USEFUL_WORK.md`](PROOF_OF_US
 
 ## Naming follow-ups (decided — dedicated rename PR)
 
-- **`loom` → `knitweb` rename (owner-decided 2026-06-17): literal, repo-wide.** Rename the
-  `looms/` domain plugins **and** the core `Loom` validation primitive to `knitweb` naming
-  (`ledger/loom.py` → `ledger/knitweb.py`, `Loom`/`LoomError` → `Knitweb`/`KnitwebError`,
-  `*Loom` classes → `*Knitweb`, the `loom` pytest marker → `knitweb`, all prose). Done as a
-  dedicated PR, **not** this consistency pass. Hard gate: **no signed-record `kind`/field
-  contains "loom"** (verified — kinds are `reaction-knowledge`/`supplychain-process`/
-  `capacity-allocation`/`journal-entry`/`invoice`), so the rename is identifier/docs-only with
-  zero CID/signature impact; the PR must assert a sample record's `cid` is byte-identical
-  before/after. Note the accepted overload: the core validator becomes
-  `knitweb.ledger.knitweb.Knitweb`. ("Loom" also collides with the unrelated *Loom Network*
-  brand — another reason to retire it.)
-- **User-token name** (`LoomToken`): folds into the same rename → `KnitwebToken` (or drop, since
-  the `token-loomtoken` branch is not merged per owner "Maak geen loomtoken").
+- **Validator/plugin → `knitweb` rename (owner-decided 2026-06-17): done, repo-wide.** Renamed the
+  domain plugins **and** the core validation primitive to `knitweb` naming
+  (`ledger/loom.py` → `ledger/knitweb.py`, the old `*Error` → `KnitwebError`,
+  `*Loom` classes → `*Knitweb`, the old pytest marker → `knitweb`, the plugin dir → `knitwebs/`,
+  all prose). Hard gate held: **no signed-record `kind`/field changed** — the four plugin kinds
+  stay `reaction-knowledge`/`finance-entry`/`operational-allocation`/`supplychain-process`, so the
+  rename was identifier/docs-only with zero CID/signature impact and the property/parity suite
+  stayed byte-identical (391 passed). The core validator is now
+  `knitweb.ledger.knitweb.Knitweb`. (The retired term also collided with the unrelated *Loom
+  Network* brand — another reason to drop it.)
+- **User-token name:** the proposed `*Token` brand folds into the same naming → `KnitwebToken`
+  (or drop, since that token branch is not merged per owner "geen extra token").
 
 ## Conventions
 

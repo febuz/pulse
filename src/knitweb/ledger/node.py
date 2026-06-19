@@ -10,7 +10,7 @@ provable in isolation.
 from __future__ import annotations
 
 from ..core import crypto
-from . import loom
+from . import knitweb as kw
 from .braid import Braid
 from .fiber import genesis_fiber
 from .knit import MAINNET, Knit, build, sign_from, sign_to
@@ -89,12 +89,12 @@ class AccountNode:
 
     def apply_sent(self, knit: Knit) -> None:
         """Apply an outgoing Knit to this (sender) node's Braid."""
-        next_fiber = loom.apply_to_sender(self.braid.head, knit, self.network)
+        next_fiber = kw.apply_to_sender(self.braid.head, knit, self.network)
         self.braid.weave(next_fiber)
 
     def apply_received(self, knit: Knit) -> None:
         """Apply an incoming Knit to this (receiver) node's Braid."""
-        next_fiber = loom.apply_to_receiver(self.braid.head, knit, self.network)
+        next_fiber = kw.apply_to_receiver(self.braid.head, knit, self.network)
         self.braid.weave(next_fiber)
 
     # -- convenience: full transfer between two local nodes ---------------
@@ -109,7 +109,7 @@ class AccountNode:
             )
         proposed = self.propose(receiver.pub, symbol, amount, timestamp)
         signed = receiver.accept(proposed)
-        ok, reason = loom.validate_knit(signed, self.network)
+        ok, reason = kw.validate_knit(signed, self.network)
         if not ok:
             raise ValueError(f"refusing to apply invalid knit: {reason}")
         self.apply_sent(signed)

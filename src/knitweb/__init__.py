@@ -9,14 +9,14 @@ token later; the native pay-token is PLS.)
 
 Layered architecture:
   L0  core      — secp256k1 ECDSA + SHA-256, canonical CBOR, content addressing
-  L1  ledger    — blob / fiber / loom / knit / braid / node (integer PLS balances)
+  L1  ledger    — blob / fiber / knitweb / knit / braid / node (integer PLS balances)
   L2  p2p       — asyncio signed-feed sync + static peers (DHT backend later)
   L3  fabric    — Web (woven global graph) + items + agent/scorer/masterdata
   L4  pouw      — proof-of-useful-work (Julia + WebGPU), sampled re-execution
-  L5  looms     — finance / operational / supply-chain / chemistry plugins
+  L5  knitwebs  — finance / operational / supply-chain / chemistry plugins
   L6  token     — PLS access/pay-token + demand-gated, bounded minting (`token.mint`) + anchors
 
-Core modules (the seven primitives): Blob, Fiber, Loom, Knit, Braid, Web, Pulse.
+Core modules (the seven primitives): Blob, Fiber, Knitweb, Knit, Braid, Web, Pulse.
 """
 
 __version__ = "0.6.0"

@@ -1,11 +1,11 @@
-"""Supply-chain loom — emit signed, mass-conserving transformation events into the Web.
+"""Supply-chain knitweb — emit signed, mass-conserving transformation events into the Web.
 
 A supply-chain process (assembly, packaging, blending, repackaging) consumes input
 SKUs and produces output SKUs. Matter is not created or destroyed by such a process,
-so the loom's soundness gate is **mass conservation**: the total mass of the inputs
+so the knitweb's soundness gate is **mass conservation**: the total mass of the inputs
 must equal the total mass of the outputs (integer grams). A process that violates it
 is physically impossible and is refused before any signature is produced — the exact
-same discipline as the chemistry loom's element/charge balance, generalised to goods.
+same discipline as the chemistry knitweb's element/charge balance, generalised to goods.
 
 Everything on the signed path is integer-only (quantities, unit masses), so the
 record round-trips through canonical CBOR; a balanced event becomes a signed,
@@ -24,7 +24,7 @@ __all__ = [
     "Item",
     "Line",
     "ProcessEvent",
-    "SupplyChainLoom",
+    "SupplyChainKnitweb",
     "mass_balance",
     "is_conserved",
 ]
@@ -93,7 +93,7 @@ def _sorted_lines(lines: tuple[Line, ...]) -> list[Line]:
     return sorted(lines, key=lambda line: (line.item.sku, line.item.unit_mass_g, line.qty))
 
 
-class SupplyChainLoom:
+class SupplyChainKnitweb:
     """Emits signed, mass-conserved supply-chain process events for one actor key."""
 
     KIND = "supplychain-process"

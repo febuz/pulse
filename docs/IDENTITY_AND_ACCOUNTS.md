@@ -14,9 +14,9 @@ synonyms and should not be collapsed:
 |---|---|---|---|
 | **Coin / brand** | **Fiber** | the headline asset + public brand ("a top-10 P2P web") | markets, press, listings |
 | **Token / activity unit** | **PLS** ("pulses") | what users *spend* for activity (compute, storage, queries) | wallet users, app devs |
-| **Protocol / platform** | **Knitweb** | the codebase + the woven Web/Loom/Knit/Pulse fabric | engineers, node operators |
+| **Protocol / platform** | **Knitweb** | the codebase + the woven Web/Knit/Pulse fabric | engineers, node operators |
 
-Vocabulary is fixed: **Web · Loom · Knit · Pulse · Fiber** (never "network"/"net").
+Vocabulary is fixed: **Web · Knit · Pulse · Fiber · knitweb** (never "network"/"net").
 "Knitweb" is the engineering home; "Fiber" is the coin; "PLS/Pulse" is the metered
 unit. FBR is reserved (possible separate-region token), not the launch token.
 

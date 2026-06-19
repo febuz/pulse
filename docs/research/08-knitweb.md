@@ -6,11 +6,11 @@
 **Language:** English with Dutch summary
 **Scope:** The new word *knitweb*; data model; weaving protocol; trust; the pulse/draft compute layer over donated GPU/RAM; verifiable compute on untrusted machines; how blockchain + hashgraph + knitweb cooperate for the MOLGANG P2P game; the OriginTrail heavy-artifact and provenance graph; a worked end-to-end scenario; integration with VirtualPC and the knitweb reference implementation; heritage, vocabulary crosswalk, epistemology, transport and governance.
 
-> **Vocabulary rule.** This project is a **web**, never a "network"/"net" — a network is static nodes; a *web*, like a brain, lives through the **pulses** between its connections. The brand terms are **Web · Loom · Knit · Pulse · Fiber**, the coined data-structure word is **knitweb**, and the heavy companion graph is **OriginTrail**.
+> **Vocabulary rule.** This project is a **web**, never a "network"/"net" — a network is static nodes; a *web*, like a brain, lives through the **pulses** between its connections. The brand terms are **Web · Knit · Pulse · Fiber · knitweb**, the coined data-structure word is **knitweb**, and the heavy companion graph is **OriginTrail**. (This paper's older narrative below uses *loom* for a peer node; in the authoritative code that domain term is retired and the validation primitive is **Knitweb** — see §13.1.)
 
 > **Normative note (reconciles this paper with the code — read before the narrative).**
 > This is a *concept paper*; the code in `src/knitweb/` is authoritative where they differ.
-> - **Seven primitives (normative):** `Blob` · `Fiber` · `Loom` · `Knit` · `Braid` · `Web` · `Pulse`.
+> - **Seven primitives (normative):** `Blob` · `Fiber` · `Knitweb` · `Knit` · `Braid` · `Web` · `Pulse`.
 >   **`Yarn` and `stitch` are narrative aliases only** — not primitives, not in code (a *yarn* ≈ an
 >   account's secp256k1 keypair/identity; a *stitch* ≈ a signed, content-addressed record).
 > - **`Fiber` is a *state commitment*, not a transferable coin.** A `Fiber` is an immutable snapshot of
@@ -486,7 +486,7 @@ Content addressing guarantees the *correct* bytes **if** someone serves them —
 
 ### 10.5 In the brand fabric
 
-OriginTrail is the heavy artifact-and-provenance tier; **Pulse/PLS** pays for the work; **Fiber (FBR)** is the value unit; **Loom** validates and serves the light triples; **Spiders** run the pulses; **Braid** keeps each yarn's local history; and **Web** is the woven global graph itself. (See [§13.1](#131-relationship-to-the-knitweb-reference-implementation).)
+OriginTrail is the heavy artifact-and-provenance tier; **Pulse/PLS** pays for the work; **Fiber (FBR)** is the value unit; the **Knitweb** validates and serves the light triples; **Spiders** run the pulses; **Braid** keeps each yarn's local history; and **Web** is the woven global graph itself. (See [§13.1](#131-relationship-to-the-knitweb-reference-implementation).)
 
 ---
 
@@ -566,7 +566,7 @@ Benefits: offline-first agents (weave locally, merge later); fork-tolerant colla
 
 This paper is the conceptual model; the `knitweb/pulse` reference implementation is the running code. They map as follows (and the implementation's non-negotiables — secp256k1 + SHA-256, integer-only money/state, float-free canonical CBOR, no founder premine — hold throughout this paper).
 
-**Seven core primitives** (`src/`): `Blob` (account balance state) · `Fiber` (content-addressed **account-state commitment**; "Fiber" is the brand coin, but the primitive is never itself transferred) · `Loom` (validation) · `Knit` (two-party transfer of a `symbol` balance, native **PLS**) · `Braid` (local history) · **`Web`** (the woven global graph) · **`Pulse`** (the heartbeat; useful work is paid in **PLS**, "pulses"). Workers are **spiders** (verifiable GPU compute via proof-of-useful-work with sampled re-execution).
+**Seven core primitives** (`src/`): `Blob` (account balance state) · `Fiber` (content-addressed **account-state commitment**; "Fiber" is the brand coin, but the primitive is never itself transferred) · `Knitweb` (validation) · `Knit` (two-party transfer of a `symbol` balance, native **PLS**) · `Braid` (local history) · **`Web`** (the woven global graph) · **`Pulse`** (the heartbeat; useful work is paid in **PLS**, "pulses"). Workers are **spiders** (verifiable GPU compute via proof-of-useful-work with sampled re-execution).
 
 | This paper | Reference implementation |
 |------------|--------------------------|
@@ -579,7 +579,7 @@ This paper is the conceptual model; the `knitweb/pulse` reference implementation
 | Fiber (value unit; ticker FBR reserved, not active) / PLS | the value unit and the active pay-token |
 | OriginTrail UAL | `knitweb.synaptic.origintrail.resolve_asset` (Knowledge Asset → relations) |
 
-**Layers:** L0 core (crypto, canonical CBOR, CID) → L1 ledger (blob/fiber/loom/knit/braid/node) → L2 p2p (stdlib-`asyncio` signed-feed sync + static peers; py-libp2p/DHT optional later) → L3 fabric (Web + items) → L4 pouw (proof-of-useful-work, sampled re-execution) → L5 looms (domain plugins: finance / operational / supply-chain / chemistry) → L6 token (PLS pay-token + Fiber value unit + user tokens + chain anchors). Domain looms — including MOLGANG chemistry — are L5 plugins, never in core.
+**Layers:** L0 core (crypto, canonical CBOR, CID) → L1 ledger (blob/fiber/knitweb/knit/braid/node) → L2 p2p (stdlib-`asyncio` signed-feed sync + static peers; py-libp2p/DHT optional later) → L3 fabric (Web + items) → L4 pouw (proof-of-useful-work, sampled re-execution) → L5 knitwebs (domain plugins: finance / operational / supply-chain / chemistry) → L6 token (PLS pay-token + Fiber value unit + user tokens + chain anchors). Domain knitwebs — including MOLGANG chemistry — are L5 plugins, never in core.
 
 ---
 
@@ -724,12 +724,12 @@ One weaving term, one meaning:
 
 ### A.7 Brand fabric
 
-KnitWeb sits in one woven brand fabric over a single content-addressed, CRDT, triple-native store. The brand terms are **Web · Loom · Knit · Pulse · Fiber** — never "network"/"net".
+KnitWeb sits in one woven brand fabric over a single content-addressed, CRDT, triple-native store. The brand terms are **Web · Knit · Pulse · Fiber · knitweb** — never "network"/"net".
 
 | Brand / primitive | Role |
 |-------------------|------|
 | **Web** | The woven global graph (the knitweb itself) |
-| **Loom** | Validation; a peer node that weaves/serves/validates |
+| **Knitweb** | Validation; a peer node that weaves/serves/validates |
 | **Knit** | A two-party transfer on the ledger |
 | **Pulse** | The heartbeat and the unit of useful work; paid in **PLS** ("pulses") |
 | **Fiber** | The content-addressed account-state commitment (brand coin "Fiber"; ticker FBR reserved + not active, no premine) |

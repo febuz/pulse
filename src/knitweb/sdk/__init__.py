@@ -1,7 +1,7 @@
 """Knitweb SDK — a small, friendly facade over the PLS web primitives.
 
 Wraps the ledger and synaptic layers into a developer-facing API so apps don't
-touch the low-level Loom/Knit machinery directly:
+touch the low-level Knitweb/Knit machinery directly:
 
   * ``Wallet``            — a PLS account: keygen, address, balance, pay()
   * ``compile_asset``     — resolve an OriginTrail asset → signed synaptic bytecode

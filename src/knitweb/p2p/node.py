@@ -19,7 +19,7 @@ from ..fabric.feed import (
     check_prefix_conflict,
     verify_entries,
 )
-from ..ledger import loom
+from ..ledger import knitweb as kw
 from ..ledger.knit import Knit
 from ..ledger.node import AccountNode
 from .wire import (
@@ -254,7 +254,7 @@ class AsyncioP2PNode:
         if msg.get("kind") != "knit-accepted":
             raise P2PError(f"unexpected response kind: {msg.get('kind')!r}")
         signed = knit_from_record(msg.get("knit"))
-        ok, reason = loom.validate_knit(signed, self.account.network)
+        ok, reason = kw.validate_knit(signed, self.account.network)
         if not ok:
             raise P2PError(f"receiver returned invalid knit: {reason}")
         final = await self._roundtrip(peer, {
@@ -278,7 +278,7 @@ class AsyncioP2PNode:
             knit = knit_from_record(msg.get("knit"))
             self._validate_incoming_proposal(knit)
             signed = self.account.accept(knit)
-            ok, reason = loom.validate_knit(signed, self.account.network)
+            ok, reason = kw.validate_knit(signed, self.account.network)
             if not ok:
                 return self._error("invalid-knit", reason)
             return {"kind": "knit-accepted", "knit": knit_to_record(signed)}
@@ -292,7 +292,7 @@ class AsyncioP2PNode:
             knit = knit_from_record(msg.get("knit"))
             if knit.to_pub != self.account.pub:
                 return self._error("invalid-knit", "knit is not addressed to this peer")
-            ok, reason = loom.validate_knit(knit, self.account.network)
+            ok, reason = kw.validate_knit(knit, self.account.network)
             if not ok:
                 return self._error("invalid-knit", reason)
             nonce_key = (knit.from_pub, knit.network, knit.from_nonce)

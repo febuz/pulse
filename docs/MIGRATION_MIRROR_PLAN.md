@@ -14,10 +14,10 @@ Dit plan staat **niet los**: het is de vervolgstap op de handoff in `docs/migrat
 **Volgorde (deze break-out komt ná):**
 1. **Org-mirror** — `febuz/pulse` → `knitweb/pulse` via `git push --mirror` (handoff Fase 2).
 2. **PR #1 — consistency-pass** (branch `fix/consistency-pass-02`; pass-01 is geland).
-3. **PR #2 — `loom→knitweb` rename** (`RENAME_RUNBOOK.md`): `ledger/loom.py → ledger/knitweb.py`, `looms/ → knitwebs/`, `*Loom → *Knitweb`. **Signed-record CID-invariant blijft** (alleen identifiers/paden/prose).
+3. **PR #2 — validator/plugin → `knitweb` rename** (`RENAME_RUNBOOK.md`, geland): `ledger/loom.py → ledger/knitweb.py`, `looms/ → knitwebs/`, `*Loom → *Knitweb`. **Signed-record CID-invariant bleef behouden** (alleen identifiers/paden/prose).
 4. **PR #3 — deze `--mirror` break-out** (hieronder).
 
-> **Padconsequentie:** omdat PR #2 vóór deze break-out landt, gebruiken de `filter-repo`-paden in §7 de **post-rename** namen waar van toepassing (`ledger/` blijft `ledger/`, maar `looms/`→`knitwebs/`; de ledger-break-out raakt `ledger/loom.py`→`ledger/knitweb.py`). Draait de break-out tóch vóór PR #2, gebruik dan de oude paden en herhaal de rename per nieuwe repo.
+> **Padconsequentie:** omdat PR #2 vóór deze break-out landt, gebruiken de `filter-repo`-paden in §7 de **post-rename** namen waar van toepassing (`ledger/` blijft `ledger/`, maar de oude `looms/`→`knitwebs/`; de ledger-break-out raakt de hernoemde `ledger/knitweb.py`). Draait de break-out tóch vóór PR #2, gebruik dan de oude paden en herhaal de rename per nieuwe repo.
 
 ---
 
@@ -48,7 +48,7 @@ Bron: `src/knitweb/app/cli.py` (`add_subparsers(dest="cmd")`), imports `sdk`, `s
 **Multi-command modules (= break-out targets):** Ledger/wallet (4) en Synaptic/edge (3).
 **Single-command (blijft in kern):** `node` (p2p).
 
-Repo-feiten (peilmoment): remote `git@github.com:febuz/pulse.git`, branch `fix/consistency-pass-02`, **83 commits**, **0 tags**, **1 branch**. LOC per module: core 604 · ledger 507 · p2p 616 · fabric 901 · pouw 792 · looms 695 · token 200 · anchor 234 · synaptic 320 · edge 190 · sdk 95 · app 292.
+Repo-feiten (peilmoment): remote `git@github.com:febuz/pulse.git`, branch `fix/consistency-pass-02`, **83 commits**, **0 tags**, **1 branch**. LOC per module: core 604 · ledger 507 · p2p 616 · fabric 901 · pouw 792 · knitwebs 695 · token 200 · anchor 234 · synaptic 320 · edge 190 · sdk 95 · app 292.
 
 ---
 
@@ -56,7 +56,7 @@ Repo-feiten (peilmoment): remote `git@github.com:febuz/pulse.git`, branch `fix/c
 
 | Nieuwe repo | Inhoud | CLI-entrypoint | Commands |
 |---|---|---|---|
-| `knitweb/pulse` | L0 core, L1 ledger-engine, L2 p2p, L3 fabric, L4 pouw, L5 looms, L6 token — de protocol-/geldkern | `knitweb` | `node` (+ meta-dispatch) |
+| `knitweb/pulse` | L0 core, L1 ledger-engine, L2 p2p, L3 fabric, L4 pouw, L5 knitwebs, L6 token — de protocol-/geldkern | `knitweb` | `node` (+ meta-dispatch) |
 | `knitweb/pls-wallet` | `ledger` wallet-laag + `sdk` + `store` als gebruikers-tooling | `pls` | `wallet · address · balance · pay` |
 | `knitweb/fiber-edge` | `synaptic` (Fiber Synaptic Compiler) + `edge` runtime + `anchor` | `fiber` | `compile · verify-bundle · edge-load` |
 

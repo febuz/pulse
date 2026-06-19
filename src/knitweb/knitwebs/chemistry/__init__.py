@@ -1,6 +1,6 @@
-"""Chemistry loom — emit signed, mass-and-charge-balanced reactions into the Web.
+"""Chemistry knitweb — emit signed, mass-and-charge-balanced reactions into the Web.
 
-A chemistry loom takes a chemical reaction expressed as integer stoichiometry over
+A chemistry knitweb takes a chemical reaction expressed as integer stoichiometry over
 species (each with an element composition and a charge) and:
 
   1. **Gates on conservation** — refuses to sign a reaction unless every element is
@@ -30,7 +30,7 @@ __all__ = [
     "Species",
     "Term",
     "Reaction",
-    "ChemistryLoom",
+    "ChemistryKnitweb",
     "element_balance",
     "charge_balance",
     "is_balanced",
@@ -130,7 +130,7 @@ def is_balanced(reaction: Reaction) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# The loom
+# The knitweb
 # ---------------------------------------------------------------------------
 
 def _sorted(terms: tuple[Term, ...]) -> list[Term]:
@@ -157,7 +157,7 @@ def _equation(reaction: Reaction) -> str:
     return f"{side(_sorted(reaction.reactants))} -> {side(_sorted(reaction.products))}"
 
 
-class ChemistryLoom:
+class ChemistryKnitweb:
     """Emits signed, conservation-checked reaction knowledge for one author key."""
 
     KIND = "reaction-knowledge"

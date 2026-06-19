@@ -45,7 +45,7 @@ testpaths = ["tests"]
 markers = [
     "property: deterministic property/parity tests for the core (fast)",
     "interop: two-node networked tests (Phase 3+)",
-    "loom: domain-loom tests (Phase 5+)",
+    "knitweb: domain-knitweb tests (Phase 5+)",
 ]
 
 # Target free-threaded CPython 3.14 once dependency wheels are stable; the I/O-bound

@@ -14,7 +14,7 @@ study in ``docs/CRYPTO_CORPUS_STUDY.md``), letting testnet and mainnet — or an
 two PLS webs — coexist without cross-submission of signed transfers.
 
 A Knit is *settlement data*, not application logic: it carries no floats and no
-free-form fields beyond what the Loom validates.
+free-form fields beyond what the Knitweb validates.
 """
 
 from __future__ import annotations

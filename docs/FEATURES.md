@@ -16,7 +16,7 @@ constraints live in [REQUIREMENTS.md](REQUIREMENTS.md).
 - Fabric `Web` primitives for signed records, checkpoints, and provenance.
 - Proof-of-Useful-Work primitives for quorum, sampling, verification, dispute,
   collateral, and scheduler flows.
-- Domain looms for chemistry, finance, operational, and supply-chain examples.
+- Domain knitwebs for chemistry, finance, operational, and supply-chain examples.
 - OriginTrail-compatible anchoring abstractions and local proof receipts.
 - Molgang-compatible CLI JSON contract:
   - `pulse identity create --json`

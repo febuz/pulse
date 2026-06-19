@@ -1,6 +1,6 @@
 # Fiber & the Synaptic Web
 
-**Brand coin:** Fiber · **Pay-token:** PLS (pulses) · **Brand vocabulary:** Web · Loom · Knit · Pulse · Fiber (the seven code primitives: Blob · Fiber · Loom · Knit · Braid · Web · Pulse)
+**Brand coin:** Fiber · **Pay-token:** PLS (pulses) · **Brand vocabulary:** Web · Knit · Pulse · Fiber · knitweb (the seven code primitives: Blob · Fiber · Knitweb · Knit · Braid · Web · Pulse)
 
 > Note: *Fiber* is the brand coin, but the `Fiber` **primitive** is an immutable,
 > content-addressed account-state commitment (a `Braid` link) — never itself
@@ -11,7 +11,7 @@
 
 > Vocabulary rule: this project is a **web**, never a "network"/"net". A network
 > is static nodes; a *web* — like a brain — lives through the **pulses** between
-> its connections. Only **Web, Loom, Knit, Pulse, Fiber** are brand terms.
+> its connections. Only **Web, Knit, Pulse, Fiber, knitweb** are brand terms.
 
 ## The thesis
 
@@ -27,7 +27,7 @@ gigabyte context load.
 [OriginTrail DKG]  verified origin + originators (IFRS, news, YouTube/Youku/RuTube, images)
        │
        ▼
-[Knit · Loom · Web]  weave + scale the cross-source relation streams
+[Knit · Knitweb · Web]  weave + scale the cross-source relation streams
        │
        ▼
 [Fiber Synaptic Compiler]  relations → signed, content-addressed bytecode
@@ -91,10 +91,10 @@ gated mint). You pay in **pulses (PLS)** for activity — not for fibers or knit
 - Each bundle is a **bearer instrument of verified relations**: content-addressed
   identity + originator signature = non-repudiable provenance an edge device can
   check offline.
-- Settlement stays on the tiny deterministic Loom surface (integers only); the
+- Settlement stays on the tiny deterministic Knitweb surface (integers only); the
   heavy compile/serve work lives off the settlement path and only ever commits a
   hash + a verification verdict.
-- "Smart contracts" here are canonical, signed records the Loom validates — not a
+- "Smart contracts" here are canonical, signed records the Knitweb validates — not a
   general VM — keeping the trusted surface auditable (Principle 82: code bugs
   destroy more value than 51% attacks).
 

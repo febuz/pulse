@@ -9,7 +9,7 @@ both proven here:
 
 import pytest
 
-from knitweb.ledger import loom
+from knitweb.ledger import knitweb as kw
 from knitweb.ledger.knit import MAINNET, build, sign_from, sign_to
 from knitweb.ledger.node import AccountNode
 
@@ -23,7 +23,7 @@ def test_network_is_part_of_signed_bytes():
     knit = sign_to(a.propose(b.pub, "PLS", 10, timestamp=1), b.priv)
     # default network is mainnet and the signed knit validates on mainnet
     assert knit.network == MAINNET
-    ok, _ = loom.validate_knit(knit, expected_network=MAINNET)
+    ok, _ = kw.validate_knit(knit, expected_network=MAINNET)
     assert ok
 
 
@@ -33,7 +33,7 @@ def test_tampering_network_breaks_signature():
     b = AccountNode()
     knit = sign_to(a.propose(b.pub, "PLS", 10, timestamp=1), b.priv)
     forged = knit.__class__(**{**knit.__dict__, "network": TESTNET})  # flip after signing
-    ok, reason = loom.validate_knit(forged, expected_network=TESTNET)
+    ok, reason = kw.validate_knit(forged, expected_network=TESTNET)
     assert not ok and "signature" in reason  # sig no longer covers the new network
 
 
@@ -44,9 +44,9 @@ def test_validly_signed_foreign_network_knit_is_refused():
     a = AccountNode(genesis_balances={"PLS": 100}, network=TESTNET)
     b = AccountNode(network=TESTNET)
     knit = sign_to(a.propose(b.pub, "PLS", 10, timestamp=1), b.priv)
-    ok_home, _ = loom.validate_knit(knit, expected_network=TESTNET)
+    ok_home, _ = kw.validate_knit(knit, expected_network=TESTNET)
     assert ok_home                                   # valid on its own web
-    ok_foreign, reason = loom.validate_knit(knit, expected_network=MAINNET)
+    ok_foreign, reason = kw.validate_knit(knit, expected_network=MAINNET)
     assert not ok_foreign and "wrong network" in reason
 
 

@@ -1,10 +1,10 @@
-"""Finance loom — emit signed, double-entry-balanced ledger entries into the Web.
+"""Finance knitweb — emit signed, double-entry-balanced ledger entries into the Web.
 
-A finance loom models double-entry bookkeeping: every ledger entry is a set of
+A finance knitweb models double-entry bookkeeping: every ledger entry is a set of
 postings whose amounts (integers in the account's base currency unit) sum to zero
 — debits equal credits. An entry that does not balance is an accounting error and
 is refused before any signature is produced. This is the same soundness discipline
-as the chemistry loom (element balance) and supply-chain loom (mass conservation),
+as the chemistry knitweb (element balance) and supply-chain knitweb (mass conservation),
 applied to the double-entry invariant.
 
 All amounts are integers (no floats), so records round-trip through canonical CBOR.
@@ -24,7 +24,7 @@ __all__ = [
     "Account",
     "Posting",
     "LedgerEntry",
-    "FinanceLoom",
+    "FinanceKnitweb",
     "debit_credit_balance",
     "is_balanced",
 ]
@@ -96,7 +96,7 @@ def is_balanced(entry: LedgerEntry) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# The loom
+# The knitweb
 # ---------------------------------------------------------------------------
 
 def _sorted_postings(postings: tuple[Posting, ...]) -> list[Posting]:
@@ -105,7 +105,7 @@ def _sorted_postings(postings: tuple[Posting, ...]) -> list[Posting]:
     return sorted(postings, key=lambda p: (p.account.name, p.amount))
 
 
-class FinanceLoom:
+class FinanceKnitweb:
     """Emits signed, double-entry-balanced ledger entries for one signing entity."""
 
     KIND = "finance-entry"

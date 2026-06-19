@@ -9,7 +9,7 @@ import random
 
 import pytest
 
-from knitweb.ledger import loom
+from knitweb.ledger import knitweb as kw
 from knitweb.ledger.fiber import genesis_fiber
 from knitweb.ledger.knit import build, sign_from, sign_to
 from knitweb.ledger.node import AccountNode
@@ -23,7 +23,7 @@ def test_single_transfer_moves_value_and_conserves():
     a.transfer_to(b, "PLS", 30, timestamp=1)
     assert a.balance("PLS") == 70
     assert b.balance("PLS") == 30
-    assert loom.conserves_value(
+    assert kw.conserves_value(
         sender_before, a.braid.head, receiver_before, b.braid.head, "PLS"
     )
     assert a.nonce == 1 and b.nonce == 0  # only the sender consumes a nonce
@@ -65,7 +65,7 @@ def test_double_spend_same_knit_is_rejected():
     knit = b.accept(knit)
     a.apply_sent(knit)
     # Replaying the exact same knit must fail (nonce already advanced).
-    with pytest.raises(loom.LoomError):
+    with pytest.raises(kw.KnitwebError):
         a.apply_sent(knit)
 
 
@@ -76,7 +76,7 @@ def test_tampered_amount_breaks_signature():
     knit = a.propose(b.pub, "PLS", 10, timestamp=1)
     knit = b.accept(knit)
     forged = knit.__class__(**{**knit.__dict__, "amount": 1000})  # tamper post-signing
-    ok, reason = loom.validate_knit(forged)
+    ok, reason = kw.validate_knit(forged)
     assert not ok and "signature" in reason
 
 
@@ -85,9 +85,9 @@ def test_unsigned_knit_is_invalid():
     a = AccountNode(genesis_balances={"PLS": 100})
     b = AccountNode()
     knit = build(a.pub, b.pub, "PLS", 5, 0, 1)
-    ok, reason = loom.validate_knit(knit)            # no signatures
+    ok, reason = kw.validate_knit(knit)            # no signatures
     assert not ok
-    ok, _ = loom.validate_knit(sign_from(knit, a.priv))  # only one signature
+    ok, _ = kw.validate_knit(sign_from(knit, a.priv))  # only one signature
     assert not ok
 
 
@@ -96,5 +96,5 @@ def test_self_transfer_is_invalid():
     a = AccountNode(genesis_balances={"PLS": 100})
     knit = build(a.pub, a.pub, "PLS", 5, 0, 1)
     knit = sign_to(sign_from(knit, a.priv), a.priv)
-    ok, reason = loom.validate_knit(knit)
+    ok, reason = kw.validate_knit(knit)
     assert not ok and "differ" in reason

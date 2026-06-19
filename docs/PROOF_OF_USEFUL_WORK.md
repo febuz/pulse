@@ -113,7 +113,7 @@ settlement timing and slashing.
 ## 5. The settlement boundary
 
 Everything expensive (resolve, compile, GPU kernels, sampling) lives **off** the
-settlement path. The Loom only ever sees integers and booleans: a verdict, a
+settlement path. The Knitweb only ever sees integers and booleans: a verdict, a
 collateral amount, a Knit. `pouw/escrow.py`'s `settle_on_verify` already enforces
 this — it pays `pulses` from consumer to worker via a conservation-preserving
 Knit **iff** the proof verifies, and pays nothing otherwise. This keeps the

@@ -1,7 +1,7 @@
-"""Loom — the validation protocol (one of the seven core primitives).
+"""Knitweb — the validation protocol (one of the seven core primitives).
 
-The Loom is the *only* determinism-critical surface in Knitweb. It validates Knits
-and the state transitions they cause, enforcing the web's economic invariants:
+The Knitweb is the *only* determinism-critical surface in Knitweb. It validates
+Knits and the state transitions they cause, enforcing the web's economic invariants:
 
   * well-formedness (positive integer amount, sender ≠ receiver),
   * dual signatures valid over the canonical record (both parties agreed),
@@ -10,7 +10,7 @@ and the state transitions they cause, enforcing the web's economic invariants:
   * conservation of value (a transfer's debit equals its credit, exactly).
 
 Every check is integer/boolean; the heavy world (GPU compute, scoring) lives in
-other layers and only ever hands the Loom hashes and verdicts.
+other layers and only ever hands the Knitweb hashes and verdicts.
 """
 
 from __future__ import annotations
@@ -24,12 +24,12 @@ __all__ = [
     "apply_to_sender",
     "apply_to_receiver",
     "conserves_value",
-    "LoomError",
+    "KnitwebError",
 ]
 
 
-class LoomError(ValueError):
-    """Raised when a state transition violates a Loom invariant."""
+class KnitwebError(ValueError):
+    """Raised when a state transition violates a Knitweb invariant."""
 
 
 def validate_knit(knit: Knit, expected_network: int = MAINNET) -> tuple[bool, str]:
@@ -64,12 +64,12 @@ def validate_knit(knit: Knit, expected_network: int = MAINNET) -> tuple[bool, st
 def apply_to_sender(prev: Fiber, knit: Knit, expected_network: int = MAINNET) -> Fiber:
     """Produce the sender's next Fiber after sending ``knit``. Raises on violation."""
     if knit.from_pub != prev.owner:
-        raise LoomError("knit sender does not match fiber owner")
+        raise KnitwebError("knit sender does not match fiber owner")
     ok, reason = validate_knit(knit, expected_network)
     if not ok:
-        raise LoomError(f"invalid knit: {reason}")
+        raise KnitwebError(f"invalid knit: {reason}")
     if knit.from_nonce != prev.nonce:
-        raise LoomError(
+        raise KnitwebError(
             f"nonce mismatch: knit {knit.from_nonce} != account {prev.nonce}"
         )
     new_balances = blob.debit(prev.balances, knit.symbol, knit.amount)  # raises on overdraft
@@ -86,10 +86,10 @@ def apply_to_sender(prev: Fiber, knit: Knit, expected_network: int = MAINNET) ->
 def apply_to_receiver(prev: Fiber, knit: Knit, expected_network: int = MAINNET) -> Fiber:
     """Produce the receiver's next Fiber after receiving ``knit``. Raises on violation."""
     if knit.to_pub != prev.owner:
-        raise LoomError("knit receiver does not match fiber owner")
+        raise KnitwebError("knit receiver does not match fiber owner")
     ok, reason = validate_knit(knit, expected_network)
     if not ok:
-        raise LoomError(f"invalid knit: {reason}")
+        raise KnitwebError(f"invalid knit: {reason}")
     new_balances = blob.credit(prev.balances, knit.symbol, knit.amount)
     return Fiber(
         owner=prev.owner,

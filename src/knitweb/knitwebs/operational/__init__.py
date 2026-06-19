@@ -1,6 +1,6 @@
-"""Operational loom — emit signed, capacity-feasible allocation events into the Web.
+"""Operational knitweb — emit signed, capacity-feasible allocation events into the Web.
 
-An operational loom models resource capacity scheduling: given named resource pools
+An operational knitweb models resource capacity scheduling: given named resource pools
 with integer capacity limits, an allocation event assigns integer units to one or
 more tasks. The soundness gate is **feasibility** — no resource is over-subscribed:
 
@@ -8,18 +8,18 @@ more tasks. The soundness gate is **feasibility** — no resource is over-subscr
 
 An infeasible allocation is physically impossible (more work than available capacity)
 and is refused before any signature is produced. This is the same discipline as the
-chemistry loom (element/charge balance) and supply-chain loom (mass conservation),
+chemistry knitweb (element/charge balance) and supply-chain knitweb (mass conservation),
 applied to capacity scheduling.
 
 All capacities and units are integers; records round-trip through canonical CBOR.
 A feasible event becomes a signed, content-addressed ``operational-allocation``
 record woven into the Web by the scheduling actor.
 
-Separation of concerns (vs the earlier priced-lease design): this loom proves only
+Separation of concerns (vs the earlier priced-lease design): this knitweb proves only
 **capacity feasibility** — that an actor did not over-subscribe its declared pools.
 It deliberately carries no pricing. Per-unit price and the provider/consumer payment
 obligation live in the priced ``ResourceItem`` (``fabric/items.py``) and settle through
-the finance loom + PoUW escrow. So a peer audits *"capacity was not oversubscribed"*
+the finance knitweb + PoUW escrow. So a peer audits *"capacity was not oversubscribed"*
 from this record, and *"this capacity was the priced PLS obligation"* against the
 linked ResourceItem / settlement record. Binding an allocation to a specific priced
 offer via an explicit reference field is a deliberate future increment, not part of
@@ -38,7 +38,7 @@ __all__ = [
     "Resource",
     "Claim",
     "AllocationEvent",
-    "OperationalLoom",
+    "OperationalKnitweb",
     "capacity_balance",
     "is_feasible",
 ]
@@ -126,7 +126,7 @@ def is_feasible(event: AllocationEvent) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# The loom
+# The knitweb
 # ---------------------------------------------------------------------------
 
 def _sorted_resources(resources: tuple[Resource, ...]) -> list[Resource]:
@@ -137,7 +137,7 @@ def _sorted_claims(claims: tuple[Claim, ...]) -> list[Claim]:
     return sorted(claims, key=lambda c: (c.resource_name, c.task, c.units))
 
 
-class OperationalLoom:
+class OperationalKnitweb:
     """Emits signed, capacity-feasible allocation events for one scheduling actor."""
 
     KIND = "operational-allocation"

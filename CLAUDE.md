@@ -33,9 +33,9 @@ anchoring/bridging to the major blockchains.
 - **Canonical bytes are sacred.** All hashing/signing goes through
   `core.canonical.encode` (float-free deterministic CBOR) + `core.canonical.cid`
   (CIDv1 dag-cbor sha2-256). Changing it changes every hash and signature.
-- **Core primitives (seven):** `Blob`, `Fiber`, `Loom`, `Knit`, `Braid`, **`Web`**,
-  **`Pulse`**. Workers are **spiders**. Vocabulary is **Web · Loom · Knit · Pulse
-  · Fiber** — never "network"/"net".
+- **Core primitives (seven):** `Blob`, `Fiber`, `Knitweb`, `Knit`, `Braid`, **`Web`**,
+  **`Pulse`**. Workers are **spiders**. Vocabulary is **Web · Knit · Pulse
+  · Fiber · knitweb** — never "network"/"net" (and never "loom").
 - **The one allowed technical use of "network":** the `network` *id field* inside a
   signed `Knit` (an EIP-155-style chain id that namespaces a PLS web for replay
   protection). It is **hash-critical — never rename it**. Everywhere else in prose,
@@ -61,7 +61,7 @@ anchoring/bridging to the major blockchains.
 ## Layout & layers
 
 See `README.md`. Layers: L0 core → L1 ledger → L2 p2p → L3 fabric (Web) →
-L4 pouw → L5 looms → L6 token. Domain looms (incl. MOLGANG chemistry) are L5
+L4 pouw → L5 knitwebs → L6 token. Domain knitwebs (incl. MOLGANG chemistry) are L5
 plugins, never in core.
 
 ## Docs
