@@ -99,6 +99,11 @@ class BaseNode:
         # Opt-in self-healing convergence loop (issue #44). Off by default — the
         # handle lets stop() cancel the loop cleanly.
         self._anti_entropy_task: "asyncio.Task | None" = None
+        # Opt-in gossipsub mesh-maintenance loop (issue #78). Off by default and
+        # only meaningful on a subclass that exposes a gossip heartbeat tick (the
+        # base node has none, so its public start_gossip lives on the subclass);
+        # the handle lets stop() cancel the loop cleanly, mirroring anti-entropy.
+        self._gossip_task: "asyncio.Task | None" = None
 
     # -- server lifecycle -------------------------------------------------
 
@@ -129,8 +134,9 @@ class BaseNode:
         self._listening = True
 
     async def stop(self) -> None:
-        """Stop the listener (and any running anti-entropy loop)."""
+        """Stop the listener (and any running anti-entropy / gossip loop)."""
         await self.stop_anti_entropy()
+        await self.stop_gossip()
         if not self._listening:
             return
         await self.transport.close()
@@ -188,6 +194,49 @@ class BaseNode:
         try:
             while True:
                 await driver.run_cycle()
+        except asyncio.CancelledError:
+            raise
+
+    # -- gossipsub mesh maintenance (issue #78) ---------------------------
+
+    async def stop_gossip(self) -> None:
+        """Cancel the background gossip-maintenance loop if one is running.
+
+        The exact mirror of :meth:`stop_anti_entropy`: clear the handle, cancel
+        the task, and await its cancellation so the loop tears down cleanly.
+        """
+        task = self._gossip_task
+        self._gossip_task = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    @staticmethod
+    async def _gossip_sleep(delay: int) -> None:
+        # The prod clock: a seconds-based asyncio sleep. Tests inject a virtual
+        # clock so the cadence is deterministic with no real time. No wall-clock
+        # ever enters the loop's decisions — the only notion of time is the
+        # injected integer cadence and the gossip heartbeat's integer epoch.
+        await asyncio.sleep(delay)
+
+    async def _gossip_run(self, tick, interval: int, sleep) -> None:
+        # Drive the gossip heartbeat forever (until cancelled). A raised tick is
+        # swallowed (mirrors AntiEntropy's failed-round swallow) so one bad round
+        # — an offline peer this cycle — never crashes the loop; the mesh
+        # re-steers on the next heartbeat.
+        try:
+            while True:
+                try:
+                    await tick()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    pass
+                await sleep(interval)
         except asyncio.CancelledError:
             raise
 

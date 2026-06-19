@@ -223,6 +223,60 @@ class FabricNode(BaseNode):
 
         return [sync_round]
 
+    # -- gossipsub mesh maintenance (issue #78) ---------------------------
+
+    def start_gossip(
+        self,
+        *,
+        interval: int = 1,
+        sleep=None,
+    ) -> "asyncio.Task":
+        """Launch the gossipsub mesh-maintenance loop as a background task (#78).
+
+        Opt-in, exactly like :meth:`start_anti_entropy`: nothing runs until this
+        is called, so a plain ``start()`` keeps its existing behaviour and every
+        existing test is unaffected. The loop ticks :meth:`maintain_mesh` (the
+        GRAFT/PRUNE heartbeat that steers each topic mesh toward ``D``) then
+        :meth:`gossip_tick` (the lazy mesh-IHAVE to non-mesh peers) once per
+        ``interval``, so in a live node the mesh is actually maintained and the
+        eager announce narrows from all-candidates to the bounded ``O(D)`` mesh.
+
+        ``interval`` is an integer cadence (no wall-clock; the gossip heartbeat's
+        own notion of time is its integer epoch). The injected ``sleep`` defaults
+        to :func:`asyncio.sleep` (the prod clock); a test passes a virtual-clock
+        ``sleep`` so the cadence is deterministic with no real time. A raised tick
+        is swallowed (an offline peer this cycle) so one bad round never crashes
+        the loop — the mesh re-steers on the next heartbeat. It touches no signed
+        record and no hash path, so a woven Knit's CID is byte-identical whether
+        or not this loop runs.
+        """
+        if not isinstance(interval, int) or isinstance(interval, bool):
+            raise TypeError("interval must be int")
+        if interval < 1:
+            raise ValueError("interval must be >= 1")
+        if self._gossip_task is not None and not self._gossip_task.done():
+            return self._gossip_task
+        self._gossip_task = asyncio.ensure_future(
+            self._gossip_run(
+                self._gossip_round,
+                interval,
+                sleep or self._gossip_sleep,
+            )
+        )
+        return self._gossip_task
+
+    async def _gossip_round(self) -> None:
+        """One gossip heartbeat: maintain the mesh, then lazily gossip the fringe.
+
+        The single tick the #78 scheduler drives: :meth:`maintain_mesh` advances
+        the integer epoch and ships GRAFT/PRUNE to steer the mesh toward ``D``;
+        :meth:`gossip_tick` then sends the lazy mesh-IHAVE digest to every
+        non-mesh candidate. Both already swallow per-peer transport faults; this
+        ordering is the one the mesh-propagation tests tick by hand.
+        """
+        await self.maintain_mesh()
+        await self.gossip_tick()
+
     # -- peer wiring ------------------------------------------------------
 
     def add_peer(self, name: str, peer: PeerAddress) -> None:

@@ -383,3 +383,148 @@ def test_tiny_net_eager_announce_reaches_all_peers_like_75():
         assert _converged(a, b, c)
 
     run(scenario())
+
+
+# ── 7. the #78 gossip scheduler ticks maintain_mesh + gossip_tick in prod ─────
+
+class _VirtualClock:
+    """Injected sleep: elapses an integer virtual clock, no real time.
+
+    Mirrors the anti-entropy node test's clock. ``await sleep(delay)`` records the
+    integer delay and yields once to the loop (``asyncio.sleep(0)``) so the
+    background gossip round's in-memory dials get a chance to run — but zero real
+    wall-clock time passes, so the cadence is deterministic and the suite is fast.
+    """
+
+    def __init__(self) -> None:
+        self.now = 0
+        self.delays: list[int] = []
+
+    async def sleep(self, delay: int) -> None:
+        assert isinstance(delay, int) and not isinstance(delay, bool)
+        assert delay >= 0
+        self.delays.append(delay)
+        self.now += delay
+        await asyncio.sleep(0)
+
+
+async def _settle(predicate, *, limit: int = 400) -> bool:
+    """Yield to the loop until ``predicate()`` holds (bounded), no real sleeps."""
+    for _ in range(limit):
+        if predicate():
+            return True
+        await asyncio.sleep(0)
+    return predicate()
+
+
+@pytest.mark.interop
+def test_gossip_scheduler_off_by_default_does_not_change_serve():
+    """Opt-in: a plain start() launches NO gossip loop (existing serve behaviour)."""
+    async def scenario():
+        a = _mem_node({}, 1)
+        async with a:
+            assert a._gossip_task is None
+            await a.weave(_knowledge(a.pub, "x"))
+            assert a._gossip_task is None  # weaving never starts the loop either
+
+    run(scenario())
+
+
+@pytest.mark.interop
+def test_start_gossip_drives_maintain_mesh_then_gossip_tick_and_converges_mesh():
+    """start_gossip ticks maintain_mesh + gossip_tick on a loop; the mesh grows to D.
+
+    A weaver with many candidates and a small ``D`` starts the #78 background
+    scheduler on a virtual clock. After several injected ticks BOTH heartbeat
+    halves ran (maintain_mesh built a bounded mesh that converges toward ``D``, and
+    gossip_tick lazily reached the fringe so it holds the record), and the
+    byte-identity of a freshly woven Knit is unperturbed. stop_gossip then cancels
+    the loop cleanly. Socket-free (in-memory carrier), asyncio.wait_for bounded.
+    """
+    async def scenario():
+        reg: dict = {}
+        clock = _VirtualClock()
+        params = MeshParams(d=3, d_low=2, d_high=4)
+        a = _mem_node(reg, 1, gossip=Gossipsub(rng=random.Random(13), params=params))
+        peers = [_mem_node(reg, i + 2) for i in range(8)]
+        for i, p in enumerate(peers):
+            a.add_peer(f"p{i + 2}", p.address)
+
+        # A record woven cold (pre-mesh) keeps its exact content address — the
+        # scheduler is a heartbeat, it touches no record/CID.
+        cid = await a.weave(_knowledge(a.pub, "seed"))
+        assert canonical.cid(a.web.get(cid)) == cid
+
+        epoch0 = a._gossip.epoch
+        a.start_gossip(interval=1, sleep=clock.sleep)
+        assert a._gossip_task is not None
+
+        # After N injected ticks: the heartbeat epoch advanced (maintain_mesh ran
+        # repeatedly) and the mesh degree converged toward D within the band.
+        assert await _settle(
+            lambda: params.d_low <= a._gossip.mesh_degree(WEB_TOPIC) <= params.d_high
+        )
+        assert a._gossip.epoch > epoch0          # maintain_mesh ticked
+        assert len(clock.delays) >= 1 and set(clock.delays) == {1}  # integer cadence
+
+        # gossip_tick ran too: at least one NON-mesh fringe peer received the lazy
+        # mesh-ihave digest and converged on the seed CID over the lazy path.
+        mesh = set(a._gossip.mesh_peers(WEB_TOPIC))
+        fringe = [p for i, p in enumerate(peers) if f"p{i + 2}" not in mesh]
+        assert fringe, "test needs at least one fringe peer (D < peer-count)"
+        assert await _settle(
+            lambda: any(_calls(p).get("mesh-ihave", 0) > 0 for p in fringe)
+        )
+        assert any(p.web.get(cid) is not None for p in fringe)
+
+        # A fresh weave AFTER the scheduler ran is still byte-identical.
+        cid2 = await a.weave(_knowledge(a.pub, "after"))
+        assert canonical.cid(a.web.get(cid2)) == cid2
+
+        # stop_gossip cancels the loop cleanly and clears the handle.
+        await a.stop_gossip()
+        assert a._gossip_task is None
+
+    run(scenario())
+
+
+@pytest.mark.interop
+def test_start_gossip_swallows_a_throwing_tick_and_keeps_looping():
+    """A round that raises does NOT kill the loop — the next heartbeat still ticks.
+
+    maintain_mesh is monkeypatched to throw on its first call, then behave. The
+    scheduler must swallow that raise (mirrors AntiEntropy's failed-round swallow)
+    and keep ticking, so the epoch still advances on a later cycle and the loop is
+    still alive (cancellable) at the end.
+    """
+    async def scenario():
+        reg: dict = {}
+        clock = _VirtualClock()
+        a = _mem_node(reg, 1, gossip=Gossipsub(rng=random.Random(2)))
+        for i in range(4):
+            a.add_peer(f"p{i + 2}", _mem_node(reg, i + 2).address)
+
+        real_maintain = a.maintain_mesh
+        state = {"calls": 0}
+
+        async def flaky_maintain():
+            state["calls"] += 1
+            if state["calls"] == 1:
+                raise RuntimeError("boom: simulated offline-peer round failure")
+            await real_maintain()
+
+        a.maintain_mesh = flaky_maintain  # type: ignore[method-assign]
+
+        epoch0 = a._gossip.epoch
+        a.start_gossip(interval=1, sleep=clock.sleep)
+
+        # The first tick raised; the loop survived and a later tick advanced the
+        # heartbeat epoch — proof the raise was swallowed, not fatal.
+        assert await _settle(lambda: a._gossip.epoch > epoch0)
+        assert state["calls"] >= 2
+        assert not a._gossip_task.done()  # loop still alive after the throw
+
+        await a.stop_gossip()
+        assert a._gossip_task is None
+
+    run(scenario())
