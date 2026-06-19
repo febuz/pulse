@@ -36,6 +36,7 @@ from .discovery import (
     handle_peer_exchange,
     peer_exchange_message,
 )
+from .metrics import Metrics
 from .policing import police_equivocation_report
 from .relay import ENVELOPE_PEER_KEY
 from .reputation import Offense, PeerReputation
@@ -131,6 +132,13 @@ class AsyncioP2PNode:
         # misbehavior is funnelled here, and the per-connection _handle_peer
         # wrapper refuses banned peers before _dispatch ever sees a request.
         self.reputation = PeerReputation()
+        # Integer-only observability over the Phase 3 wire path (frames in/out,
+        # malformed/oversized frames, banned-peer refusals, records pulled by a
+        # catch-up feed sync). The same reusable primitive the FabricNode meters
+        # with — node-local bookkeeping only: it touches no signed record and no
+        # hash path, so a synced Knit's CID is byte-identical whether or not this
+        # node is being metered.
+        self.metrics = Metrics()
         # Equivocation reports this node has built or ingested, keyed by feed,
         # so they can be re-gossiped as the additive ``equivocation-report`` kind.
         self.equivocation_reports: dict[str, EquivocationReport] = {}
@@ -340,7 +348,15 @@ class AsyncioP2PNode:
                 f"{peer.host}:{peer.port}", Offense.STALE_OR_FORGED_PROOF
             )
             raise
-        return self._merge_replica(replica)
+        before = self._feed_length(replica.head.feed)
+        merged = self._merge_replica(replica)
+        # sync_pulls counts entries newly woven into the local Web by a catch-up
+        # pull — the post-merge length minus what was held before (0 when the
+        # pull was a no-op or the replica lost a fork/length tie-break).
+        added = merged.head.length - before
+        if added > 0:
+            self.metrics.incr("sync_pulls", added)
+        return merged
 
     async def sync_feed_range(
         self, peer: PeerAddress, feed_id: str, start: int, count: int
@@ -710,24 +726,30 @@ class AsyncioP2PNode:
         the *same* ban gate before any work, then drop the key so it never reaches
         signed/business logic.
         """
+        self.metrics.incr("frames_in")
         peer_id = msg.pop(ENVELOPE_PEER_KEY, None)
         if isinstance(peer_id, str) and self.reputation.is_banned(peer_id):
+            self.metrics.incr("banned_refusals")
+            self.metrics.incr("frames_out")
             return self._error("banned", "peer is banned")
         try:
             kind = msg.get("kind")
             if kind == "feed-request":
-                return self._serve_feed(msg)
-            if kind == "knit-proposal":
-                return self._handle_knit_proposal(msg)
-            if kind == "knit-finalize":
-                return self._handle_knit_finalize(msg)
-            if kind == "equivocation-report":
-                return self._handle_equivocation_report(msg)
-            if kind == PEER_EXCHANGE_KIND:
-                return self._handle_peer_exchange(msg)
-            return self._error("unknown-kind", str(kind))
+                out = self._serve_feed(msg)
+            elif kind == "knit-proposal":
+                out = self._handle_knit_proposal(msg)
+            elif kind == "knit-finalize":
+                out = self._handle_knit_finalize(msg)
+            elif kind == "equivocation-report":
+                out = self._handle_equivocation_report(msg)
+            elif kind == PEER_EXCHANGE_KIND:
+                out = self._handle_peer_exchange(msg)
+            else:
+                out = self._error("unknown-kind", str(kind))
         except (P2PError, WireError, ValueError) as exc:
-            return self._error("bad-request", str(exc))
+            out = self._error("bad-request", str(exc))
+        self.metrics.incr("frames_out")
+        return out
 
     @staticmethod
     def _peer_id(writer: asyncio.StreamWriter) -> str:
@@ -755,16 +777,23 @@ class AsyncioP2PNode:
             # Reputation gate: a peer the node has banned (a proven equivocator,
             # an accumulated bad-proof seeder, …) is refused and disconnected.
             if self.reputation.is_banned(peer_id):
+                # Refused before a frame is ever decoded — a carrier-owned ban
+                # gate, so it counts the refusal but no frames_in/out (no request
+                # reached the dispatch path).
+                self.metrics.incr("banned_refusals")
                 await write_frame(writer, self._error("banned", "peer is banned"))
                 return
             try:
                 msg = await read_frame(reader)
             except WireError as exc:
-                # Malformed or oversized wire frame → graded misbehavior points.
+                # Malformed or oversized wire frame → graded misbehavior points,
+                # and the matching frame-fault counter the carrier owns.
+                oversized = "too large" in str(exc)
+                self.metrics.incr(
+                    "frames_oversized" if oversized else "frames_malformed"
+                )
                 offense = (
-                    Offense.OVERSIZED_FRAME
-                    if "too large" in str(exc)
-                    else Offense.MALFORMED_FRAME
+                    Offense.OVERSIZED_FRAME if oversized else Offense.MALFORMED_FRAME
                 )
                 self.reputation.penalize(peer_id, offense)
                 await write_frame(writer, self._error("bad-frame", str(exc)))
