@@ -132,7 +132,15 @@ def test_injected_nonce_is_deterministic():
     # tests rely on; the signature itself is intentionally not reproducible.
     assert a.nonce == b.nonce == _NONCE
     assert a.timestamp == b.timestamp == 7
-    assert a.message() == b.message() == identity.PIGGYBACK_TAG + (7).to_bytes(8, "big") + _NONCE
+    # Message shape includes the #90 binding-length prefix (empty binding here →
+    # a 4-byte zero length), then the nonce.
+    expected_msg = (
+        identity.PIGGYBACK_TAG
+        + (7).to_bytes(8, "big")
+        + (0).to_bytes(4, "big")
+        + _NONCE
+    )
+    assert a.message() == b.message() == expected_msg
     assert identity.verify_id_proof(a, now=7) == identity.verify_id_proof(b, now=7)
     # A default-nonce proof is fresh each call (os.urandom).
     c = identity.make_id_proof(priv, timestamp=7)
@@ -208,20 +216,40 @@ def test_piggyback_proof_is_domain_separated():
 # ── 5. The _dispatch keying seam upgrades to the proven node key ─────────────
 
 
-def _proof_envelope(priv: str, *, timestamp: int) -> dict:
+def _net(priv: str) -> str:
+    """The unlinkable NETWORK identity key derived from a financial key (#89)."""
+    return identity.network_signing_key(priv)
+
+
+def _body_binding(body: dict) -> bytes:
+    """The #90 binding the receiver computes over the business request body."""
+    return crypto.sha256(canonical.encode(body))
+
+
+def _proof_envelope(
+    priv: str, *, timestamp: int, body: dict | None = None, nonce: bytes = _NONCE
+) -> dict:
+    """A dispatched id-proof envelope: signed with ``priv``'s NETWORK key and bound
+    to ``body`` (default the bare fabric-sync-request body the dispatch tests use),
+    exactly as a real dialer would stamp it (network-keyed + body-bound)."""
+    if body is None:
+        body = {"kind": "fabric-sync-request"}
     return identity.id_proof_to_record(
-        identity.make_id_proof(priv, nonce=_NONCE, timestamp=timestamp)
+        identity.make_id_proof(
+            _net(priv), nonce=nonce, timestamp=timestamp, binding=_body_binding(body)
+        )
     )
 
 
 @pytest.mark.property
 def test_valid_proof_keys_ban_on_node_key_not_ip():
-    """A forger that presents a proof is gated on its node key, not its IP."""
-    priv, pub = crypto.generate_keypair()
+    """A forger that presents a proof is gated on its NETWORK node key, not its IP."""
+    priv, _pub = crypto.generate_keypair()
+    net_pub = crypto.public_from_private(_net(priv))  # unlinkable network pubkey (#89)
     node = FabricNode()
     node._id_proof_now = lambda: 1000  # deterministic verifier clock
-    node.reputation.penalize(identity.node_peer_id(pub), Offense.EQUIVOCATION)
-    assert node.reputation.is_banned(identity.node_peer_id(pub))
+    node.reputation.penalize(identity.node_peer_id(net_pub), Offense.EQUIVOCATION)
+    assert node.reputation.is_banned(identity.node_peer_id(net_pub))
 
     # The request carries the carrier id (shared NAT IP) AND the forger's proof.
     req = {
@@ -239,16 +267,18 @@ def test_valid_proof_keys_ban_on_node_key_not_ip():
 def test_honest_peer_sharing_a_banned_ip_with_its_own_proof_is_served():
     """NAT collateral gone: an honest peer on a banned IP, with ITS OWN proof,
     is keyed on its own node key and served — not collateral-banned."""
-    forger_priv, forger_pub = crypto.generate_keypair()
-    honest_priv, honest_pub = crypto.generate_keypair()
+    forger_priv, _ = crypto.generate_keypair()
+    honest_priv, _ = crypto.generate_keypair()
+    forger_net = crypto.public_from_private(_net(forger_priv))
+    honest_net = crypto.public_from_private(_net(honest_priv))
     shared_ip = tcp_peer_id("198.51.100.5")
 
     node = FabricNode()
     node._id_proof_now = lambda: 1000
-    # Both the forger's NODE key and the shared IP are banned at this node.
-    node.reputation.penalize(identity.node_peer_id(forger_pub), Offense.EQUIVOCATION)
+    # Both the forger's NETWORK node key and the shared IP are banned at this node.
+    node.reputation.penalize(identity.node_peer_id(forger_net), Offense.EQUIVOCATION)
     node.reputation.penalize(shared_ip, Offense.EQUIVOCATION)
-    assert node.reputation.is_banned(identity.node_peer_id(forger_pub))
+    assert node.reputation.is_banned(identity.node_peer_id(forger_net))
     assert node.reputation.is_banned(shared_ip)
 
     # The honest peer dials from the SAME (banned) IP but presents its own proof.
@@ -258,9 +288,9 @@ def test_honest_peer_sharing_a_banned_ip_with_its_own_proof_is_served():
         ENVELOPE_ID_PROOF_KEY: _proof_envelope(honest_priv, timestamp=1000),
     }
     out = run(node._dispatch(req))
-    # Keyed on node:<honest_pub> (NOT banned) → served, despite the banned IP.
+    # Keyed on node:<honest_net> (NOT banned) → served, despite the banned IP.
     assert out.get("kind") == "fabric-sync-data"
-    assert not node.reputation.is_banned(identity.node_peer_id(honest_pub))
+    assert not node.reputation.is_banned(identity.node_peer_id(honest_net))
 
 
 @pytest.mark.property
@@ -282,14 +312,15 @@ def test_no_proof_falls_back_to_ip_keying():
 @pytest.mark.property
 def test_expired_or_tampered_proof_falls_back_to_ip_not_accepted():
     """An expired/tampered proof is NOT accepted: keying falls back to the IP."""
-    priv, pub = crypto.generate_keypair()
+    priv, _ = crypto.generate_keypair()
+    net_pub = crypto.public_from_private(_net(priv))
     node = FabricNode()
     node._id_proof_now = lambda: 100000  # far ahead → the proof below is stale
-    # The proven node key is banned; the carrier IP is NOT.
-    node.reputation.penalize(identity.node_peer_id(pub), Offense.EQUIVOCATION)
+    # The proven network node key is banned; the carrier IP is NOT.
+    node.reputation.penalize(identity.node_peer_id(net_pub), Offense.EQUIVOCATION)
     fresh_ip = tcp_peer_id("203.0.113.99")
 
-    # Expired proof (timestamp far in the past) → must NOT key on node:<pub>.
+    # Expired proof (timestamp far in the past) → must NOT key on node:<net_pub>.
     req = {
         "kind": "fabric-sync-request",
         ENVELOPE_PEER_KEY: fresh_ip,
@@ -304,7 +335,7 @@ def test_expired_or_tampered_proof_falls_back_to_ip_not_accepted():
     bad_env["sig"] = "00" + bad_env["sig"][2:]  # break the signature
     node2 = FabricNode()
     node2._id_proof_now = lambda: 100000
-    node2.reputation.penalize(identity.node_peer_id(pub), Offense.EQUIVOCATION)
+    node2.reputation.penalize(identity.node_peer_id(net_pub), Offense.EQUIVOCATION)
     req2 = {
         "kind": "fabric-sync-request",
         ENVELOPE_PEER_KEY: fresh_ip,
@@ -413,10 +444,221 @@ def test_keyless_asyncio_node_dials_without_a_proof():
     keyless = AsyncioP2PNode()  # no account
     assert keyless._id_signing_key() is None
     assert keyless._stamp_id_proof({"kind": "x"}) == {"kind": "x"}  # unchanged
-    # A node WITH an account stamps a proof keyed on its account pubkey.
+    # A node WITH an account stamps a proof keyed on its NETWORK pubkey (#89), NOT
+    # its financial/account pubkey — the financial pubkey must never ship.
     acct = AccountNode()
     keyed = AsyncioP2PNode(account=acct)
-    assert keyed._id_signing_key() == acct.priv
+    assert keyed._id_signing_key() == acct.priv  # financial key stays internal
+    net_pub = crypto.public_from_private(identity.network_signing_key(acct.priv))
+    assert keyed._id_network_signing_key() == identity.network_signing_key(acct.priv)
     stamped = keyed._stamp_id_proof({"kind": "x"})
     proof = identity.id_proof_from_record(stamped[ENVELOPE_ID_PROOF_KEY])
-    assert proof is not None and proof.pubkey == acct.pub
+    assert proof is not None
+    assert proof.pubkey == net_pub  # the unlinkable network key, not acct.pub
+    assert proof.pubkey != acct.pub
+    # #89 deanon proof: the financial pubkey appears NOWHERE in the dispatched
+    # envelope bytes (canonical-CBOR encode the whole stamped dict and scan it).
+    assert acct.pub.encode() not in canonical.encode(stamped)
+    assert bytes.fromhex(acct.pub) not in canonical.encode(stamped)
+
+
+# ── 7. #89: separate, unlinkable, STABLE network identity key ────────────────
+
+
+@pytest.mark.property
+def test_network_key_differs_from_financial_key():
+    """The derived network keypair is distinct from the financial keypair — the
+    whole point of #89: the network pubkey that ships cannot be the wallet pubkey."""
+    fin_priv, fin_pub = crypto.generate_keypair()
+    net_priv = identity.network_signing_key(fin_priv)
+    net_pub = crypto.public_from_private(net_priv)
+    assert net_priv != fin_priv
+    assert net_pub != fin_pub
+    # Reputation keys land on the NETWORK id, never the financial one.
+    assert identity.node_peer_id(net_pub) != identity.node_peer_id(fin_pub)
+
+
+@pytest.mark.property
+def test_network_key_is_stable_across_reconnects():
+    """The network key is a deterministic function of the financial key, so a node
+    presents the SAME node:<network-pubkey> across reconnects / IP rotations — this
+    is what preserves the NAT collateral-ban fix (#58)."""
+    fin_priv, _ = crypto.generate_keypair()
+    a = identity.network_signing_key(fin_priv)
+    b = identity.network_signing_key(fin_priv)
+    assert a == b
+    # And two different nodes derive two different (stable) network keys.
+    other_priv, _ = crypto.generate_keypair()
+    assert identity.network_signing_key(other_priv) != a
+
+
+@pytest.mark.property
+def test_derived_network_scalar_is_a_valid_secp256k1_key():
+    """The derived scalar is always a usable, in-range secp256k1 private key, so
+    public_from_private / sign never reject it."""
+    fin_priv, _ = crypto.generate_keypair()
+    net_priv = identity.network_signing_key(fin_priv)
+    scalar = int(net_priv, 16)
+    assert 1 <= scalar <= identity.SECP256K1_ORDER - 1
+    assert len(bytes.fromhex(net_priv)) == 32
+    # It round-trips through sign/verify under its OWN pubkey.
+    pub = crypto.public_from_private(net_priv)
+    sig = crypto.sign(net_priv, b"hello")
+    assert crypto.verify(pub, b"hello", sig)
+
+
+@pytest.mark.property
+def test_two_nodes_sharing_nat_keep_distinct_stable_network_ids():
+    """#58 invariant preserved under #89: two honest nodes behind one NAT egress IP
+    derive DISTINCT, each stable, network ids — so banning one's node:<net> cannot
+    collateral-ban the other."""
+    a_priv, _ = crypto.generate_keypair()
+    b_priv, _ = crypto.generate_keypair()
+    a_net = crypto.public_from_private(identity.network_signing_key(a_priv))
+    b_net = crypto.public_from_private(identity.network_signing_key(b_priv))
+    assert a_net != b_net
+    # Each is stable on reconnect (re-derive → same id).
+    assert crypto.public_from_private(identity.network_signing_key(a_priv)) == a_net
+
+
+@pytest.mark.property
+def test_stamped_proof_never_carries_the_financial_pubkey_over_a_real_body():
+    """End-to-end #89: stamping a real fabric-record gossip envelope never leaks the
+    financial pubkey into the dispatched bytes (it ships the network pubkey)."""
+    acct = AccountNode()
+    node = AsyncioP2PNode(account=acct)
+    body = {"kind": "knit-proposal", "note": "x"}
+    stamped = node._stamp_id_proof(body)
+    blob = canonical.encode(stamped)
+    assert bytes.fromhex(acct.pub) not in blob
+    assert acct.pub.encode() not in blob
+    # The network pubkey IS present (it is what reputation will key on); it ships
+    # as the hex-str ``pubkey`` field of the proof record.
+    net_pub = crypto.public_from_private(identity.network_signing_key(acct.priv))
+    assert net_pub.encode() in blob
+
+
+# ── 8. #89 byte-identity: financial signing of Knits is untouched ────────────
+
+
+@pytest.mark.property
+def test_fresh_knit_cid_and_bytes_unchanged_by_network_id_split():
+    """A fresh Knit's CID and canonical-CBOR bytes are byte-for-byte identical — the
+    Knit is still signed by the FINANCIAL key; the network-id split touched no
+    canonical/signed-record bytes."""
+    acct = AccountNode()
+    _, recv = crypto.generate_keypair()
+    proposed = acct.propose(recv, "PLS", 5, timestamp=42)
+    cid = proposed.id
+    encoded = canonical.encode(proposed.to_record())
+    # The sender signature on the Knit is by the FINANCIAL key, and verifies.
+    assert crypto.verify(acct.pub, proposed.signing_bytes, proposed.from_sig)
+    # Re-propose the identical Knit: CID + bytes are unchanged after the split.
+    again = AccountNode(priv=acct.priv, pub=acct.pub)
+    reproposed = again.propose(recv, "PLS", 5, timestamp=42)
+    assert reproposed.id == cid
+    assert canonical.encode(reproposed.to_record()) == encoded
+
+
+# ── 9. #90 binding in the primitive ──────────────────────────────────────────
+
+
+@pytest.mark.property
+def test_bound_proof_round_trips_and_verifies_under_its_binding():
+    priv, pub = crypto.generate_keypair()
+    binding = crypto.sha256(canonical.encode({"kind": "fabric-sync-request"}))
+    proof = identity.make_id_proof(priv, nonce=_NONCE, timestamp=1000, binding=binding)
+    assert proof.binding == binding
+    # Round-trips through the record codec (binding carried in the optional field).
+    rec = identity.id_proof_to_record(proof)
+    assert rec["bind"] == binding
+    assert canonical.decode(canonical.encode(rec)) == rec
+    assert identity.id_proof_from_record(rec) == proof
+    # Verifies only under the matching binding; a different expected binding fails.
+    assert identity.verify_id_proof(proof, now=1000, binding=binding) \
+        == identity.node_peer_id(pub)
+    other = crypto.sha256(b"different body")
+    assert identity.verify_id_proof(proof, now=1000, binding=other) is None
+    # And an unbound verify of a bound proof also fails (binding mismatch).
+    assert identity.verify_id_proof(proof, now=1000) is None
+
+
+@pytest.mark.property
+def test_unbound_proof_record_omits_the_bind_field():
+    """A legacy/unbound proof still encodes without a ``bind`` key, so its record is
+    byte-identical to the pre-#90 shape."""
+    priv, _ = crypto.generate_keypair()
+    proof = identity.make_id_proof(priv, nonce=_NONCE, timestamp=1000)
+    rec = identity.id_proof_to_record(proof)
+    assert "bind" not in rec
+    assert set(rec) == {"pubkey", "nonce", "ts", "sig"}
+    assert identity.id_proof_from_record(rec) == proof
+
+
+@pytest.mark.property
+def test_dispatch_rejects_proof_lifted_onto_a_different_body():
+    """End-to-end #90: a valid proof minted for body A, lifted onto body B at
+    dispatch, is NOT credited to the node key — it falls back to the carrier IP."""
+    priv, _ = crypto.generate_keypair()
+    net_pub = crypto.public_from_private(_net(priv))
+    node = FabricNode()
+    node._id_proof_now = lambda: 1000
+    node.reputation.penalize(identity.node_peer_id(net_pub), Offense.EQUIVOCATION)
+
+    body_a = {"kind": "fabric-sync-request"}
+    proof_for_a = _proof_envelope(priv, timestamp=1000, body=body_a)
+    # Lift proof-for-A onto a DIFFERENT body B at dispatch → binding mismatch.
+    body_b = {"kind": "fabric-sync-request", "extra": "tamper"}
+    req = {
+        **body_b,
+        ENVELOPE_PEER_KEY: tcp_peer_id("203.0.113.50"),
+        ENVELOPE_ID_PROOF_KEY: proof_for_a,
+    }
+    out = run(node._dispatch(req))
+    # Did NOT key on the banned node:<net_pub> (would be "banned"); fell back to the
+    # unbanned IP and was served — proof binding refused the lift.
+    assert out.get("kind") != "error" or out.get("code") != "banned"
+
+
+@pytest.mark.property
+def test_dispatch_rejects_replayed_proof_within_window():
+    """End-to-end #90: a captured valid proof replayed verbatim a second time within
+    the window is NOT re-credited to the node key (seen-proof cache)."""
+    priv, _ = crypto.generate_keypair()
+    net_pub = crypto.public_from_private(_net(priv))
+    node = FabricNode()
+    node._id_proof_now = lambda: 1000
+
+    body = {"kind": "fabric-sync-request"}
+    env = _proof_envelope(priv, timestamp=1000, body=body)
+
+    # First dispatch: the proof is accepted → score lands on node:<net_pub> path.
+    # (We charge a forgery to observe WHERE the penalty lands.)
+    forged = {
+        "kind": "fabric-record", "author": net_pub,
+        "record": {"kind": "knowledge", "title": "x", "body": "y", "author": net_pub},
+        "sig": "00" * 64,
+        ENVELOPE_PEER_KEY: tcp_peer_id("198.51.100.9"),
+        ENVELOPE_ID_PROOF_KEY: _proof_envelope(
+            priv, timestamp=1000,
+            body={
+                "kind": "fabric-record", "author": net_pub,
+                "record": {"kind": "knowledge", "title": "x", "body": "y", "author": net_pub},
+                "sig": "00" * 64,
+            },
+        ),
+    }
+    run(node._dispatch(dict(forged)))
+    node_key = identity.node_peer_id(net_pub)
+    score_after_first = node.reputation.score(node_key)
+    assert score_after_first > 0  # the proof was accepted; penalty hit the node key
+
+    ip_key = tcp_peer_id("198.51.100.9")
+    assert node.reputation.score(ip_key) == 0  # not the carrier
+
+    # Replay the SAME proof verbatim (same nonce/ts/binding) on a second dispatch
+    # within the window: the cache refuses it → keying falls back to the carrier IP,
+    # so the node key accrues NOTHING further from the replay.
+    run(node._dispatch(dict(forged)))
+    assert node.reputation.score(node_key) == score_after_first  # unchanged
+    assert node.reputation.score(ip_key) > 0  # the replay was charged to the IP

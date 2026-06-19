@@ -57,16 +57,31 @@ def _forged_record(author_pub: str, tag: str) -> dict:
     return {"kind": "knowledge", "title": tag, "body": "evil", "author": author_pub}
 
 
+def _net_key(financial_priv: str) -> str:
+    """The unlinkable NETWORK identity key derived from a financial key (#89)."""
+    return identity.network_signing_key(financial_priv)
+
+
+def _net_node_key(financial_priv: str) -> str:
+    """The reputation key the receiver derives — keyed on the NETWORK pubkey (#89)."""
+    return identity.node_peer_id(crypto.public_from_private(_net_key(financial_priv)))
+
+
 async def _dial_with_proof(attacker: FabricNode, target_addr, env: dict, signing_key: str):
     """Dial ``target`` over the REAL TcpTransport, piggybacking ``signing_key``'s
     proof onto the request — the seam a peer uses to claim its node identity.
 
-    Mirrors what ``FabricNode._send`` does on the broadcast path, but lets the test
-    choose WHICH key signs the proof (so a forger proves its own key, and an honest
-    peer proves a different one) while sharing the single 127.0.0.1 IP.
+    Mirrors what ``FabricNode._send`` / ``_stamp_id_proof`` does on the broadcast
+    path: the proof is signed with the NETWORK key derived from ``signing_key`` (#89)
+    and BOUND to the request body (#90), but the test still chooses WHICH financial
+    key the network identity derives from (so a forger proves its own key, and an
+    honest peer proves a different one) while sharing the single 127.0.0.1 IP.
     """
     # Use the node's real coarse clock so the proof is fresh against the verifier.
-    proof = identity.make_id_proof(signing_key, timestamp=attacker._id_proof_now())
+    binding = attacker._id_proof_binding(env)
+    proof = identity.make_id_proof(
+        _net_key(signing_key), timestamp=attacker._id_proof_now(), binding=binding
+    )
     stamped = dict(env)
     stamped[ENVELOPE_ID_PROOF_KEY] = identity.id_proof_to_record(proof)
     return await _aw(attacker.dialer.dial(target_addr, stamped))
@@ -81,7 +96,8 @@ def test_forger_presenting_a_proof_is_banned_by_its_node_key():
         attacker = FabricNode()
         async with victim, attacker:
             forger_pub = attacker.pub
-            node_key = identity.node_peer_id(forger_pub)
+            # Reputation keys on the unlinkable NETWORK key, not the financial pubkey.
+            node_key = _net_node_key(attacker._priv)
             ip_key = tcp_peer_id("127.0.0.1")
             assert victim.reputation.score(node_key) == 0
 
@@ -128,8 +144,8 @@ def test_honest_peer_sharing_the_forgers_ip_is_not_collateral_banned():
         forger = FabricNode()
         honest = FabricNode()  # shares 127.0.0.1 with the forger
         async with victim, forger, honest:
-            forger_node_key = identity.node_peer_id(forger.pub)
-            honest_node_key = identity.node_peer_id(honest.pub)
+            forger_node_key = _net_node_key(forger._priv)
+            honest_node_key = _net_node_key(honest._priv)
 
             # The forger forges twice → banned on ITS node key.
             for i in range(2):
@@ -164,7 +180,7 @@ def test_peer_with_no_proof_still_works_keyed_on_ip():
         attacker = FabricNode()
         async with victim, attacker:
             ip_key = tcp_peer_id("127.0.0.1")
-            node_key = identity.node_peer_id(attacker.pub)
+            node_key = _net_node_key(attacker._priv)
             assert victim.reputation.score(ip_key) == 0
 
             banned_seen = False
@@ -196,14 +212,18 @@ def test_tampered_or_expired_proof_falls_back_to_ip_not_accepted():
         attacker = FabricNode()
         async with victim, attacker:
             ip_key = tcp_peer_id("127.0.0.1")
-            node_key = identity.node_peer_id(attacker.pub)
+            node_key = _net_node_key(attacker._priv)
 
             # --- a TAMPERED proof: signature broken → falls back to the IP key ---
             env = _forged_envelope(
                 attacker.pub, _forged_record(attacker.pub, "tamper"), sig="00" * 64
             )
             proof_rec = identity.id_proof_to_record(
-                identity.make_id_proof(attacker._priv, timestamp=attacker._id_proof_now())
+                identity.make_id_proof(
+                    _net_key(attacker._priv),
+                    timestamp=attacker._id_proof_now(),
+                    binding=attacker._id_proof_binding(env),
+                )
             )
             proof_rec["sig"] = "00" + proof_rec["sig"][2:]  # break the signature
             stamped = dict(env)
@@ -215,17 +235,19 @@ def test_tampered_or_expired_proof_falls_back_to_ip_not_accepted():
             assert victim.reputation.score(node_key) == 0
 
             # --- an EXPIRED proof: timestamp far in the past → falls back to IP ---
+            env2_body = _forged_envelope(
+                attacker.pub, _forged_record(attacker.pub, "stale"), sig="00" * 64
+            )
             stale = identity.id_proof_to_record(
                 identity.make_id_proof(
-                    attacker._priv,
+                    _net_key(attacker._priv),
                     timestamp=attacker._id_proof_now()
                     - identity.DEFAULT_PROOF_WINDOW_S
                     - 1000,
+                    binding=attacker._id_proof_binding(env2_body),
                 )
             )
-            env2 = _forged_envelope(
-                attacker.pub, _forged_record(attacker.pub, "stale"), sig="00" * 64
-            )
+            env2 = dict(env2_body)
             env2[ENVELOPE_ID_PROOF_KEY] = stale
             resp2 = await _aw(attacker.dialer.dial(victim.address, env2))
             assert resp2.get("kind") == "error" and resp2.get("code") == "bad-request"

@@ -140,6 +140,7 @@ class PeerIdentityGate:
         *,
         proof_window_s: int = identity.DEFAULT_PROOF_WINDOW_S,
         nonce_source: Optional[Callable[[], bytes]] = None,
+        seen_proof_cap: int = identity.DEFAULT_SEEN_PROOF_CAP,
     ) -> None:
         if not isinstance(reputation, PeerReputation):
             raise TypeError("reputation must be a PeerReputation")
@@ -150,6 +151,9 @@ class PeerIdentityGate:
         self._rep = reputation
         self._window = proof_window_s
         self._nonce_source = nonce_source
+        # Replay-within-window cache (#90): a verbatim PiggybackProof is accepted at
+        # most once. Bounded + integer-only; the clock is injected per resolve().
+        self._seen = identity.SeenProofCache(capacity=seen_proof_cap)
 
     # ── Connection setup ──────────────────────────────────────────────────────
 
@@ -171,6 +175,7 @@ class PeerIdentityGate:
         challenge: Optional[Challenge] = None,
         proof: Optional[Union[Proof, PiggybackProof]] = None,
         now: Optional[int] = None,
+        binding: bytes = b"",
     ) -> GateVerdict:
         """Resolve the reputation key for a connection and rule ACCEPT/REJECT.
 
@@ -182,16 +187,25 @@ class PeerIdentityGate:
           * if ``proof`` is a challenge :class:`~knitweb.p2p.identity.Proof` and a
             ``challenge`` is supplied, verify it against that exact challenge;
           * if ``proof`` is a :class:`~knitweb.p2p.identity.PiggybackProof`,
-            verify its signature *and* freshness against the injected ``now``
-            (required for a piggyback proof);
+            verify its signature, freshness against the injected ``now`` (required
+            for a piggyback proof), and its ``binding`` against the connection/body
+            ``binding`` the verifier expects (#90), then check it against the
+            seen-proof cache so a verbatim replay within the window is rejected.
 
-        On a verified proof the verdict is keyed on ``node:<pubkey>`` with the
-        matching :class:`IdentitySource`; otherwise it falls back to
-        ``carrier_key`` with :data:`IdentitySource.CARRIER`. Either way the ban
-        ledger is consulted on the *resolved* key to compute the decision.
+        On a verified (and first-seen) proof the verdict is keyed on
+        ``node:<pubkey>`` with the matching :class:`IdentitySource`; otherwise it
+        falls back to ``carrier_key`` with :data:`IdentitySource.CARRIER`. Either
+        way the ban ledger is consulted on the *resolved* key to compute the
+        decision.
 
-        Never raises on a bad/forged/stale proof — a failed proof is simply a
-        carrier fallback (defence-in-depth: a malformed proof must not be a DoS
+        ``binding`` (#90) is the connection/body context the verifier requires the
+        piggyback proof to commit to: a captured proof lifted onto a different
+        connection or first-message body carries a different binding and is
+        rejected to carrier fallback. Default empty binding preserves the unbound
+        behaviour for callers that do not bind.
+
+        Never raises on a bad/forged/stale/replayed proof — a failed proof is simply
+        a carrier fallback (defence-in-depth: a malformed proof must not be a DoS
         lever against the handshake).
         """
         _require_carrier(carrier_key)
@@ -211,8 +225,15 @@ class PeerIdentityGate:
                 raise ValueError("now is required to verify a PiggybackProof")
             if not isinstance(now, int) or isinstance(now, bool):
                 raise TypeError("now must be int")
-            resolved = identity.verify_id_proof(proof, now=now, window=self._window)
-            if resolved is not None:
+            resolved = identity.verify_id_proof(
+                proof, now=now, window=self._window, binding=binding
+            )
+            # Accept at most once within the window: a verbatim replay of an
+            # already-seen proof is treated as unproven (carrier fallback), so a
+            # captured honest proof cannot be re-presented to blame node:<pubkey>.
+            if resolved is not None and self._seen.check_and_record(
+                proof, now=now, window=self._window
+            ):
                 # verify_id_proof already returns the namespaced node:<pubkey>.
                 rep_key = resolved
                 pubkey = proof.pubkey

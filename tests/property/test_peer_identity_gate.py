@@ -306,3 +306,99 @@ def test_gate_does_not_change_knit_cid():
     k2 = knit.build(pub, recipient, "PLS", 7, from_nonce=1, timestamp=123)
     assert k2.id == cid_before
     assert canonical.encode(k2.to_record()) == encoded_before
+
+
+# ── 8. #90 replay protection: seen-proof cache + connection/body binding ─────
+
+
+@pytest.mark.property
+def test_replayed_piggyback_proof_is_rejected_within_window():
+    """A verbatim replay of a captured valid proof, within its freshness window, is
+    REJECTED (the seen-proof cache accepts each proof at most once)."""
+    priv, pub = crypto.generate_keypair()
+    gate = _gate(proof_window_s=60)
+    proof = _piggyback(priv, ts=1000)
+
+    # First sighting: accepted and keyed on the proven node id.
+    first = gate.resolve("tcp:1.2.3.4", proof=proof, now=1000)
+    assert first.source is IdentitySource.PIGGYBACK
+    assert first.rep_key == identity.node_peer_id(pub)
+
+    # A MITM lifts the SAME proof onto its own connection inside the window:
+    # the cache rejects the replay → carrier fallback, so the honest node:<pubkey>
+    # is NOT credited/blamed for the attacker's connection.
+    replay = gate.resolve("tcp:9.9.9.9", proof=proof, now=1030)
+    assert replay.source is IdentitySource.CARRIER
+    assert replay.rep_key == "tcp:9.9.9.9"
+    assert replay.pubkey is None
+
+
+@pytest.mark.property
+def test_distinct_proofs_same_key_both_accepted():
+    """The cache keys on the exact proof, not the identity: two genuinely distinct
+    proofs (fresh nonces) from the same node both resolve to its node id."""
+    priv, pub = crypto.generate_keypair()
+    gate = _gate(proof_window_s=60)
+    p1 = _piggyback(priv, ts=1000, nonce=b"\x01" * identity.NONCE_LEN)
+    p2 = _piggyback(priv, ts=1000, nonce=b"\x02" * identity.NONCE_LEN)
+    assert gate.resolve("tcp:1.2.3.4", proof=p1, now=1000).rep_key \
+        == identity.node_peer_id(pub)
+    assert gate.resolve("tcp:1.2.3.4", proof=p2, now=1000).rep_key \
+        == identity.node_peer_id(pub)
+
+
+@pytest.mark.property
+def test_proof_bound_to_body_rejected_on_a_different_body():
+    """A proof minted for one first-message body cannot be lifted onto another:
+    the verifier's expected binding differs → carrier fallback."""
+    priv, pub = crypto.generate_keypair()
+    gate = _gate(proof_window_s=60)
+    bind_a = crypto.sha256(canonical.encode({"kind": "a"}))
+    bind_b = crypto.sha256(canonical.encode({"kind": "b"}))
+    proof = identity.make_id_proof(
+        priv, nonce=_NONCE, timestamp=1000, binding=bind_a
+    )
+
+    # Presented with the body it was minted for → proven.
+    ok = gate.resolve("tcp:1.2.3.4", proof=proof, now=1000, binding=bind_a)
+    assert ok.source is IdentitySource.PIGGYBACK
+    assert ok.rep_key == identity.node_peer_id(pub)
+
+    # Lifted onto a DIFFERENT body (different expected binding) → carrier fallback.
+    lifted = gate.resolve("tcp:1.2.3.4", proof=proof, now=1000, binding=bind_b)
+    assert lifted.source is IdentitySource.CARRIER
+
+
+@pytest.mark.property
+def test_seen_proof_cache_is_bounded_and_evicts_oldest():
+    """The cache is hard-capped (integer-LRU): at capacity the oldest entry is
+    evicted, which is the only way a long-since-seen proof could be re-presented."""
+    priv, _ = crypto.generate_keypair()
+    cache = identity.SeenProofCache(capacity=2)
+    p1 = _piggyback(priv, ts=1000, nonce=b"\x01" * identity.NONCE_LEN)
+    p2 = _piggyback(priv, ts=1000, nonce=b"\x02" * identity.NONCE_LEN)
+    p3 = _piggyback(priv, ts=1000, nonce=b"\x03" * identity.NONCE_LEN)
+    assert cache.check_and_record(p1, now=1000, window=60) is True
+    assert cache.check_and_record(p2, now=1000, window=60) is True
+    assert len(cache) == 2
+    # p1 is still remembered → a replay is rejected.
+    assert cache.check_and_record(p1, now=1000, window=60) is False
+    # Recording p3 at capacity evicts the oldest (p1).
+    assert cache.check_and_record(p3, now=1000, window=60) is True
+    assert len(cache) == 2
+
+
+@pytest.mark.property
+def test_seen_proof_cache_forgets_expired_proofs():
+    """An entry is dropped once it can no longer be replayed (timestamp+window past
+    now), so the cache never grows with proofs that are already stale anyway."""
+    priv, _ = crypto.generate_keypair()
+    cache = identity.SeenProofCache(capacity=8)
+    proof = _piggyback(priv, ts=1000)
+    assert cache.check_and_record(proof, now=1000, window=60) is True
+    # Replay while still fresh → rejected.
+    assert cache.check_and_record(proof, now=1050, window=60) is False
+    # Past the window the entry is swept; the proof is unverifiable now anyway, so a
+    # later sweep that re-admits it is harmless (verify_id_proof rejects it on age).
+    assert cache.check_and_record(proof, now=2000, window=60) is True
+    assert len(cache) == 1  # only the (now-stale) re-admission remains
