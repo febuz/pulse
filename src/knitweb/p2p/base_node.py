@@ -34,6 +34,7 @@ import time
 from . import identity
 from .anti_entropy import AntiEntropy, Backoff
 from .metrics import Metrics
+from .peer_identity_gate import PeerIdentityGate
 from .relay import ENVELOPE_ID_PROOF_KEY, ENVELOPE_PEER_KEY
 from .reputation import Offense, PeerReputation
 from .transport import Dialer, PeerAddress, TcpTransport, Transport, tcp_peer_id
@@ -77,6 +78,18 @@ class BaseNode:
         # misbehavior is funnelled here, and the per-connection _handle_peer
         # wrapper refuses banned peers before _dispatch ever sees a request.
         self.reputation = PeerReputation()
+        # The single identity-keying authority (#65): one gate now owns BOTH the
+        # challenge-response and the no-round-trip piggyback resolution of a
+        # connection's reputation key (proven ``node:<pubkey>`` when a valid+fresh
+        # proof rides the request, else the carrier ``tcp:``/``relay:`` key) and
+        # routes the resulting penalty through that same key. It shares this node's
+        # ledger, so feed-level offences charged elsewhere stay on the one ledger.
+        # The inline piggyback-only resolution that #61 shipped is gone; the live
+        # path now flows through the gate, preserving its behaviour exactly while
+        # the challenge-response path becomes additionally available.
+        self.identity_gate = PeerIdentityGate(
+            self.reputation, proof_window_s=self._id_proof_window_s
+        )
         # Integer-only observability over the wire path (frames in/out,
         # malformed/oversized frames, banned-peer refusals, …). Node-local
         # bookkeeping only: it touches no signed record and no hash path, so a
@@ -215,15 +228,15 @@ class BaseNode:
         every pre-#58 peer and test is byte-for-byte unchanged.
         """
         self.metrics.incr("frames_in")
-        peer_id = msg.pop(ENVELOPE_PEER_KEY, None)
-        if not isinstance(peer_id, str):
-            peer_id = None
-        # OPTIONAL: upgrade to a proven node-key id when a valid proof rides along.
-        # Always pop the envelope key (even on a bad proof) so it never reaches
-        # signed/business logic on the live TCP path — on the relay path it is
-        # already stripped, but a TCP frame carries it verbatim into _dispatch.
-        peer_id = self._resolve_peer_id(peer_id, msg.pop(ENVELOPE_ID_PROOF_KEY, None))
-        if peer_id is not None and self.reputation.is_banned(peer_id):
+        carrier_id = msg.pop(ENVELOPE_PEER_KEY, None)
+        if not isinstance(carrier_id, str):
+            carrier_id = None
+        # Resolve the reputation key through the ONE identity-keying authority
+        # (#65). Always pop the proof envelope key (even on a bad proof) so it
+        # never reaches signed/business logic on the live TCP path — on the relay
+        # path it is already stripped, but a TCP frame carries it verbatim here.
+        verdict = self._resolve_verdict(carrier_id, msg.pop(ENVELOPE_ID_PROOF_KEY, None))
+        if verdict is not None and not verdict.accepted:
             self.metrics.incr("banned_refusals")
             if self._count_frames_out_on_banned:
                 self.metrics.incr("frames_out")
@@ -233,10 +246,11 @@ class BaseNode:
         except self._dispatch_errors as exc:
             # A forged author signature surfaces here as a routing error mentioning
             # "signature"; with a positively-identified sender it is a graded
-            # INVALID_SIGNATURE offense, applied uniformly on every carrier (the
-            # offence used to be reachable only on the dead test-only stream path).
-            if peer_id is not None and "signature" in str(exc):
-                self.reputation.penalize(peer_id, Offense.INVALID_SIGNATURE)
+            # INVALID_SIGNATURE offense, routed through the gate so it lands on the
+            # verdict's resolved key (the proven node:<pubkey> when a proof rode
+            # along, else the carrier id) — the one keying path for every carrier.
+            if verdict is not None and "signature" in str(exc):
+                self.identity_gate.penalize(verdict, Offense.INVALID_SIGNATURE)
             out = self._error("bad-request", str(exc))
         self.metrics.incr("frames_out")
         return out
@@ -255,27 +269,45 @@ class BaseNode:
         """
         return int(time.time())
 
-    def _resolve_peer_id(self, carrier_id, raw_proof) -> "str | None":
-        """Pick the reputation key: the proven node key, else the carrier id.
+    def _resolve_verdict(self, carrier_id, raw_proof):
+        """Resolve the connection's :class:`GateVerdict` via the identity gate.
 
         ``carrier_id`` is the ``tcp:<ip>``/``relay:<mailbox>`` id the carrier
-        stamped (or ``None``); ``raw_proof`` is the popped, OPTIONAL
-        :data:`ENVELOPE_ID_PROOF_KEY` value. If it decodes to a well-shaped proof
-        whose signature verifies AND whose timestamp is within
-        ``_id_proof_window_s`` of :meth:`_id_proof_now`, the proven
-        ``node:<pubkey>`` key is returned; otherwise we fall back to ``carrier_id``
-        unchanged (so an absent/tampered/expired proof never accepts and never
-        churns the existing IP-keyed behaviour).
+        stamped (or ``None`` when the carrier could not identify the sender);
+        ``raw_proof`` is the popped, OPTIONAL :data:`ENVELOPE_ID_PROOF_KEY` value.
+
+        When ``carrier_id`` is ``None`` there is no key to judge and the carrier
+        contributed no identity, so this returns ``None`` and ``_dispatch`` skips
+        both the ban gate and the penalty (exactly as the pre-#65 inline path did
+        for an unidentified sender). Otherwise the gate resolves the reputation
+        key: a piggybacked :class:`~knitweb.p2p.identity.PiggybackProof` that
+        verifies AND whose timestamp is within ``_id_proof_window_s`` of
+        :meth:`_id_proof_now` upgrades the key to the proven ``node:<pubkey>``; an
+        absent/tampered/expired proof falls back to ``carrier_id`` unchanged (so
+        the existing IP-/mailbox-keyed behaviour is byte-for-byte preserved).
         """
-        if raw_proof is None:
-            return carrier_id
-        proof = identity.id_proof_from_record(raw_proof)
-        if proof is None:
-            return carrier_id
-        proven = identity.verify_id_proof(
-            proof, now=self._id_proof_now(), window=self._id_proof_window_s
+        if carrier_id is None:
+            return None
+        proof = (
+            identity.id_proof_from_record(raw_proof)
+            if raw_proof is not None
+            else None
         )
-        return proven if proven is not None else carrier_id
+        return self.identity_gate.resolve(
+            carrier_id, proof=proof, now=self._id_proof_now()
+        )
+
+    def _resolve_peer_id(self, carrier_id, raw_proof) -> "str | None":
+        """Back-compat accessor: the resolved reputation key (or ``None``).
+
+        Retained as the pre-#65 public seam — it now delegates to the single
+        identity gate via :meth:`_resolve_verdict` rather than re-implementing the
+        proof check inline, so there is exactly ONE identity-keying path. Returns
+        the proven ``node:<pubkey>`` when a valid+fresh proof rode along, else the
+        carrier id unchanged.
+        """
+        verdict = self._resolve_verdict(carrier_id, raw_proof)
+        return verdict.rep_key if verdict is not None else carrier_id
 
     def _id_signing_key(self) -> "str | None":
         """The node's secp256k1 private key (hex) to sign outbound proofs, or None.
