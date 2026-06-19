@@ -18,6 +18,12 @@ All notable changes to Knitweb. Versions are representative of implemented layer
   weigh exponentially more**, via a float-free integer compound decay
   (`weight = weight * num // den` per beat of age, optional `horizon`). Enforces
   one-vote-per-subject, rejects future-dated votes, deterministic tie-break.
+- **Crowdfunding** (`govern/crowdfund.py`) — the one-person-one-vote rule applied to funding:
+  **one person, one backing**. A `Campaign` succeeds only when it clears **both** a capital
+  `goal` and a `min_backers` breadth threshold by the deadline (anti-plutocratic — whales can't
+  manufacture support). All-or-nothing settlement (release to beneficiary, else refund all), no
+  premine, advisory integer accounting. `momentum()` reuses the tally so recent backing weighs
+  exponentially more. Proofs: `tests/property/test_govern_crowdfund.py` (13 tests).
 - Docs: `docs/GOVERNANCE_VOTEBANK.md`. Proofs: `tests/property/test_govern_votebank.py`
   (20 tests).
 

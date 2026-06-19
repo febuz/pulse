@@ -73,6 +73,27 @@ sums the weighted votes per choice, and returns a deterministic winner (ties bre
 lexicographically smallest choice so every honest node agrees). It is **advisory/pure** — it
 only counts votes upstream produced (e.g. drawn from the `VoteBank`).
 
+## 4. Crowdfunding on the votebank (`govern/crowdfund.py`)
+
+The same one-person-one-vote rule, applied to *funding*: **one person, one backing**. Ordinary
+token crowdfunding is plutocratic (most capital wins); votebank crowdfunding measures **breadth
+of real backers** alongside capital, so a whale can register once like everyone else but cannot
+manufacture support.
+
+A `Campaign` (bound to a `VoteBank` for its registry) succeeds only when it clears **both**:
+
+- a capital **`goal`** (sum of PLS-wei pledged), and
+- a **`min_backers`** breadth threshold (distinct registered backers — national *or* freeport),
+
+by its **`deadline`**. Settlement is **all-or-nothing**: met ⇒ the escrow releases to the
+beneficiary; not met ⇒ every backer is refunded. Nothing is minted (no premine — the pool is
+exactly what was pledged), and like `pouw/dispute.py` this is **advisory integer accounting**:
+`resolve()` returns who is owed what in PLS-wei; the caller moves it with Knits.
+
+`Campaign.momentum(now, decay)` reuses the governance tally so **recent backing weighs
+exponentially more** — a campaign gaining backers *now* reads hotter than a stalled one —
+without affecting the all-or-nothing settlement.
+
 ## Why these choices
 
 - **Anchored supply, not fiat.** Tying the cap to registered humans + births is what keeps
@@ -97,3 +118,8 @@ one-vote-per-person dedup across worlds and across the freeport pair; moon suppl
 persons + expected births; issuance never exceeds the cap; geometric weight decay; horizon
 cut-off; recent votes win; one-vote-per-subject and future-vote rejection in the tally; and a
 full register → issue → recency-weighted vote loop.
+
+`tests/property/test_govern_crowdfund.py` — no premine/conservation; only registered people may
+back; one backing per person (no whale stuffing); capital-met-but-breadth-missing expires;
+underfunded refunds everyone; funded releases all to beneficiary; resolve idempotent and closes
+pledging; freeport backers count for breadth; momentum weights recent backing more.

@@ -10,6 +10,8 @@ changes):
     treasury and issues it one-vote-per-person, never past the demographic cap.
   * :mod:`~knitweb.govern.tally` — aggregates cast votes so **more recent votes weigh
     exponentially more**, via an integer geometric decay.
+  * :mod:`~knitweb.govern.crowdfund` — applies the one-person-one-vote rule to funding
+    (**one person, one backing**): all-or-nothing campaigns gated on breadth + capital.
 """
 
 from .registry import (
@@ -21,6 +23,7 @@ from .registry import (
 )
 from .tally import Decay, Vote, WeightedTally, tally
 from .votebank import VoteBank, VoteIssuance
+from .crowdfund import Campaign, CampaignResult, CampaignStatus, Pledge
 
 __all__ = [
     "Registration",
@@ -34,4 +37,8 @@ __all__ = [
     "Vote",
     "WeightedTally",
     "tally",
+    "Campaign",
+    "CampaignResult",
+    "CampaignStatus",
+    "Pledge",
 ]
