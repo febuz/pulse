@@ -60,6 +60,7 @@ __all__ = [
     "RelayError",
     "HttpPoster",
     "ENVELOPE_PEER_KEY",
+    "ENVELOPE_ID_PROOF_KEY",
     "RELAY_ENVELOPE_PREFIX",
     "relay_peer_id",
 ]
@@ -77,6 +78,25 @@ RELAY_ENVELOPE_PREFIX = "_relay_"
 # It is a ``_relay_*`` correlation key, so :func:`_strip_envelope` removes it
 # before any signed/business logic runs — it never enters canonical/hashed bytes.
 ENVELOPE_PEER_KEY = "_relay_peer"
+
+# Transport-envelope key carrying an OPTIONAL piggybacked node-identity proof
+# (step 2 of #58). A dialing peer that holds a node key attaches its self-minted
+# :func:`knitweb.p2p.identity.id_proof_to_record` here; the carrier-agnostic
+# dispatch verifies it and, on success, keys reputation on the proven
+# ``node:<pubkey>`` instead of the carrier's ``tcp:<ip>`` id, so a forger is
+# banned individually with zero NAT collateral. Like the peer key it is a
+# ``_relay_*`` correlation key — :func:`_strip_envelope` drops it before any
+# signed/business logic, so it never enters canonical/hashed bytes. It is
+# OPTIONAL: a request without it falls back to the existing carrier-id behaviour,
+# keeping every pre-#58 peer and test unchanged.
+#
+# SCOPE: this is a TCP-carrier concern. The NAT collateral-ban it removes is
+# specific to ``tcp:<ip>`` keying (many honest peers behind one public IP); a
+# relay mailbox is already a per-node-stable identity, so the relay carrier keeps
+# keying on the reply-to mailbox and strips this key (see ``_dispatch``) — proven
+# keying activates only on the live TCP/direct-stream path. The key still lives in
+# the reserved ``_relay_*`` namespace so it is stripped uniformly on the relay.
+ENVELOPE_ID_PROOF_KEY = "_relay_id_proof"
 
 # Reputation-key prefix for a relay sender, distinguishing a ``relay://`` mailbox
 # from a TCP ``host:port`` so the two address spaces never collide in the ledger.
@@ -298,6 +318,14 @@ class RelayTransport:
         request = _strip_envelope(decoded)
         if isinstance(reply_to, str):
             request[ENVELOPE_PEER_KEY] = relay_peer_id(reply_to)
+        # Proven node identity (step 2 of #58) is a TCP-carrier concern: the NAT
+        # collateral-ban it removes is specific to ``tcp:<ip>`` keying, where many
+        # honest peers can share one public IP. A relay mailbox is already a
+        # per-node-stable identity, so the relay carrier keeps keying on the
+        # reply-to mailbox and does NOT honour the piggybacked proof — the proof
+        # envelope key is therefore stripped here (it is a ``_relay_*`` key) and
+        # never reaches dispatch over the relay path. This keeps the pre-existing
+        # relay ban-gate behaviour byte-for-byte unchanged.
         try:
             response = await self._handler(request)
         except Exception:  # noqa: BLE001 — never let one bad frame kill the loop

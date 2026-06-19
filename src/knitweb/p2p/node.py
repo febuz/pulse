@@ -619,11 +619,23 @@ class AsyncioP2PNode(BaseNode):
 
     # -- transport --------------------------------------------------------
 
+    def _id_signing_key(self) -> "str | None":
+        """This node's account key signs its OPTIONAL piggybacked identity proofs.
+
+        A keyless (account-less) node returns ``None`` and dials without a proof,
+        so the receiver falls back to the carrier id — pre-#58 behaviour.
+        """
+        return self.account.priv if self.account is not None else None
+
     async def _roundtrip(self, peer: PeerAddress, msg: dict) -> dict:
         # The Dialer routes by peer.transport, so a tcp:// peer uses TcpTransport
         # and a relay:// peer uses RelayTransport — identical frame bytes either
-        # way (the carrier never re-encodes the canonical-CBOR payload).
-        return await self.dialer.dial(peer, msg)
+        # way (the carrier never re-encodes the canonical-CBOR payload). We stamp
+        # an OPTIONAL identity proof onto the outbound request (step 2 of #58) so
+        # the receiver keys reputation on our proven node key, not our IP; the
+        # proof rides in the stripped _relay_* envelope and never touches the
+        # canonical frame bytes.
+        return await self.dialer.dial(peer, self._stamp_id_proof(msg))
 
     def _route(self, kind, msg: dict) -> dict:
         """Asyncio routing table: feed sync, Knit handshake, equivocation, PEX."""

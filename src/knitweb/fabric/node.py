@@ -215,11 +215,24 @@ class FabricNode(BaseNode):
             "sig": sig,
         }
 
+    def _id_signing_key(self) -> "str | None":
+        """This node's author key signs its OPTIONAL piggybacked identity proofs.
+
+        A FabricNode always holds a key, so its dials always carry a proof and a
+        receiver keys reputation on this node's proven ``node:<pubkey>`` rather
+        than its IP (step 2 of #58).
+        """
+        return self._priv
+
     async def _send(self, peer: PeerAddress, msg: dict) -> dict:
         # Routed by peer.transport (tcp:// or relay://); the carrier moves the
         # same opaque canonical-CBOR frame, so a signed record's bytes are
-        # untouched whether it travels over a socket or the HTTP relay.
-        return await self.dialer.dial(peer, msg)
+        # untouched whether it travels over a socket or the HTTP relay. We stamp
+        # an OPTIONAL identity proof onto the outbound request (step 2 of #58) so
+        # the receiver keys reputation on our proven node key, not our IP; the
+        # proof rides in the stripped _relay_* envelope and never touches the
+        # canonical frame bytes.
+        return await self.dialer.dial(peer, self._stamp_id_proof(msg))
 
     # -- catch-up sync ----------------------------------------------------
 

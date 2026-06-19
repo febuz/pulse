@@ -29,10 +29,12 @@ so a synced Knit's CID is byte-identical.
 from __future__ import annotations
 
 import asyncio
+import time
 
+from . import identity
 from .anti_entropy import AntiEntropy, Backoff
 from .metrics import Metrics
-from .relay import ENVELOPE_PEER_KEY
+from .relay import ENVELOPE_ID_PROOF_KEY, ENVELOPE_PEER_KEY
 from .reputation import Offense, PeerReputation
 from .transport import Dialer, PeerAddress, TcpTransport, Transport, tcp_peer_id
 from .wire import WireError, read_frame, write_frame
@@ -202,11 +204,25 @@ class BaseNode:
         Routing, the caught-exception set, and the banned-branch ``frames_out``
         policy are subclass seams (``_route`` / ``_dispatch_errors`` /
         ``_count_frames_out_on_banned``), so each node keeps its exact behavior.
+
+        Proven node identity (step 2 of #58): if the request also carries a valid
+        OPTIONAL piggybacked identity proof (:data:`ENVELOPE_ID_PROOF_KEY`), the
+        reputation key is upgraded to the proven ``node:<pubkey>`` instead of the
+        carrier's ``tcp:<ip>``/``relay:<mailbox>`` id — so the ban gate and every
+        reputation penalty land on the *key*, and a forger behind a shared NAT IP
+        no longer collateral-bans an honest co-located peer that presents its own
+        proof. An absent/invalid/expired proof falls back to the carrier id, so
+        every pre-#58 peer and test is byte-for-byte unchanged.
         """
         self.metrics.incr("frames_in")
         peer_id = msg.pop(ENVELOPE_PEER_KEY, None)
         if not isinstance(peer_id, str):
             peer_id = None
+        # OPTIONAL: upgrade to a proven node-key id when a valid proof rides along.
+        # Always pop the envelope key (even on a bad proof) so it never reaches
+        # signed/business logic on the live TCP path — on the relay path it is
+        # already stripped, but a TCP frame carries it verbatim into _dispatch.
+        peer_id = self._resolve_peer_id(peer_id, msg.pop(ENVELOPE_ID_PROOF_KEY, None))
         if peer_id is not None and self.reputation.is_banned(peer_id):
             self.metrics.incr("banned_refusals")
             if self._count_frames_out_on_banned:
@@ -224,6 +240,71 @@ class BaseNode:
             out = self._error("bad-request", str(exc))
         self.metrics.incr("frames_out")
         return out
+
+    # -- proven node identity (step 2 of #58) -----------------------------
+
+    #: Freshness window (integer seconds) a piggybacked proof's timestamp must lie
+    #: within. A pure integer policy knob; touches no canonical/hashed bytes.
+    _id_proof_window_s: int = identity.DEFAULT_PROOF_WINDOW_S
+
+    def _id_proof_now(self) -> int:
+        """The verifier's coarse integer clock (seconds). Overridable in tests.
+
+        Default is the wall clock truncated to whole seconds. A test injects a
+        fixed integer so a piggybacked proof's freshness check is deterministic.
+        """
+        return int(time.time())
+
+    def _resolve_peer_id(self, carrier_id, raw_proof) -> "str | None":
+        """Pick the reputation key: the proven node key, else the carrier id.
+
+        ``carrier_id`` is the ``tcp:<ip>``/``relay:<mailbox>`` id the carrier
+        stamped (or ``None``); ``raw_proof`` is the popped, OPTIONAL
+        :data:`ENVELOPE_ID_PROOF_KEY` value. If it decodes to a well-shaped proof
+        whose signature verifies AND whose timestamp is within
+        ``_id_proof_window_s`` of :meth:`_id_proof_now`, the proven
+        ``node:<pubkey>`` key is returned; otherwise we fall back to ``carrier_id``
+        unchanged (so an absent/tampered/expired proof never accepts and never
+        churns the existing IP-keyed behaviour).
+        """
+        if raw_proof is None:
+            return carrier_id
+        proof = identity.id_proof_from_record(raw_proof)
+        if proof is None:
+            return carrier_id
+        proven = identity.verify_id_proof(
+            proof, now=self._id_proof_now(), window=self._id_proof_window_s
+        )
+        return proven if proven is not None else carrier_id
+
+    def _id_signing_key(self) -> "str | None":
+        """The node's secp256k1 private key (hex) to sign outbound proofs, or None.
+
+        Subclass seam: a node that owns a stable key returns it so its dials carry
+        a piggybacked identity proof; a keyless node returns ``None`` and simply
+        dials without a proof (falling back to the carrier id on the receiver).
+        Default is keyless.
+        """
+        return None
+
+    def _stamp_id_proof(self, request: dict) -> dict:
+        """Attach an OPTIONAL fresh identity proof to an outbound ``request``.
+
+        Returns ``request`` unchanged when this node is keyless. Otherwise returns
+        a shallow copy with :data:`ENVELOPE_ID_PROOF_KEY` set to a freshly minted
+        proof (new random nonce + this node's current coarse timestamp), so the
+        receiver can key reputation on this node's proven ``node:<pubkey>``. The
+        proof rides only in the stripped ``_relay_*`` envelope namespace — it never
+        enters the canonical/hashed bytes the carrier frames, so a Knit's CID is
+        unchanged whether or not a proof is attached.
+        """
+        signing_key = self._id_signing_key()
+        if signing_key is None:
+            return request
+        proof = identity.make_id_proof(signing_key, timestamp=self._id_proof_now())
+        stamped = dict(request)
+        stamped[ENVELOPE_ID_PROOF_KEY] = identity.id_proof_to_record(proof)
+        return stamped
 
     def _on_frame_fault(self, peer_id: str, exc: WireError) -> dict:
         """Carrier callback: a malformed/oversized frame from an identified peer.
