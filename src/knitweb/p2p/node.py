@@ -8,7 +8,6 @@ and a two-party Knit exchange over localhost.
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 
 from ..core import crypto
@@ -22,14 +21,13 @@ from ..fabric.feed import (
 from ..ledger import knitweb as kw
 from ..ledger.knit import Knit
 from ..ledger.node import AccountNode
+from .transport import Dialer, PeerAddress, TcpTransport, Transport
 from .wire import (
     WireError,
     feed_head_from_record,
     feed_head_to_record,
     knit_from_record,
     knit_to_record,
-    read_frame,
-    write_frame,
 )
 
 __all__ = [
@@ -48,14 +46,6 @@ class P2PError(RuntimeError):
 
 class FeedConflictError(P2PError):
     """Raised when two signed feed histories prove equivocation."""
-
-
-@dataclass(frozen=True)
-class PeerAddress:
-    """A static peer endpoint."""
-
-    host: str
-    port: int
 
 
 class StaticPeerBook:
@@ -91,38 +81,56 @@ class AsyncioP2PNode:
         account: AccountNode | None = None,
         host: str = "127.0.0.1",
         port: int = 0,
+        transport: Transport | None = None,
+        extra_transports: list[Transport] | None = None,
     ) -> None:
         self.account = account
-        self.host = host
-        self.port = port
-        self.peerbook = StaticPeerBook()
         self.feeds: dict[str, Feed] = {}
         self.replicas: dict[str, FeedReplica] = {}
         self.frozen_feeds: dict[str, str] = {}
         self._seen_incoming_nonces: set[tuple[str, int, int]] = set()
-        self._server: asyncio.AbstractServer | None = None
+        # The listening transport (TCP by default; pass a RelayTransport to be
+        # reachable from behind NAT). Outbound dials are routed by the Dialer
+        # according to each PeerAddress's transport tag, so a node can hold a mix
+        # of tcp:// and relay:// peers at once.
+        self.transport: Transport = transport or TcpTransport(host=host, port=port)
+        self.peerbook = StaticPeerBook()
+        self.dialer = Dialer()
+        for tr in [self.transport, *(extra_transports or [])]:
+            self.dialer.register(tr)
+        self._listening = False
 
     # -- server lifecycle -------------------------------------------------
 
     @property
     def address(self) -> PeerAddress:
-        return PeerAddress(self.host, self.port)
+        return self.transport.local_address()
+
+    @property
+    def host(self) -> str:
+        return self.transport.local_address().host
+
+    @property
+    def port(self) -> int:
+        return self.transport.local_address().port
+
+    def add_transport(self, transport: Transport) -> None:
+        """Register an extra outbound transport (e.g. relay:// dialing)."""
+        self.dialer.register(transport)
 
     async def start(self) -> None:
         """Start listening for one-request-per-connection peer calls."""
-        if self._server is not None:
+        if self._listening:
             return
-        self._server = await asyncio.start_server(self._handle_peer, self.host, self.port)
-        sock = self._server.sockets[0]
-        self.host, self.port = sock.getsockname()[:2]
+        await self.transport.listen(self._dispatch)
+        self._listening = True
 
     async def stop(self) -> None:
         """Stop the listener."""
-        if self._server is None:
+        if not self._listening:
             return
-        self._server.close()
-        await self._server.wait_closed()
-        self._server = None
+        await self.transport.close()
+        self._listening = False
 
     async def __aenter__(self) -> "AsyncioP2PNode":
         await self.start()
@@ -325,36 +333,24 @@ class AsyncioP2PNode:
     # -- transport --------------------------------------------------------
 
     async def _roundtrip(self, peer: PeerAddress, msg: dict) -> dict:
-        reader, writer = await asyncio.open_connection(peer.host, peer.port)
-        try:
-            await write_frame(writer, msg)
-            return await read_frame(reader)
-        finally:
-            writer.close()
-            await writer.wait_closed()
+        # The Dialer routes by peer.transport, so a tcp:// peer uses TcpTransport
+        # and a relay:// peer uses RelayTransport — identical frame bytes either
+        # way (the carrier never re-encodes the canonical-CBOR payload).
+        return await self.dialer.dial(peer, msg)
 
-    async def _handle_peer(
-        self,
-        reader: asyncio.StreamReader,
-        writer: asyncio.StreamWriter,
-    ) -> None:
+    async def _dispatch(self, msg: dict) -> dict:
+        """Transport-agnostic request handler: request map in, response map out."""
         try:
-            msg = await read_frame(reader)
             kind = msg.get("kind")
             if kind == "feed-request":
-                out = self._serve_feed(msg)
-            elif kind == "knit-proposal":
-                out = self._handle_knit_proposal(msg)
-            elif kind == "knit-finalize":
-                out = self._handle_knit_finalize(msg)
-            else:
-                out = self._error("unknown-kind", str(kind))
-            await write_frame(writer, out)
+                return self._serve_feed(msg)
+            if kind == "knit-proposal":
+                return self._handle_knit_proposal(msg)
+            if kind == "knit-finalize":
+                return self._handle_knit_finalize(msg)
+            return self._error("unknown-kind", str(kind))
         except (P2PError, WireError, ValueError) as exc:
-            await write_frame(writer, self._error("bad-request", str(exc)))
-        finally:
-            writer.close()
-            await writer.wait_closed()
+            return self._error("bad-request", str(exc))
 
     @staticmethod
     def _error(code: str, message: str) -> dict:

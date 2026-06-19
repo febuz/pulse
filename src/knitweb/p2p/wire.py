@@ -23,6 +23,8 @@ __all__ = [
     "knit_from_record",
     "read_frame",
     "write_frame",
+    "read_frame_bytes",
+    "write_frame_bytes",
 ]
 
 MAX_FRAME_BYTES = 8 * 1024 * 1024
@@ -106,8 +108,42 @@ def knit_from_record(record: dict) -> Knit:
     )
 
 
+def write_frame_bytes(message: dict) -> bytes:
+    """Encode one length-prefixed canonical-CBOR frame to bytes.
+
+    This is the single source of truth for the on-the-wire framing: a 4-byte
+    big-endian length prefix in front of the float-free canonical CBOR encoding.
+    Both the asyncio stream writer and any alternative carrier (e.g. the HTTP
+    relay) emit the *same bytes* from the same map, so signed-record byte-identity
+    is preserved regardless of which transport carries the frame.
+    """
+    raw = canonical.encode(message)
+    if len(raw) > MAX_FRAME_BYTES:
+        raise WireError(f"frame too large: {len(raw)} > {MAX_FRAME_BYTES}")
+    return len(raw).to_bytes(4, "big") + raw
+
+
+def read_frame_bytes(frame: bytes) -> dict:
+    """Decode one complete length-prefixed canonical-CBOR frame from bytes."""
+    if len(frame) < 4:
+        raise WireError("truncated frame")
+    n = int.from_bytes(frame[:4], "big")
+    if n <= 0:
+        raise WireError("empty frame")
+    if n > MAX_FRAME_BYTES:
+        raise WireError(f"frame too large: {n} > {MAX_FRAME_BYTES}")
+    raw = frame[4:]
+    if len(raw) != n:
+        raise WireError("frame length prefix does not match payload")
+    try:
+        msg = canonical.decode(raw)
+    except canonical.CanonicalError as exc:
+        raise WireError(f"non-canonical frame: {exc}") from exc
+    return _require_dict(msg)
+
+
 async def read_frame(reader: asyncio.StreamReader) -> dict:
-    """Read one length-prefixed canonical-CBOR message."""
+    """Read one length-prefixed canonical-CBOR message from a stream."""
     try:
         header = await reader.readexactly(4)
         n = int.from_bytes(header, "big")
@@ -118,17 +154,10 @@ async def read_frame(reader: asyncio.StreamReader) -> dict:
         raw = await reader.readexactly(n)
     except asyncio.IncompleteReadError as exc:
         raise WireError("truncated frame") from exc
-    try:
-        msg = canonical.decode(raw)
-    except canonical.CanonicalError as exc:
-        raise WireError(f"non-canonical frame: {exc}") from exc
-    return _require_dict(msg)
+    return read_frame_bytes(header + raw)
 
 
 async def write_frame(writer: asyncio.StreamWriter, message: dict) -> None:
-    """Write one length-prefixed canonical-CBOR message."""
-    raw = canonical.encode(message)
-    if len(raw) > MAX_FRAME_BYTES:
-        raise WireError(f"frame too large: {len(raw)} > {MAX_FRAME_BYTES}")
-    writer.write(len(raw).to_bytes(4, "big") + raw)
+    """Write one length-prefixed canonical-CBOR message to a stream."""
+    writer.write(write_frame_bytes(message))
     await writer.drain()

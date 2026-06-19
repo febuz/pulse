@@ -35,7 +35,8 @@ from ..core import canonical, crypto
 from .items import web_state_root
 from .web import Web
 from ..p2p.node import PeerAddress, StaticPeerBook
-from ..p2p.wire import WireError, read_frame, write_frame
+from ..p2p.transport import Dialer, TcpTransport, Transport
+from ..p2p.wire import WireError
 
 __all__ = ["FabricNode", "FabricNodeError"]
 
@@ -70,22 +71,40 @@ class FabricNode:
         priv: str | None = None,
         host: str = "127.0.0.1",
         port: int = 0,
+        transport: Transport | None = None,
+        extra_transports: list[Transport] | None = None,
     ) -> None:
         if priv is None:
             priv, _ = crypto.generate_keypair()
         self._priv = priv
         self.pub = crypto.public_from_private(priv)
-        self.host = host
-        self.port = port
         self.web = Web()
         self.peerbook = StaticPeerBook()
-        self._server: asyncio.AbstractServer | None = None
+        # Same pluggable carrier as AsyncioP2PNode: TCP by default, or a
+        # RelayTransport so a NAT'd fabric node still gossips and converges.
+        self.transport: Transport = transport or TcpTransport(host=host, port=port)
+        self.dialer = Dialer()
+        for tr in [self.transport, *(extra_transports or [])]:
+            self.dialer.register(tr)
+        self._listening = False
 
     # -- server lifecycle -------------------------------------------------
 
     @property
     def address(self) -> PeerAddress:
-        return PeerAddress(self.host, self.port)
+        return self.transport.local_address()
+
+    @property
+    def host(self) -> str:
+        return self.transport.local_address().host
+
+    @property
+    def port(self) -> int:
+        return self.transport.local_address().port
+
+    def add_transport(self, transport: Transport) -> None:
+        """Register an extra outbound transport (e.g. relay:// dialing)."""
+        self.dialer.register(transport)
 
     @property
     def state_root(self) -> str:
@@ -94,18 +113,16 @@ class FabricNode:
 
     async def start(self) -> None:
         """Start listening for gossip frames (one request per connection)."""
-        if self._server is not None:
+        if self._listening:
             return
-        self._server = await asyncio.start_server(self._handle_peer, self.host, self.port)
-        sock = self._server.sockets[0]
-        self.host, self.port = sock.getsockname()[:2]
+        await self.transport.listen(self._dispatch)
+        self._listening = True
 
     async def stop(self) -> None:
-        if self._server is None:
+        if not self._listening:
             return
-        self._server.close()
-        await self._server.wait_closed()
-        self._server = None
+        await self.transport.close()
+        self._listening = False
 
     async def __aenter__(self) -> "FabricNode":
         await self.start()
@@ -161,13 +178,10 @@ class FabricNode:
         }
 
     async def _send(self, peer: PeerAddress, msg: dict) -> dict:
-        reader, writer = await asyncio.open_connection(peer.host, peer.port)
-        try:
-            await write_frame(writer, msg)
-            return await read_frame(reader)
-        finally:
-            writer.close()
-            await writer.wait_closed()
+        # Routed by peer.transport (tcp:// or relay://); the carrier moves the
+        # same opaque canonical-CBOR frame, so a signed record's bytes are
+        # untouched whether it travels over a socket or the HTTP relay.
+        return await self.dialer.dial(peer, msg)
 
     # -- catch-up sync ----------------------------------------------------
 
@@ -219,26 +233,15 @@ class FabricNode:
         records = [self._signed_record_msg(rec) for rec in self.web.nodes.values()]
         return {"kind": "fabric-sync-data", "records": records}
 
-    async def _handle_peer(
-        self,
-        reader: asyncio.StreamReader,
-        writer: asyncio.StreamWriter,
-    ) -> None:
+    async def _dispatch(self, msg: dict) -> dict:
+        """Transport-agnostic gossip handler: request map in, response map out."""
         try:
-            msg = await read_frame(reader)
             kind = msg.get("kind")
             if kind == "fabric-record":
                 self._ingest_signed(msg)
-                out = {"kind": "fabric-ack"}
-            elif kind == "fabric-sync-request":
-                out = self._serve_sync()
-            else:
-                out = {"kind": "error", "code": "unknown-kind", "message": str(kind)}
-            await write_frame(writer, out)
+                return {"kind": "fabric-ack"}
+            if kind == "fabric-sync-request":
+                return self._serve_sync()
+            return {"kind": "error", "code": "unknown-kind", "message": str(kind)}
         except (FabricNodeError, WireError, ValueError) as exc:
-            await write_frame(
-                writer, {"kind": "error", "code": "bad-request", "message": str(exc)}
-            )
-        finally:
-            writer.close()
-            await writer.wait_closed()
+            return {"kind": "error", "code": "bad-request", "message": str(exc)}
