@@ -6,7 +6,7 @@
 **Language:** English with Dutch summary
 **Scope:** The new word *knitweb*; data model; weaving protocol; trust; the pulse/draft compute layer over donated GPU/RAM; verifiable compute on untrusted machines; how blockchain + hashgraph + knitweb cooperate for the MOLGANG P2P game; the OriginTrail heavy-artifact and provenance graph; a worked end-to-end scenario; integration with VirtualPC and the knitweb reference implementation; heritage, vocabulary crosswalk, epistemology, transport and governance.
 
-> **Vocabulary rule.** This project is a **web**, never a "network"/"net" — a network is static nodes; a *web*, like a brain, lives through the **pulses** between its connections. The brand terms are **Web · Knit · Pulse · Fiber · knitweb**, the coined data-structure word is **knitweb**, and the heavy companion graph is **OriginTrail**. (This paper's older narrative below uses *loom* for a peer node; in the authoritative code that domain term is retired and the validation primitive is **Knitweb** — see §13.1.)
+> **Vocabulary rule.** This project is a **web**, never a "network"/"net" — a network is static nodes; a *web*, like a brain, lives through the **pulses** between its connections. The brand terms are **Web · Knit · Pulse · Fiber · knitweb**, the coined data-structure word is **knitweb**, and the heavy companion graph is **OriginTrail**. A peer node is a **spider** (it weaves, stores, serves and validates patches, and runs donated compute); the validation primitive is **Knitweb** — see §13.1.
 
 > **Normative note (reconciles this paper with the code — read before the narrative).**
 > This is a *concept paper*; the code in `src/knitweb/` is authoritative where they differ.
@@ -50,7 +50,7 @@
 
 ## Abstract
 
-**KnitWeb** is a peer-to-peer protocol for weaving local knowledge updates into a shared, decentralised knowledge graph. It treats every atomic fact as a signed, content-addressed *stitch*, groups stitches into *threads* owned by *yarns* (self-sovereign identities), and lets peers (*looms*) weave threads into local *patches* that merge via Conflict-free Replicated Data Types (CRDTs). The result is a durable, eventually-consistent fabric of triples with sovereign identity, local trust, and rich querying — and no central coordinator.
+**KnitWeb** is a peer-to-peer protocol for weaving local knowledge updates into a shared, decentralised knowledge graph. It treats every atomic fact as a signed, content-addressed *stitch*, groups stitches into *threads* owned by *yarns* (self-sovereign identities), and lets peers (*spiders*) weave threads into local *patches* that merge via Conflict-free Replicated Data Types (CRDTs). The result is a durable, eventually-consistent fabric of triples with sovereign identity, local trust, and rich querying — and no central coordinator.
 
 This revision makes three additions. First, it positions **knitweb** as a deliberate third coinage beside *blockchain* and *hashgraph*: where a blockchain chains blocks to buy one global total order, and a hashgraph graphs hashes to buy gossiped fair order, a **knitweb knits threads** to buy coordination-free convergence. The three are not rivals; they are different consistency trade-offs, and a complete application uses each where it fits. Second, it specifies a content-addressed **compute layer** — *pulses* flowing along a *draft* — that runs over donated GPU/RAM/CPU through proof-of-useful-work workers (*spiders*), with the same reproducibility-by-content-address discipline used for verification. Where PySpark speaks of *sparks* and a *DAG*, KnitWeb speaks of *pulses* and a *draft* (a weaving draft, i.e. the drawdown). Third, it pairs KnitWeb with **OriginTrail**, the companion Decentralised Knowledge Graph that carries the *heavy* artifacts (files, images, video, audio, 3D models, books, datasets, patents) and the provenance *trails* that link them — proving "is this true and whose is it?" — while KnitWeb keeps the *light* signed triples that reference them and answers "what is the live state?".
 
@@ -107,8 +107,7 @@ Every coined term in this paper maps to a real, recognised distributed-systems c
 | **thread** | An append-only log of stitches from one yarn | Per-identity hash-linked log |
 | **stitch** | A signed, content-addressed triple + metadata | The atomic fact / signed log entry |
 | **patch** | A local materialised merged view | Per-replica materialised state |
-| **loom** | A peer that weaves/stores/serves patches and validates | Full node + validator |
-| **spider** | A p2p web-worker that runs pulses on donated GPU/RAM and earns PLS | Compute worker / executor |
+| **spider** | A peer node that weaves/stores/serves patches and validates, and runs pulses on its donated GPU/RAM to earn PLS (a p2p web-worker) | Full node + validator + compute worker |
 | **weaver** | An agent/process that produces or validates stitches | Application/agent producing data |
 | **fabric** | The union of all accepted patches | The emergent global graph |
 | **weave algebra** | The CRDT semilattice merge function | Conflict-free merge |
@@ -117,7 +116,7 @@ Every coined term in this paper maps to a real, recognised distributed-systems c
 | **pulse** | The unit of flowing compute work; you pay **PLS** ("pulses") per unit of useful work | Spark task / "spark" |
 | **draft** | The lazily-built, acyclic, content-addressed plan of pulses (a weaving *draft* / drawdown) | The execution DAG |
 | **pick** | One pulse run on one shard inside one shed | A scheduled task instance |
-| **shard** | One partition of a bolt pinned to a loom's RAM/VRAM | Partition |
+| **shard** | One partition of a bolt pinned to a spider's RAM/VRAM | Partition |
 | **shed** | A maximal set of cross-free pulses that pipeline in parallel | Stage |
 | **cross** | The warp re-crossing where shards repartition by key | Shuffle / exchange |
 | **bolt** | A distributed, immutable, partitioned, lineage-bearing collection | RDD / DataFrame |
@@ -140,8 +139,7 @@ Every coined term in this paper maps to a real, recognised distributed-systems c
 | **Thread** | An ordered, append-only log of stitches from a single yarn. |
 | **Stitch** | A signed, content-addressed atomic update: a triple + metadata. |
 | **Patch** | A materialised view produced by a peer after weaving selected threads. |
-| **Loom** | A peer node that weaves, stores, serves and validates patches; it also hosts the donated hardware a spider runs on. |
-| **Spider** | A p2p web-worker that performs useful work (GPU pulses, validation, curation) on a loom's donated hardware and earns PLS. |
+| **Spider** | A peer node that weaves, stores, serves and validates patches, and performs useful work (GPU pulses, validation, curation) on its donated hardware to earn PLS — a p2p web-worker. Storage and compute co-locate on one spider. |
 | **Weaver** | An agent or process that produces/validates stitches. |
 | **Fabric** | The emergent global knowledge graph = the union of all accepted patches. |
 | **Weave algebra** | The CRDT merge function that combines two patches. |
@@ -219,18 +217,18 @@ Threads are **not** blocks. They do not bundle unrelated transactions, do not fo
 
 ### 4.4 Patch
 
-A patch is a local materialised view. A loom chooses which threads to follow, weaves the latest stitches from each, and applies them to its local graph store.
+A patch is a local materialised view. A spider chooses which threads to follow, weaves the latest stitches from each, and applies them to its local graph store.
 
 ```json
 {
-  "loom": "did:knit:alice-laptop",
+  "spider": "did:knit:alice-laptop",
   "asOf": "2026-06-14T12:05:00Z",
   "threads": ["did:knit:alice@42", "did:knit:bob@17", "did:knit:carol@9"],
   "root": "patch://bafy...uvw"
 }
 ```
 
-Patches are content-addressed. Two looms that weave the same set of thread heads produce the same patch CID, enabling efficient diff/gossip.
+Patches are content-addressed. Two spiders that weave the same set of thread heads produce the same patch CID, enabling efficient diff/gossip.
 
 ### 4.5 Triple store
 
@@ -262,7 +260,7 @@ Instead, the weave uses:
 
 ### 5.2 Gossip pattern
 
-A loom periodically asks a subset of peers:
+A spider periodically asks a subset of peers:
 
 1. "Which yarns do you follow and what is the latest `seq` you have for each?"
 2. If a peer has newer stitches, fetch them by CID.
@@ -297,11 +295,11 @@ Deletion is modelled as a `retract` stitch. A retract does not erase history; it
 
 ### 6.1 No global consensus
 
-KnitWeb does not require all peers to agree on one true state. Each loom has its own trust policy: a bank loom might reject yarns without KYC; a research loom might prioritise open-access yarns; a friend-group loom might follow only its members.
+KnitWeb does not require all peers to agree on one true state. Each spider has its own trust policy: a bank spider might reject yarns without KYC; a research spider might prioritise open-access yarns; a friend-group spider might follow only its members.
 
 ### 6.2 Subjective trust
 
-Each loom maintains a trust vector:
+Each spider maintains a trust vector:
 
 ```json
 { "did:knit:alice": 0.9, "did:knit:bob": 0.7, "did:knit:carol": 0.4, "did:knit:mallory": 0.0 }
@@ -311,15 +309,15 @@ A triple's confidence derives from the trust of its source yarn and the transiti
 
 ### 6.3 Web of trust endorsements
 
-A yarn can publish an endorsement stitch (`bob trusts alice`). Endorsements form a web of trust that looms use for bootstrapping and Sybil resistance without a central authority.
+A yarn can publish an endorsement stitch (`bob trusts alice`). Endorsements form a web of trust that spiders use for bootstrapping and Sybil resistance without a central authority.
 
 ### 6.4 Why a CRDT is not a referee
 
 This is the hinge for §9. The weave's conflict resolution is **attacker-grindable**: a yarn can assign any `seq` it likes to its own stitches, and the deterministic tiebreak (CID/identity order) can be ground by trying nonces, so the merge faithfully converges on whichever of two conflicting spends the attacker engineered to win. The CRDT cannot referee which spend is *real*. That is perfectly safe for lore, progress and beliefs — and **catastrophic** for money: if two conflicting spends of one coin both merge, the CRDT has just *minted* money. The weave deliberately has no referee, which is exactly why rivalrous, must-pick-exactly-one decisions are delegated to a primitive that does (a hashgraph for fair order, a blockchain for final settlement). Knowing what the weave *cannot* do is what lets the rest of the system stay cheap.
 
-### 6.5 Notary looms (optional)
+### 6.5 Notary spiders (optional)
 
-For contexts needing stronger assurance (legal contracts, supply-chain events), independent **notary looms** can co-sign stitches. This is not consensus; it is witnessed attestation. A receiving loom decides how many notary signatures it requires.
+For contexts needing stronger assurance (legal contracts, supply-chain events), independent **notary spiders** can co-sign stitches. This is not consensus; it is witnessed attestation. A receiving spider decides how many notary signatures it requires.
 
 ---
 
@@ -328,7 +326,7 @@ For contexts needing stronger assurance (legal contracts, supply-chain events), 
 A peer-to-peer game needs more than a knowledge graph — it needs to *run code* (physics, chemistry simulation, NPC/LLM inference, rendering) on whatever GPU/RAM/CPU peers are willing to donate. The workers that do this are **spiders**: p2p web-workers that crawl the web for funded demand, run useful work, and earn **PLS** (pulses). The compute layer borrows Spark's dataflow model and re-grounds it in content addressing so results are reproducible and verifiable. The metaphor is exact: **PySpark has *sparks* and a *DAG*; KnitWeb has *pulses* and a *draft*.**
 
 - A **pulse** is the atom of work: a pure, deterministic function `(op-CID, input-shard-CIDs) → output-shard-CID`. It is the unit of scheduling, of verification, and of payment (you pay PLS per unit of useful work).
-- A **draft** is a *weaving draft* — the drawdown a weaver mounts on the loom before throwing a single pick. It is the lazily-built, acyclic, content-addressed plan of pulses and their partial order. Same draft CID + same input yarns ⇒ same result patch. The draft doubles as the lineage graph.
+- A **draft** is a *weaving draft* — the drawdown a weaver mounts on the spider before throwing a single pick. It is the lazily-built, acyclic, content-addressed plan of pulses and their partial order. Same draft CID + same input yarns ⇒ same result patch. The draft doubles as the lineage graph.
 
 > *Read "draft" as the handweaving term (the threading/tie-up/treadling diagram), not "a rough first version". The whole cloth is determined by the draft before the shuttle moves.*
 
@@ -336,27 +334,27 @@ A peer-to-peer game needs more than a knowledge graph — it needs to *run code*
 
 | PySpark | KnitWeb | Note |
 |---------|---------|------|
-| Spark engine / `SparkContext` | **Spider runtime / SpiderContext** | The compute substrate; spiders run on looms' donated hardware, so storage (loom) and compute (spider) co-locate on one machine. |
+| Spark engine / `SparkContext` | **Spider runtime / SpiderContext** | The compute substrate; spiders run on the spider's own donated hardware, so storage and compute co-locate on one machine. |
 | `spark-submit` / Job | **Weave** (a job) | The full execution triggered by one cast-off; submitted as a signed job stitch carrying the draft CID + input bolt CIDs, so submission is decentralised and replayable. |
 | Driver program | **Warper** | Coordinating peer: builds the draft, cuts it at crosses, schedules picks, collects the result. A *role* name, not the warp data-axis. Driver loss is recoverable — draft + inputs are content-addressed and re-submittable. |
 | Executor / worker | **Spider** | A p2p worker donating GPU/RAM/CPU, advertising N pulse-slots; donated capacity is a signed capacity stitch, paid in PLS via proof-of-useful-work. |
 | Executor thread / slot | **Shuttle** | An execution slot on a spider carrying one pulse at a time. *Shuttle*, never *thread*. |
 | DAG of transformations | **Draft** | The headline coinage. Lazy, acyclic, content-addressed plan; compiles into sheds; doubles as lineage. |
 | Stage | **Shed** | A maximal set of cross-free pulses that pipeline in parallel; boundaries fall at crosses. |
-| Barrier stage / BSP superstep | **Loom-beat** | A shed whose picks advance in lockstep across spiders (a barrier-synchronised shed) — for distributed inference and tightly-coupled solves. |
+| Barrier stage / BSP superstep | **Pulse beat** | A shed whose picks advance in lockstep across spiders (a barrier-synchronised shed) — for distributed inference and tightly-coupled solves. |
 | Task | **Pick** | One pulse on one shard inside one shed. Idempotent, replayable from its draft node. |
 | Transformation (lazy) | **Stitch-op** | Appends a node to the draft without running it; a pure function over input shards. Narrow = *inline*, wide = *crossing*. |
 | Action (eager) | **Cast-off** | Casting off secures finished knitting: the laziness-breaking op that compiles the draft and runs the pulses. |
 | RDD / DataFrame | **Bolt** | An immutable, partitioned, lineage-bearing collection (a "bolt of cloth"); CID over its shard manifest; recomputable. |
-| Partition | **Shard** | Unit of parallelism/placement; one shard pinned to one loom's RAM/VRAM. (Not *warp*/*skein* — those are taken.) |
+| Partition | **Shard** | Unit of parallelism/placement; one shard pinned to one spider's RAM/VRAM. (Not *warp*/*skein* — those are taken.) |
 | Partitioner | **Winder** | Decides which shard a datum lands in; also the cross partitioner. |
 | Narrow dependency | **Inline pulse** | Output shard depends on one co-located input shard; no inter-machine hop. |
 | Wide dependency | **Crossing pulse** | Output shard depends on many input shards across spiders; ends a shed. |
 | Shuffle | **Cross** | The warp re-crossing: shed closes, shards repartition across spiders by key, new shed opens. The costly inter-machine boundary. |
 | Shuffle files | **Skein blocks** | CID-addressed spilled intermediates; pullable from *any* holder, removing Spark's single-producer shuffle weakness. |
 | Cluster manager (YARN/K8s) | **Reeve** | The decentralised resource broker: tracks donated capacity + trust, matches pulse demand to spider supply, settles PLS payment, admits/evicts spiders. |
-| DAGScheduler + TaskScheduler | **Drafter + Dispatcher** | Drafter cuts the draft at crosses; Dispatcher throws picks to shuttles, preferring on-loom locality. |
-| Data locality | **On-loom locality** | Prefer the spider already holding the input shard (or a pinned OriginTrail blob), avoiding a cross and host↔device copies. |
+| DAGScheduler + TaskScheduler | **Drafter + Dispatcher** | Drafter cuts the draft at crosses; Dispatcher throws picks to shuttles, preferring on-spider locality. |
+| Data locality | **On-spider locality** | Prefer the spider already holding the input shard (or a pinned OriginTrail blob), avoiding a cross and host↔device copies. |
 | Broadcast variable | **Bobbin** | A small read-only datum wound once and shipped to every spider by CID (the periodic table, reaction constants, an NPC system prompt). |
 | Accumulator | **Tally** | A CRDT counter/G-set merged by the weave algebra — correct under retries *provided contributions are content-addressed* (idempotent merge), stronger than Spark accumulators which double-count on re-execution. |
 | Lazy evaluation | **Slack** | The draft is held slack until a cast-off tensions it. |
@@ -464,8 +462,8 @@ ual://<KnowledgeAsset>[?rel=<trail-edge>&ct=<content-type>&len=<bytes>][#cid=<ar
 
 Resolution is strictly **two-phase and out-of-band**:
 
-1. **Learn for free.** A loom weaving the patch sees the stitch and learns the asset's UAL — *no bytes transferred*.
-2. **Fetch on demand.** Only when the object is actually needed (render the model, open the dataset) does the loom resolve the UAL against the DKG, pulling Merkle-chunked bytes from *any* holder and verifying each chunk against its SHA-256 content address.
+1. **Learn for free.** A spider weaving the patch sees the stitch and learns the asset's UAL — *no bytes transferred*.
+2. **Fetch on demand.** Only when the object is actually needed (render the model, open the dataset) does the spider resolve the UAL against the DKG, pulling Merkle-chunked bytes from *any* holder and verifying each chunk against its SHA-256 content address.
 
 Because both the reference and the bytes are content-addressed, the fetch needs no trust in the serving peer and the author may be offline; the binding is cryptographically pinned end-to-end — you cannot swap the model out from under the fact. The compute layer (§7) reuses the *same* CIDs, so a pulse consuming an OriginTrail dataset is itself deterministic and verifiable.
 
@@ -482,7 +480,7 @@ A canonical academic trail runs `author → paper → patent → dataset → fig
 
 ### 10.4 Availability is not integrity
 
-Content addressing guarantees the *correct* bytes **if** someone serves them — not that anyone does (the dead-torrent problem). OriginTrail therefore needs a pinning/replication/incentive story: storage and serving are paid in **PLS**, popular artifacts are widely pinned, and the stitch's `preview`/`len` hints let a loom degrade gracefully (show the thumbnail, mark the asset unavailable) when the full blob is gone.
+Content addressing guarantees the *correct* bytes **if** someone serves them — not that anyone does (the dead-torrent problem). OriginTrail therefore needs a pinning/replication/incentive story: storage and serving are paid in **PLS**, popular artifacts are widely pinned, and the stitch's `preview`/`len` hints let a spider degrade gracefully (show the thumbnail, mark the asset unavailable) when the full blob is gone.
 
 ### 10.5 In the brand fabric
 
@@ -507,21 +505,21 @@ These are targets. WAN gossip, cold OriginTrail fetches, and crosses (shuffles) 
 
 ### 11.2 End-to-end scenario — *"The Francium Auction"*
 
-Players Mara, Alice and Bob; their machines plus an always-on VPS are all looms in the pool, each hosting a spider.
+Players Mara, Alice and Bob; their machines plus an always-on VPS are all spiders in the pool, each donating storage and compute.
 
-**(0) Setup.** Each peer runs a loom and pledges GPU/RAM/CPU; the **reeve** records the leases (fair-ordered by the in-session hashgraph) and advertises the pool's shuttle count. The **tick-weave** loop runs ~60 Hz render / ~50 ms netcode; each tick the warper submits a micro-**draft** of the frame's work.
+**(0) Setup.** Each peer runs a spider and pledges GPU/RAM/CPU; the **reeve** records the leases (fair-ordered by the in-session hashgraph) and advertises the pool's shuttle count. The **tick-weave** loop runs ~60 Hz render / ~50 ms netcode; each tick the warper submits a micro-**draft** of the frame's work.
 
-**(1) KnitWeb — offline play.** Mara, offline on a train, opens her lab. Her loom holds a local patch of light triples: quest progress, unlocked research, and `recipe:NH3` whose triples include `recipe:NH3 hasBench ual://<bench-asset>` and `recipe:NH3 citesSource ual://<trail-haber>`. She finishes a quiz quest; new stitches append to her yarn. No connectivity needed. Concurrently Bob edits the shared "reactions discovered" wiki; on reconnect both merge conflict-free (OR-Set + per-key LWW).
+**(1) KnitWeb — offline play.** Mara, offline on a train, opens her lab. Her spider holds a local patch of light triples: quest progress, unlocked research, and `recipe:NH3` whose triples include `recipe:NH3 hasBench ual://<bench-asset>` and `recipe:NH3 citesSource ual://<trail-haber>`. She finishes a quiz quest; new stitches append to her yarn. No connectivity needed. Concurrently Bob edits the shared "reactions discovered" wiki; on reconnect both merge conflict-free (OR-Set + per-key LWW).
 
-**(2) Pulse/draft compute over shared GPU/RAM.** Crafting NH₃ runs a reaction sim. The warper compiles a **draft**: *shed 1* parses reagents (inline pulses over the reagent bolt's shards); a **cross** repartitions by element, writing skein blocks; *shed 2* solves equilibrium on GPU as a **loom-beat** (barrier-synchronised shed); **cast-off** yields the result. A **bobbin** broadcasts the rate constants; the heavy reaction **dataset** is broadcast from OriginTrail. Mara's machine has no GPU, so the reeve matched these pulses to donated GPU spiders, preferring on-loom locality. The safety-critical stability pulse uses **quorum-pulse** (`k=3, m=2`): three spiders recompute and their output CIDs must agree, so a buggy or cheating spider is outvoted and slashed. A straggler is **double-shuttled**; a shard lost when the VPS hiccups is **re-woven** from the draft to the identical CID. Result: a stable Francium ingot — and a new OriginTrail artifact.
+**(2) Pulse/draft compute over shared GPU/RAM.** Crafting NH₃ runs a reaction sim. The warper compiles a **draft**: *shed 1* parses reagents (inline pulses over the reagent bolt's shards); a **cross** repartitions by element, writing skein blocks; *shed 2* solves equilibrium on GPU as a **Pulse beat** (barrier-synchronised shed); **cast-off** yields the result. A **bobbin** broadcasts the rate constants; the heavy reaction **dataset** is broadcast from OriginTrail. Mara's machine has no GPU, so the reeve matched these pulses to donated GPU spiders, preferring on-spider locality. The safety-critical stability pulse uses **quorum-pulse** (`k=3, m=2`): three spiders recompute and their output CIDs must agree, so a buggy or cheating spider is outvoted and slashed. A straggler is **double-shuttled**; a shard lost when the VPS hiccups is **re-woven** from the draft to the identical CID. Result: a stable Francium ingot — and a new OriginTrail artifact.
 
-**(3) OriginTrail — heavy fetch + trails.** To render the ingot, Bob's loom resolves `ual://<bench-asset>`, swarm-fetches mesh + textures + crystallisation cutscene from any holder, verifies each chunk by SHA-256, and pins them in donated VRAM — none of those bytes touched the gossip layer. Mara taps **"Where does this come from?"** and the loom walks the trail: `bench-model → derived-from → figure → paper (Haber 1913) → related-patent → dataset (NH BLOOM yields) → author`. Provenance becomes research-tree gameplay.
+**(3) OriginTrail — heavy fetch + trails.** To render the ingot, Bob's spider resolves `ual://<bench-asset>`, swarm-fetches mesh + textures + crystallisation cutscene from any holder, verifies each chunk by SHA-256, and pins them in donated VRAM — none of those bytes touched the gossip layer. Mara taps **"Where does this come from?"** and the spider walks the trail: `bench-model → derived-from → figure → paper (Haber 1913) → related-patent → dataset (NH BLOOM yields) → author`. Provenance becomes research-tree gameplay.
 
 **(4) Hashgraph — fair ordering.** Back online, Mara lists the ingot at auction; in the final 3 seconds eight players blitz-bid. The in-session hashgraph shard (membership = the known auction participants) gossips the bids and assigns fair consensus timestamps that a minority cannot backdate or front-run, producing a fair order. Winner = first-highest-before-close. Needs agreed fair ordering, not a permanent chain.
 
 **(5) Blockchain — total-order finality.** The verdict is checkpointed to the MOLGANG chain as **one atomic settlement** keyed by the hashgraph event CID (at-most-once, session-bound — no double-settlement): debit 500 Fiber, transfer `asset:francium-ingot` title, **and** pay the step-(2) spiders in PLS — all from one settled ledger, with finality so no fork can ever show double-ownership. A selvedge CID of post-auction state is anchored as a dispute checkpoint.
 
-**(6) Back to KnitWeb.** Knowledge-not-money outcomes flow back as stitches: `deed:francium-ingot ownedBy did:knit:winner` (a belief-mirror of the on-chain truth), the winner's reputation bump, and a new annotation linking ammonia to the NH BLOOM process, citing `ual://<trail-haber>`. Every loom merges them by CRDT.
+**(6) Back to KnitWeb.** Knowledge-not-money outcomes flow back as stitches: `deed:francium-ingot ownedBy did:knit:winner` (a belief-mirror of the on-chain truth), the winner's reputation bump, and a new annotation linking ammonia to the NH BLOOM process, citing `ual://<trail-haber>`. Every spider merges them by CRDT.
 
 **In sum:** bulk world-state (knitweb) → verifiable shared compute (drafts of pulses on donated GPU/RAM via spiders, BFT by quorum-pulse + sampled re-execution) → heavy media + provenance (OriginTrail) → in-session fair ordering (hashgraph) → settled finality + PLS compute payment (blockchain) → belief-mirror back to knitweb. Each plane did precisely the job its consistency trade-off fits, with explicit, idempotent hand-offs.
 
@@ -554,13 +552,13 @@ VirtualPC agents communicate via the P2P Newsgroup 2.0 layer. KnitWeb can be the
 | Agent post / task update | Stitch |
 | Agent feed / task stream | Thread |
 | Knowledge graph | Patch / fabric |
-| P2P node | Loom |
+| P2P node | Spider |
 | Distributed agent job | Weave (draft of pulses) run by spiders |
-| Deliberation-gate attestation | Notary-loom co-sign / quorum-pulse |
+| Deliberation-gate attestation | Notary-spider co-sign / quorum-pulse |
 | Governance registry entry | Stitch with `governance:` predicate |
 | Heavy artifact (model, dataset, doc) | OriginTrail UAL reference |
 
-Benefits: offline-first agents (weave locally, merge later); fork-tolerant collaboration (CRDT merge of concurrent edits); auditability (every belief traces to a signed stitch); sovereignty (organisations run their own looms); and **shared compute** (agents run inference/simulation on the donated spider pool with verifiable, content-addressed results).
+Benefits: offline-first agents (weave locally, merge later); fork-tolerant collaboration (CRDT merge of concurrent edits); auditability (every belief traces to a signed stitch); sovereignty (organisations run their own spiders); and **shared compute** (agents run inference/simulation on the donated spider pool with verifiable, content-addressed results).
 
 ### 13.1 Relationship to the knitweb reference implementation
 
@@ -589,7 +587,7 @@ This paper is the conceptual model; the `knitweb/pulse` reference implementation
 - **Integrity:** every stitch is signed and content-addressed (float-free canonical CBOR); every OriginTrail chunk is SHA-256-verified. Money and state are integers (PLS-wei), never floats.
 - **Availability:** content-addressed gossip and DKG swarming make censorship expensive; any peer can replicate. (But see §10.4 — availability needs incentives.)
 - **Confidentiality:** private yarns encrypt stitches to a set of recipient identities; public yarns are plaintext.
-- **Sybil resistance:** web-of-trust endorsements; optional notary looms; trust-/stake-weighted quorum-pulse for compute.
+- **Sybil resistance:** web-of-trust endorsements; optional notary spiders; trust-/stake-weighted quorum-pulse for compute.
 - **Compute integrity:** proof-of-useful-work with sampled re-execution and slashing (§8), bounded by the deterministic-pulse contract (§8.1) and selective quorum-pulse (§8.2).
 
 ---
@@ -656,28 +654,28 @@ KnitWeb is a deliberate recombination of proven ideas:
 | Thread | Transaction list | Sequence of triples | Signed commits | Audit trail for one subject |
 | Stitch | Transaction | RDF triple + provenance | Signed commit | Signed atomic fact |
 | Patch | World-state snapshot | Materialised graph | Working tree + HEAD | Materialised governed dataset |
-| Loom | Full node | Triple store + reasoner | Git daemon/client | Governed data-product node |
+| Spider | Full node | Triple store + reasoner | Git daemon/client | Governed data-product node |
 | Weave / merge | Consensus | Graph merge | Merge | CRDT reconciliation |
 | Pulse / draft | — | — | — | Spark task / DAG (content-addressed) |
 | trail (OriginTrail) | — | PROV-O lineage / DOI graph | — | Data lineage |
 | CID | Tx hash | URI / IRI | Object hash | Content identifier |
 | Trust vector | Staking | Provenance trust score | GPG web of trust | Data-quality scorecard |
-| Notary loom | Validator | Trusted signature | Tag signer | Steward approval |
+| Notary spider | Validator | Trusted signature | Tag signer | Steward approval |
 
 ### A.3 Transport-vs-fabric epistemology
 
 A common source of confusion is the relationship between the *protocol* and the *graph*:
 
-- **KnitWeb-transport** is the moving part: looms, spiders, gossip messages, swarms and crosses that carry threads between peers. It is about **communication**.
-- **KnitWeb-fabric** is the standing part: the materialised graph a loom produces by weaving selected threads into a patch. It is about **knowledge**.
+- **KnitWeb-transport** is the moving part: spiders, gossip messages, swarms and crosses that carry threads between peers. It is about **communication**.
+- **KnitWeb-fabric** is the standing part: the materialised graph a spider produces by weaving selected threads into a patch. It is about **knowledge**.
 
-A transport can run without producing one shared fabric (two isolated looms gossiping nothing to each other). A fabric can outlive its transport (a patch reconstructed from archived stitches after the originating looms go offline — knowledge outlives the wires). This separation is why the system is legally and socially sustainable: the transport does not host content; it carries signed statements. The fabric is what a loom *chooses to believe*.
+A transport can run without producing one shared fabric (two isolated spiders gossiping nothing to each other). A fabric can outlive its transport (a patch reconstructed from archived stitches after the originating spiders go offline — knowledge outlives the wires). This separation is why the system is legally and socially sustainable: the transport does not host content; it carries signed statements. The fabric is what a spider *chooses to believe*.
 
 | Question | Transport | Fabric |
 |----------|-----------|--------|
 | What is it? | P2P protocol | Materialised knowledge graph |
 | Unit | Stitch (signed triple) | Patch (merged triple set) |
-| One canonical instance? | No — many looms | No — each loom has its own |
+| One canonical instance? | No — many spiders | No — each spider has its own |
 | Guarantees delivery? | Gossip, retries, store-and-forward | Nothing — patches are local beliefs |
 | Guarantees truth? | Nothing — only signatures | Subjective trust policies |
 | Analogy | The postal system | The library assembled from received letters |
@@ -686,13 +684,13 @@ A transport can run without producing one shared fabric (two isolated looms goss
 
 KnitWeb separates the *data model* from the *transport*, so deployments choose transports without changing the weave algebra. The reference profile:
 
-1. **WebSocket** for active loom-to-loom sessions.
+1. **WebSocket** for active spider-to-spider sessions.
 2. **HTTP(S) / CID fetch** for on-demand stitch retrieval (any HTTP cache can serve a stitch).
 3. **QUIC / libp2p** where NAT traversal and mobility matter.
 4. **Bluetooth-LE mesh + internet bridge** (e.g. a Nostr bridge) for offline-first, room-scale or planet-scale reach.
-5. **Store-and-forward** via resilient relay/mailbox looms for intermittent nodes.
+5. **Store-and-forward** via resilient relay/mailbox spiders for intermittent nodes.
 
-Gossip message types: `HELLO`, `WANT_YARNS` (`(yarn, latest_seq)` pairs), `HAVE_STITCH` (`(yarn, seq, cid)`), `FETCH_STITCH` (CID), `PATCH_ROOT` (`(loom, patch_cid, yarn_heads)`). All messages are small. **Large objects (attachments, models, datasets, video) are never gossiped — they are referenced by an OriginTrail UAL and fetched out-of-band from the DKG swarm** (§10), keeping gossip traffic light.
+Gossip message types: `HELLO`, `WANT_YARNS` (`(yarn, latest_seq)` pairs), `HAVE_STITCH` (`(yarn, seq, cid)`), `FETCH_STITCH` (CID), `PATCH_ROOT` (`(spider, patch_cid, yarn_heads)`). All messages are small. **Large objects (attachments, models, datasets, video) are never gossiped — they are referenced by an OriginTrail UAL and fetched out-of-band from the DKG swarm** (§10), keeping gossip traffic light.
 
 > *Asset note:* the only remaining `knitnet`-named tokens are on-disk assets pending rename — the interactive page `public/knitnet.html` and `logos/knitnet-logo.svg` (→ `knitweb.*`) — and the historical corpus file `data/external/knitnet-landing-corpus.json`. These are file names, not prose. The protocol code lives under `src/integrations/lightrag/`.
 
@@ -710,7 +708,7 @@ Enterprise governance tools (Collibra, Alation, Microsoft Purview) maintain a bu
 | Quality rule | Stitch with `fabric:qualityScore` | `did:knit:dataset/sales-2026 fabric:qualityScore 0.94` |
 | Issue / workflow | Retraction + corrective assertion | `did:knit:issue/42 fabric:status resolved` |
 
-Because each governance statement is a signed stitch, governance itself becomes auditable, forkable and mergeable. A regulator can run a loom that follows only governance yarns and produce a patch that proves compliance without API access to a central catalog.
+Because each governance statement is a signed stitch, governance itself becomes auditable, forkable and mergeable. A regulator can run a spider that follows only governance yarns and produce a patch that proves compliance without API access to a central catalog.
 
 ### A.6 Metaphor coherence audit
 
@@ -720,7 +718,7 @@ One weaving term, one meaning:
 - **warp / weft** = the entity/assertion data axes (never the compute DAG → use **draft**; never a partition → use **shard**).
 - **draft** = the weaving drawdown / execution plan (never "tentative version").
 - **weave** = both the CRDT merge (data) and a compute job; disambiguate by context (*weave algebra* vs *a weave*).
-- **loom** = node and validator; **spider** = the compute worker that runs on it. Storage and compute co-locate, but the words stay distinct.
+- **spider** = the peer node — storage, validator and compute worker in one. Storage and compute co-locate on a single spider.
 
 ### A.7 Brand fabric
 
@@ -747,7 +745,7 @@ Identity is the secp256k1 account key — the same key as a **yarn** — so one 
 2. **OriginTrail pinning incentives:** how to guarantee heavy artifacts stay served (beyond best-effort PLS-paid pinning) and avoid dead-trail loss.
 3. **Hashgraph membership under churn:** formalising per-session validator sets and the reeve's membership authority on an open, churning pool.
 4. **GPU determinism:** practical recipes for bitwise-reproducible kernels (fixed reduction trees) where verification matters.
-5. **Partial replication:** how a loom subscribes to a subset of a large yarn or bolt.
+5. **Partial replication:** how a spider subscribes to a subset of a large yarn or bolt.
 6. **Garbage collection:** when old stitches/skein blocks can be archived past a selvedge without losing lineage.
 7. **Query federation:** answering queries across many remote patches.
 8. **Source-material licensing:** the attribution/licensing obligations for the real papers, patents and datasets that OriginTrail trails point at.
@@ -757,7 +755,7 @@ Identity is the secp256k1 account key — the same key as a **yarn** — so one 
 
 ## 19. Dutch summary
 
-**KnitWeb** is een peer-to-peer protocol dat lokale kennisupdates weeft tot een gedeelde, gedecentraliseerde kennisgraaf. Elke identiteit (*yarn*) publiceert een ondertekende, inhoud-geadresseerde reeks feiten (*stitches*); peers (*looms*) weven die tot lokale *patches* die conflictvrij worden samengevoegd via CRDTs. Er is geen centrale coördinator en geen globale ordening.
+**KnitWeb** is een peer-to-peer protocol dat lokale kennisupdates weeft tot een gedeelde, gedecentraliseerde kennisgraaf. Elke identiteit (*yarn*) publiceert een ondertekende, inhoud-geadresseerde reeks feiten (*stitches*); peers (*spiders*) weven die tot lokale *patches* die conflictvrij worden samengevoegd via CRDTs. Er is geen centrale coördinator en geen globale ordening.
 
 **Een nieuw woord.** *Knitweb* wordt bewust geïntroduceerd náást *blockchain* en *hashgraph*: een blockchain rijgt blokken aan elkaar (één totale ordening), een hashgraph maakt een graaf van hashes (eerlijke ordening), en een knitweb *breit draden* (géén ordening, maar conflictvrije convergentie). De drie zijn geen concurrenten maar verschillende consistentie-afwegingen — een echt systeem gebruikt elk waar het past.
 
@@ -765,7 +763,7 @@ Identity is the secp256k1 account key — the same key as a **yarn** — so one 
 
 **OriginTrail.** KnitWeb draagt de *lichte* ondertekende triples; **OriginTrail** (de gedecentraliseerde kennisgraaf, DKG) doet het zware werk: de grote artefacten (bestanden, afbeeldingen, video, audio, 3D-modellen, boeken, datasets, patenten) en de *trails* (herkomst-/citatieketens, met o.a. auteurs als knopen) die ze verbinden. Een stitch verwijst met een **UAL** (`ual://<KnowledgeAsset>`) en haalt zware bytes buiten de gossip om op, SHA-256-geverifieerd. OriginTrail beantwoordt "is dit waar en van wie?"; KnitWeb beantwoordt "wat is de live toestand?".
 
-**De game.** In **MOLGANG** (een educatieve scheikundegame op gedeelde machines) werken alle lagen samen: blockchain vereffent schaarse waarde (Fiber-munten, unieke titels, PLS-rekenbetaling), een sessie-hashgraph ordent live-events eerlijk (biedingen, matchmaking), KnitWeb houdt de overvloedige, samenvoegbare wereldstaat (quests, recepten, NPC's, inventaris, kennis én de compute-drafts), en OriginTrail levert de zware assets en de citatie-trails — waardoor een spelactie een geverifieerde scheikundeles wordt. In de merkenfamilie: **Web · Loom · Knit · Pulse · Fiber** — met **spiders** als werkers en **OriginTrail** als zware kennisgraaf.
+**De game.** In **MOLGANG** (een educatieve scheikundegame op gedeelde machines) werken alle lagen samen: blockchain vereffent schaarse waarde (Fiber-munten, unieke titels, PLS-rekenbetaling), een sessie-hashgraph ordent live-events eerlijk (biedingen, matchmaking), KnitWeb houdt de overvloedige, samenvoegbare wereldstaat (quests, recepten, NPC's, inventaris, kennis én de compute-drafts), en OriginTrail levert de zware assets en de citatie-trails — waardoor een spelactie een geverifieerde scheikundeles wordt. In de merkenfamilie: **Web · Knit · Pulse · Fiber · knitweb** — met **spiders** als werkers en **OriginTrail** als zware kennisgraaf.
 
 ---
 
