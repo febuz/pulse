@@ -28,9 +28,9 @@ import asyncio
 
 import pytest
 
-from knitweb.core import crypto
+from knitweb.core import canonical, crypto
 from knitweb.fabric.items import web_state_root
-from knitweb.fabric.node import FabricNode
+from knitweb.fabric.node import FabricNode, _RECORD_TAG
 
 
 def run(coro):
@@ -232,5 +232,102 @@ def test_anti_entropy_star_self_heals_after_one_peer_drops():
                 assert not c2._anti_entropy_task.done()
 
             await b.stop()
+
+    run(scenario())
+
+
+def _forged_envelope(author_pub: str, record: dict, sig: str) -> dict:
+    """A `fabric-record` gossip envelope with whatever (author, record, sig)
+    triple the caller chooses — the seam a malicious peer uses to lie."""
+    return {"kind": "fabric-record", "author": author_pub, "record": record, "sig": sig}
+
+
+@pytest.mark.interop
+def test_byzantine_forged_record_is_excluded_and_honest_nodes_converge():
+    """A malicious peer's FORGED / equivocating record is rejected by the gate,
+    and the honest nodes still converge on the *honest* state_root.
+
+    Topology: two honest nodes ``a`` (weaver) and ``b`` (peer) plus one malicious
+    actor ``m`` running the genuine transport. ``m`` dials ``b``'s real gossip
+    endpoint with three flavours of lie, none of which carries a valid author
+    signature over the record bytes:
+
+      1. **Bad author signature** — a record "authored" by ``m`` but with a
+         signature that does not verify under ``m``'s key (random/empty sig).
+      2. **Impersonation** — a record claiming ``a`` as author, signed by ``m``
+         (so the claimed author never vouched for it).
+      3. **Equivocation / tamper** — ``m`` validly signs record ``R0`` then ships
+         the same signature over a *mutated* record ``R1`` (two conflicting
+         payloads behind one signature); the bytes no longer match the sig.
+
+    The honest node MUST reject every one (``error`` / ``bad-request`` response,
+    nothing woven) and the honest pair MUST still converge on the root they reach
+    over the honest broadcast path. This is the author-signature gate's
+    load-bearing assertion: a mutation that disables :func:`crypto.verify` in
+    ``FabricNode._ingest_signed`` would let one of these forgeries weave, flipping
+    ``b``'s Web size / ``state_root`` (and the forged CID would appear), failing
+    this test — which currently lets such a mutation pass.
+    """
+    async def scenario():
+        a = FabricNode()   # honest weaver
+        b = FabricNode()   # honest peer (the forgery target)
+        m = FabricNode()   # malicious actor (real transport, forged payloads)
+        async with a, b, m:
+            a.add_peer("b", b.address)
+
+            # Honest record propagates a -> b over the real broadcast path.
+            good_cid = await a.weave(
+                {"kind": "knowledge", "title": "honest", "body": "ok", "author": a.pub}
+            )
+            assert _converged(a, b)
+            assert a.web.size == b.web.size == (1, 0)
+            honest_root = b.state_root
+            honest_size = b.web.size
+
+            # The payload the attacker WANTS b to weave (it never should).
+            forged_record = {
+                "kind": "knowledge", "title": "forged", "body": "evil", "author": a.pub,
+            }
+            forged_cid = canonical.cid(forged_record)
+
+            # --- Forgery 1: signature that does not verify under m's own key. ---
+            env_badsig = _forged_envelope(m.pub, forged_record, sig="00" * 64)
+            resp = await m.dialer.dial(b.address, env_badsig)
+            assert resp.get("kind") == "error"
+            assert resp.get("code") == "bad-request"
+
+            # --- Forgery 2: impersonate a — record signed by m, author=a. ---
+            sig_by_m = crypto.sign(m._priv, _RECORD_TAG + canonical.encode(forged_record))
+            env_impersonate = _forged_envelope(a.pub, forged_record, sig=sig_by_m)
+            resp = await m.dialer.dial(b.address, env_impersonate)
+            assert resp.get("kind") == "error"
+            assert resp.get("code") == "bad-request"
+
+            # --- Forgery 3: equivocation/tamper — sign R0, ship over mutated R1. ---
+            # m validly signs r0 then ships that same signature over a mutated r1
+            # (two conflicting payloads behind one signature). The verify is over
+            # the *received* r1 bytes, which the r0 signature does not cover, so the
+            # gate rejects it exactly like an outright bad signature.
+            r0 = {"kind": "knowledge", "title": "r0", "body": "a", "author": m.pub}
+            r1 = {"kind": "knowledge", "title": "r0", "body": "MUTATED", "author": m.pub}
+            sig_r0 = crypto.sign(m._priv, _RECORD_TAG + canonical.encode(r0))
+            assert crypto.verify(m.pub, _RECORD_TAG + canonical.encode(r0), sig_r0)
+            env_tamper = _forged_envelope(m.pub, r1, sig=sig_r0)  # sig is for r0, not r1
+            resp = await m.dialer.dial(b.address, env_tamper)
+            assert resp.get("kind") == "error"
+            assert resp.get("code") == "bad-request"
+
+            # The honest gate excluded EVERY forgery: b's Web is unchanged, no
+            # forged/equivocating CID was woven, and the honest root still stands.
+            assert b.web.size == honest_size == (1, 0)
+            assert b.state_root == honest_root
+            assert b.web.get(good_cid) is not None
+            assert b.web.get(forged_cid) is None
+            assert b.web.get(canonical.cid(r0)) is None
+            assert b.web.get(canonical.cid(r1)) is None
+
+            # Honest pair still converged on the honest root, forgeries excluded.
+            assert _converged(a, b)
+            assert web_state_root(b.web) == a.state_root
 
     run(scenario())

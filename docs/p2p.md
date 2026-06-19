@@ -283,10 +283,23 @@ lets backoff govern the retry cadence.
 The point is `snapshot()`: a `dict[str, int]` with **sorted keys**, so it is
 directly canonical-CBOR-encodable and byte-identical across two nodes that
 observed the same event stream. No float, no wall-clock, no randomness. The
-canonical series the `FabricNode` emits are enumerated in `FABRIC_METRICS`
+canonical series are enumerated in the shared `FABRIC_METRICS` vocabulary
 (`records_woven`, `broadcasts_sent`/`broadcasts_failed`, `sync_pulls`,
 `frames_in`/`frames_out`, `frames_malformed`/`frames_oversized`,
-`banned_refusals`). It instruments `FabricNode` only and touches no hash path.
+`banned_refusals`).
+
+**Both** node stacks are metered against this one vocabulary, not just the
+fabric node. After the `BaseNode` unification each node owns a `Metrics()`
+(allocated in `BaseNode.__init__`), and the shared per-connection prologue
+(`_handle_peer`) increments the wire-path series — `frames_in`/`frames_out`,
+`frames_malformed`/`frames_oversized`, and `banned_refusals` — for **both**
+`FabricNode` and `AsyncioP2PNode` (the latter's wire path was wired in #48, and
+#23 lifted the registry onto the common base). The fabric node additionally
+emits the domain series (`records_woven`, `broadcasts_sent`/`broadcasts_failed`,
+`sync_pulls`) from its weave/broadcast/sync paths. Because the two stacks share
+one `FABRIC_METRICS` name set, a dashboard enumerates one vocabulary for either
+node, and two nodes observing the same event stream produce byte-identical
+snapshots. Metering touches no hash path.
 
 ## Interop export (`fabric/jsonld.py`)
 
