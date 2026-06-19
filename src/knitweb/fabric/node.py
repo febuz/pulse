@@ -34,6 +34,7 @@ import asyncio
 from ..core import canonical, crypto
 from .items import web_state_root
 from .web import Web
+from ..p2p.metrics import Metrics
 from ..p2p.node import PeerAddress, StaticPeerBook
 from ..p2p.reputation import Offense, PeerReputation
 from ..p2p.transport import Dialer, TcpTransport, Transport
@@ -91,6 +92,11 @@ class FabricNode:
         # forged record signatures accrue misbehavior points; banned peers are
         # refused and disconnected (the same loop AsyncioP2PNode runs).
         self.reputation = PeerReputation()
+        # Integer-only observability over the gossip path (records woven,
+        # broadcasts sent/failed, sync pulls, frames in/out, malformed/oversized
+        # frames, banned-peer refusals). Node-local bookkeeping only: it touches
+        # no signed record and no hash path, so a woven Knit's CID is unchanged.
+        self.metrics = Metrics()
         self._listening = False
 
     # -- server lifecycle -------------------------------------------------
@@ -152,7 +158,10 @@ class FabricNode:
         be reached with :meth:`sync_from`. Returns once every reachable peer has
         acknowledged the record.
         """
+        before = len(self.web.nodes)
         cid = self.web.weave(record)
+        if len(self.web.nodes) > before:
+            self.metrics.incr("records_woven")
         await self._broadcast(record)
         return cid
 
@@ -168,10 +177,12 @@ class FabricNode:
         # Swallow per-peer transport errors (offline peer); they are recoverable
         # via sync_from. Re-raise anything unexpected so bugs are not hidden.
         for result in results:
-            if isinstance(result, Exception) and not isinstance(
-                result, (OSError, FabricNodeError, WireError)
-            ):
-                raise result
+            if isinstance(result, Exception):
+                if not isinstance(result, (OSError, FabricNodeError, WireError)):
+                    raise result
+                self.metrics.incr("broadcasts_failed")
+            else:
+                self.metrics.incr("broadcasts_sent")
 
     def _signed_record_msg(self, record: dict) -> dict:
         sig = crypto.sign(self._priv, _record_signable(record))
@@ -208,6 +219,8 @@ class FabricNode:
         for item in signed:
             if self._ingest_signed(item):
                 added += 1
+        if added:
+            self.metrics.incr("sync_pulls", added)
         return added
 
     # -- ingestion --------------------------------------------------------
@@ -227,7 +240,10 @@ class FabricNode:
             raise FabricNodeError("invalid author signature on fabric record")
         before = len(self.web.nodes)
         self.web.weave(record)
-        return len(self.web.nodes) > before
+        if len(self.web.nodes) > before:
+            self.metrics.incr("records_woven")
+            return True
+        return False
 
     # -- server side ------------------------------------------------------
 
@@ -247,16 +263,20 @@ class FabricNode:
         wrapper below (a banned-peer key and a frame penalty are socket concerns
         the carrier owns).
         """
+        self.metrics.incr("frames_in")
         try:
             kind = msg.get("kind")
             if kind == "fabric-record":
                 self._ingest_signed(msg)
-                return {"kind": "fabric-ack"}
-            if kind == "fabric-sync-request":
-                return self._serve_sync()
-            return {"kind": "error", "code": "unknown-kind", "message": str(kind)}
+                out: dict = {"kind": "fabric-ack"}
+            elif kind == "fabric-sync-request":
+                out = self._serve_sync()
+            else:
+                out = {"kind": "error", "code": "unknown-kind", "message": str(kind)}
         except (FabricNodeError, WireError, ValueError) as exc:
-            return {"kind": "error", "code": "bad-request", "message": str(exc)}
+            out = {"kind": "error", "code": "bad-request", "message": str(exc)}
+        self.metrics.incr("frames_out")
+        return out
 
     @staticmethod
     def _peer_id(writer: asyncio.StreamWriter) -> str:
@@ -281,6 +301,7 @@ class FabricNode:
         peer_id = self._peer_id(writer)
         try:
             if self.reputation.is_banned(peer_id):
+                self.metrics.incr("banned_refusals")
                 await write_frame(
                     writer, {"kind": "error", "code": "banned", "message": "peer is banned"}
                 )
@@ -288,16 +309,17 @@ class FabricNode:
             try:
                 msg = await read_frame(reader)
             except WireError as exc:
-                offense = (
-                    Offense.OVERSIZED_FRAME
-                    if "too large" in str(exc)
-                    else Offense.MALFORMED_FRAME
+                oversized = "too large" in str(exc)
+                self.metrics.incr(
+                    "frames_oversized" if oversized else "frames_malformed"
                 )
+                offense = Offense.OVERSIZED_FRAME if oversized else Offense.MALFORMED_FRAME
                 self.reputation.penalize(peer_id, offense)
                 await write_frame(
                     writer, {"kind": "error", "code": "bad-frame", "message": str(exc)}
                 )
                 return
+            self.metrics.incr("frames_in")
             kind = msg.get("kind")
             if kind == "fabric-record":
                 self._ingest_signed(msg)
@@ -306,12 +328,14 @@ class FabricNode:
                 out = self._serve_sync()
             else:
                 out = {"kind": "error", "code": "unknown-kind", "message": str(kind)}
+            self.metrics.incr("frames_out")
             await write_frame(writer, out)
         except FabricNodeError as exc:
             # A forged author signature (or other ingest fault) is a signature
             # offense — penalize the relaying peer, then refuse.
             if "signature" in str(exc):
                 self.reputation.penalize(peer_id, Offense.INVALID_SIGNATURE)
+            self.metrics.incr("frames_out")
             await write_frame(
                 writer, {"kind": "error", "code": "bad-request", "message": str(exc)}
             )
@@ -319,10 +343,12 @@ class FabricNode:
             # Explicit: a routing-time wire fault is refused as a bad request.
             # (WireError subclasses ValueError, but we keep it explicit so the
             # handling never silently rides on that subclassing.)
+            self.metrics.incr("frames_out")
             await write_frame(
                 writer, {"kind": "error", "code": "bad-request", "message": str(exc)}
             )
         except ValueError as exc:
+            self.metrics.incr("frames_out")
             await write_frame(
                 writer, {"kind": "error", "code": "bad-request", "message": str(exc)}
             )
