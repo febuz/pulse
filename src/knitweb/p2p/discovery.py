@@ -21,6 +21,7 @@ node module can import this glue at top level without an import cycle.
 
 from __future__ import annotations
 
+from .addrbook import AddrBook
 from .transport import PeerAddress
 
 __all__ = [
@@ -32,6 +33,9 @@ __all__ = [
     "handle_peer_exchange",
     "directory_from_peerbook",
     "bootstrap_round",
+    "records_from_peers",
+    "addrbook_share_message",
+    "learn_peers",
 ]
 
 PEER_EXCHANGE_KIND = "peer-exchange"
@@ -97,15 +101,27 @@ class PeerDirectory:
         relay:// peer survives the exchange intact; a bare host/port record (the
         original shape) still decodes to the tcp default.
         """
-        records: list[dict] = []
-        for p in self.sample(k):
-            rec: dict = {"host": p.host, "port": p.port}
-            if p.transport != "tcp":
-                rec["transport"] = p.transport
-            if p.params:
-                rec["params"] = dict(p.params)
-            records.append(rec)
-        return records
+        return records_from_peers(self.sample(k))
+
+
+def records_from_peers(peers: "list[PeerAddress] | tuple[PeerAddress, ...]") -> list[dict]:
+    """Canonical-CBOR-friendly peer records for an explicit peer list.
+
+    The wire shape PEX advertises, factored out so a flat :class:`PeerDirectory`
+    sample *and* an :class:`~knitweb.p2p.addrbook.AddrBook`-diverse sample serialise
+    to byte-identical records. The carrier tag / relay ``params`` ride along so a
+    relay:// peer survives the exchange; a bare host/port record (the original
+    shape) still decodes to the tcp default.
+    """
+    records: list[dict] = []
+    for p in peers:
+        rec: dict = {"host": p.host, "port": p.port}
+        if p.transport != "tcp":
+            rec["transport"] = p.transport
+        if p.params:
+            rec["params"] = dict(p.params)
+        records.append(rec)
+    return records
 
 
 def peers_from_records(records: list) -> list[PeerAddress]:
@@ -180,3 +196,43 @@ def bootstrap_round(
     if not isinstance(reply, dict) or reply.get("kind") != PEER_EXCHANGE_KIND:
         raise ValueError("not a peer-exchange reply")
     return directory.merge(peers_from_records(reply.get("peers") or []))
+
+
+# -- eclipse-resistant sampling (AddrBook live path) ----------------------------
+
+
+def learn_peers(
+    directory: PeerDirectory,
+    book: AddrBook,
+    peers: "list[PeerAddress] | tuple[PeerAddress, ...]",
+    *,
+    source: "PeerAddress | None" = None,
+) -> int:
+    """Fold ``peers`` into BOTH the flat ``directory`` and the bucketed ``book``.
+
+    ``directory`` stays the dedup/membership truth (so ``addr in node.peers`` and
+    ``node.peers.known()`` are unchanged), while ``book.add_new(addr, source)``
+    records the *same* address keyed on who advertised it (``source``). That
+    source-group keying is the eclipse defence: a peer that floods thousands of
+    attacker addresses shares one source group, so its addresses compete for a
+    bounded set of buckets and cannot crowd an honest minority out of
+    :meth:`AddrBook.sample`. Returns the count newly learned by the flat directory
+    (the historical ``merge`` return, so callers' learned-counts are unchanged).
+    """
+    learned = directory.merge(peers)
+    for p in peers:
+        book.add_new(p, source=source)
+    return learned
+
+
+def addrbook_share_message(book: AddrBook, k: "int | None" = DEFAULT_SHARE_K) -> dict:
+    """A ``peer-exchange`` message whose advertised peers are an AddrBook sample.
+
+    Drop-in for :func:`peer_exchange_message` on the live path: the share is drawn
+    from :meth:`AddrBook.sample` (source-group-diverse, tried-biased) rather than
+    the flat first-``k`` by sort order, so neither what the node *dials* nor what it
+    *re-advertises* can be dominated by a flooded group. The records are built by the
+    shared :func:`records_from_peers`, so the frame bytes are identical in shape to a
+    flat-directory share.
+    """
+    return {"kind": PEER_EXCHANGE_KIND, "peers": records_from_peers(book.sample(k))}
