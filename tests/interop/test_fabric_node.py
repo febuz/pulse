@@ -102,3 +102,26 @@ def test_tampered_record_is_rejected_by_signature_check():
             assert b.web.size == (0, 0)
 
     run(scenario())
+
+
+def test_gossiped_frames_bounded_while_authored_survive():
+    """#92: the gossiped-in (non-authored) frame portion is size-bounded with LRU
+    eviction, while every weave()-authored CID stays served — our own records are the
+    authoritative source (their loss would be permanent), a gossiped frame is re-fetch-safe
+    via anti-entropy. A blanket LRU (no _authored exemption) would evict `mine` and fail."""
+    async def scenario():
+        a = FabricNode()
+        b = FabricNode(max_gossiped_frames=3)
+        async with a, b:
+            mine = await b.weave({"kind": "knowledge", "title": "mine", "body": "0", "author": b.pub})
+            gcids = []
+            for i in range(10):                      # flood gossiped-in past the cap of 3
+                rec = {"kind": "knowledge", "title": f"g{i}", "body": str(i), "author": a.pub}
+                cid = await a.weave(rec)
+                b._ingest_signed(a._signed_record_msg(rec))   # b._serve_peer_key is None -> no throttle
+                gcids.append(cid)
+            assert mine in b._frames                                   # authored survives the flood
+            assert sum(c in b._frames for c in gcids) <= 3            # non-authored bounded at the cap
+            assert gcids[-1] in b._frames and gcids[0] not in b._frames  # LRU: newest kept, oldest evicted
+
+    asyncio.run(scenario())

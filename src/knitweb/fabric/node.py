@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import asyncio
 import random as _random_mod
+from collections import deque
 
 from ..core import canonical, crypto
 from ..p2p.anti_entropy import SyncRound
@@ -151,6 +152,8 @@ class FabricNode(BaseNode):
         gossip: Gossipsub | None = None,
         gossip_seed: int | None = None,
         serve_budget: "inventory.ServeBudget | None" = None,
+        ingest_budget: "inventory.ServeBudget | None" = None,
+        max_gossiped_frames: int = 50_000,
     ) -> None:
         super().__init__(
             host=host,
@@ -173,6 +176,24 @@ class FabricNode(BaseNode):
         # holds. It is node-local, integer-bounded by the relay's SeenSet, and
         # touches no canonical/hash path beyond storing already-canonical bytes.
         self._frames: dict[str, bytes] = {}
+        # #92 frame-store bound. The store mixes two provenances with very different
+        # eviction safety, so a blanket LRU is WRONG (it would silently drop our own
+        # authoritative records — nothing on the web can re-serve them = data loss):
+        #   * ``_authored`` — CIDs we wove ourselves; the authoritative source, NEVER
+        #     evicted.
+        #   * ``_gossiped_order`` — LRU queue of gossiped-in (non-authored) CIDs; only
+        #     THIS portion is size-bounded, and evicting one is re-fetch-safe (anti-
+        #     entropy / Erlay re-pull it). ``max_gossiped_frames`` caps it.
+        self._authored: set[str] = set()
+        self._gossiped_order: "deque[str]" = deque()
+        self._max_gossiped = max(1, int(max_gossiped_frames))
+        # A SEPARATE per-peer byte budget gates INGEST (a peer flooding own-key-signed
+        # junk is throttled at _ingest_signed before it consumes memory — eviction
+        # alone only caps steady-state). Reuses the #91 ServeBudget primitive (already
+        # memory-bounded by its own max_peers LRU, injectable clock for tests).
+        self._ingest_budget = (
+            ingest_budget if ingest_budget is not None else inventory.ServeBudget()
+        )
         # One inventory relay per node; its SeenSet is the announce/want dedup.
         # The lookup is into the frame store above (returns None for a CID we do
         # not hold, so on_getdata never fabricates a body). It also owns the #91
@@ -582,8 +603,9 @@ class FabricNode(BaseNode):
         if len(self.web.nodes) > before:
             self.metrics.incr("records_woven")
         # Store the verbatim signed-envelope frame bytes BEFORE announcing, so a
-        # peer that wants this CID gets the exact bytes back (byte-identity).
-        self._store_frame(cid, self._signed_record_msg(record))
+        # peer that wants this CID gets the exact bytes back (byte-identity). Marked
+        # authored: our own records are authoritative and never evicted (#92).
+        self._store_frame(cid, self._signed_record_msg(record), authored=True)
         await self._eager_announce(cid)
         return cid
 
@@ -789,7 +811,7 @@ class FabricNode(BaseNode):
             "sig": sig,
         }
 
-    def _store_frame(self, cid: str, envelope: dict) -> None:
+    def _store_frame(self, cid: str, envelope: dict, *, authored: bool = False) -> None:
         """Store the verbatim signed-envelope frame bytes for ``cid``.
 
         The frame is the canonical ``write_frame_bytes`` of the ``fabric-record``
@@ -797,8 +819,30 @@ class FabricNode(BaseNode):
         record dict (and its CID) are byte-identical across a relay hop. Indexing
         is by ``canonical.cid(record)`` — the Web's own content address — never by
         a CID over the envelope (the envelope is re-signed per relayer by design).
+
+        ``authored`` frames (our own weaves) are the authoritative source and are
+        NEVER evicted; gossiped-in frames are tracked for LRU eviction and the
+        non-authored portion is bounded at ``max_gossiped_frames`` (#92). Store
+        management only — the bytes themselves stay verbatim, so byte-identity and
+        the CID are untouched.
         """
         self._frames[cid] = wire.write_frame_bytes(envelope)
+        if authored:
+            self._authored.add(cid)
+            return
+        if cid in self._authored:
+            return  # we also authored it — keep it un-evictable
+        try:
+            self._gossiped_order.remove(cid)  # re-store refreshes recency
+        except ValueError:
+            pass
+        self._gossiped_order.append(cid)
+        # Evict oldest non-authored frames over the cap (re-fetch-safe via anti-entropy).
+        while len(self._gossiped_order) > self._max_gossiped:
+            old = self._gossiped_order.popleft()
+            if old in self._authored:
+                continue  # defensive: never drop an authored frame
+            self._frames.pop(old, None)
 
     def _id_signing_key(self) -> "str | None":
         """This node's author key signs its OPTIONAL piggybacked identity proofs.
@@ -859,6 +903,17 @@ class FabricNode(BaseNode):
         if not crypto.verify(author, _record_signable(record), sig):
             raise FabricNodeError("invalid author signature on fabric record")
         cid = canonical.cid(record)
+        # #92 ingest admission: a peer flooding (validly) own-key-signed junk is throttled
+        # HERE — before the record lands in the web or the frame store, so a flood is
+        # capped at ingest rather than merely evicted after it has consumed memory.
+        # Verify ran first (forged sigs still raise → ban-gate penalty); the dropped valid
+        # record is re-fetch-safe (anti-entropy re-delivers when the peer's window refills).
+        peer = self._serve_peer_key
+        if peer is not None:
+            size = len(wire.write_frame_bytes(item))
+            if self._ingest_budget.take(peer, size) < size:
+                self.metrics.incr("ingest_throttled")
+                return False
         before = len(self.web.nodes)
         self.web.weave(record)
         # Store the verbatim envelope frame for this CID so a node that learned a
