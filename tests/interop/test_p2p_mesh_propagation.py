@@ -1,0 +1,385 @@
+"""Gossipsub mesh activation (#67) layered on the #75 inv->getdata propagation.
+
+The dormant gossipsub mesh (:mod:`knitweb.p2p.mesh`) is now WIRED into the live
+:class:`~knitweb.fabric.node.FabricNode`: a weave eager-pushes a record's CID
+ONLY to the bounded ``<=D`` topic mesh (not to every peer), non-mesh peers learn
+held CIDs through a lazy ``mesh-ihave`` digest and pull the bodies via
+``mesh-iwant`` -> the EXISTING inv ``getdata`` path (so bodies still travel only
+through #75's verbatim frame store), and a caller-driven heartbeat maintains the
+mesh degree within ``[d_low, d_high]`` via GRAFT/PRUNE. This suite proves the
+activation end to end over an in-memory carrier (no real socket / handshake;
+every dial is bounded by ``asyncio.wait_for``):
+
+  * **bounded eager fan-out** — with ``D < peer-count`` the eager announce reaches
+    only the ``O(D)`` mesh members, never all candidates;
+  * **lazy fringe delivery** — a peer in NOBODY's mesh still RECEIVES the record
+    via the IHAVE/IWANT lazy path (resolved through inv-data verbatim);
+  * **partial-mesh + churn convergence** — a multi-node web with a bounded mesh
+    and a peer that drops + rejoins all settle on one identical ``state_root``;
+  * **degree band** — the mesh degree stays within ``[d_low, d_high]`` across
+    heartbeats;
+  * **byte-identity** — a relayed record's CID == the author's CID ==
+    ``core.canonical.cid(record)`` and the stored frame is served verbatim.
+
+All assertions are on integer Web sizes / mesh degrees, hex ``state_root``
+witnesses, and CID strings, so a woven Knit's content address is never perturbed.
+"""
+
+import asyncio
+import random
+
+import pytest
+
+from knitweb.core import canonical
+from knitweb.fabric.items import web_state_root
+from knitweb.fabric.node import FabricNode, WEB_TOPIC, _MESH_PEER_KEY
+from knitweb.p2p import wire
+from knitweb.p2p.inventory import INV
+from knitweb.p2p.mesh import Gossipsub, MeshParams
+from knitweb.p2p.transport import PeerAddress
+
+
+# ── in-memory carrier (socket-free, asyncio.wait_for bounded) ─────────────────
+
+class _MemTransport:
+    """A socket-free Transport routing a dial straight to a peer's ``_dispatch``.
+
+    Mirrors the carrier the #75 inventory-relay interop test uses: a dial frames
+    the request through the SAME canonical-CBOR codec the real carriers use, hands
+    the decoded map to the target's ``_dispatch`` seam (what the live accept loop
+    feeds), and frames the response back. Per-kind inbound byte tallies let a test
+    prove which message kinds — and how big a fan-out — actually crossed.
+    """
+
+    tag = "mem"
+
+    def __init__(self, registry: dict, node_id: int) -> None:
+        self._registry = registry
+        self._node_id = node_id
+        self.bytes_in_by_kind: dict[str, int] = {}
+        self.calls_in_by_kind: dict[str, int] = {}
+
+    def bind(self, node) -> None:
+        self._node = node
+        self._registry[self._node_id] = self
+
+    async def dial(self, peer: PeerAddress, request: dict) -> dict:
+        target = self._registry[int(peer.params["id"])]
+        raw = wire.write_frame_bytes(request)
+        decoded = wire.read_frame_bytes(raw)
+        kind = str(decoded.get("kind"))
+        target.bytes_in_by_kind[kind] = target.bytes_in_by_kind.get(kind, 0) + len(raw)
+        target.calls_in_by_kind[kind] = target.calls_in_by_kind.get(kind, 0) + 1
+        resp = await asyncio.wait_for(target._node._dispatch(decoded), timeout=5)
+        return wire.read_frame_bytes(wire.write_frame_bytes(resp))
+
+    async def listen(self, handler, on_frame_fault=None) -> None:  # pragma: no cover
+        return None
+
+    async def close(self) -> None:  # pragma: no cover
+        return None
+
+    def local_address(self) -> PeerAddress:
+        return PeerAddress(transport="mem", params={"id": str(self._node_id)})
+
+
+def _mem_node(registry: dict, node_id: int, **kw) -> FabricNode:
+    tr = _MemTransport(registry, node_id)
+    node = FabricNode(transport=tr, **kw)
+    tr.bind(node)
+    return node
+
+
+def run(coro):
+    return asyncio.run(asyncio.wait_for(coro, timeout=10))
+
+
+def _converged(*nodes: FabricNode) -> bool:
+    return len({n.state_root for n in nodes}) == 1
+
+
+def _calls(node: FabricNode) -> dict:
+    return node.transport.calls_in_by_kind
+
+
+def _knowledge(author_pub: str, title: str) -> dict:
+    return {"kind": "knowledge", "title": title, "body": title, "author": author_pub}
+
+
+# ── 1. eager fan-out is bounded to the mesh (O(D), not O(all)) ────────────────
+
+@pytest.mark.interop
+def test_eager_announce_reaches_only_mesh_members_not_all_peers():
+    """With D < peer-count, a weave's inv-announce reaches only the <=D mesh.
+
+    A weaver with many candidates and a small ``D`` runs a heartbeat to graft a
+    bounded mesh, then weaves. The number of peers that received an ``inv``
+    announce equals the mesh degree (<=D), strictly fewer than the candidate
+    count — the O(all) -> O(D) fan-out reduction. Mesh members converge; non-mesh
+    peers do NOT receive the eager push (they would converge via the lazy/anti-
+    entropy channels, exercised separately).
+    """
+    async def scenario():
+        reg: dict = {}
+        params = MeshParams(d=2, d_low=2, d_high=4)
+        a = _mem_node(reg, 1, gossip=Gossipsub(rng=random.Random(7), params=params))
+        peers = [_mem_node(reg, i + 2) for i in range(6)]
+        for i, p in enumerate(peers):
+            a.add_peer(f"p{i + 2}", p.address)
+
+        # Cold mesh -> first heartbeat grafts up to D candidates.
+        await a.maintain_mesh()
+        mesh = set(a._gossip.mesh_peers(WEB_TOPIC))
+        assert 0 < len(mesh) <= params.d  # bounded eager set
+
+        cid = await a.weave(_knowledge(a.pub, "alpha"))
+
+        # Exactly the mesh members received the inv announce — O(D), not O(6).
+        got_inv = [p for i, p in enumerate(peers) if _calls(p).get(INV, 0) > 0]
+        assert len(got_inv) == len(mesh)
+        assert len(got_inv) < len(peers)  # strictly bounded below the candidate count
+
+        # Every mesh member converged on the weaver via the eager push...
+        for i, p in enumerate(peers):
+            if f"p{i + 2}" in mesh:
+                assert p.web.get(cid) is not None
+                assert _converged(a, p)
+        # ...and a non-mesh peer got NO inv announce at all (pure eager isolation).
+        non_mesh = [p for i, p in enumerate(peers) if f"p{i + 2}" not in mesh]
+        assert non_mesh, "test needs at least one non-mesh peer"
+        assert all(_calls(p).get(INV, 0) == 0 for p in non_mesh)
+
+    run(scenario())
+
+
+# ── 2. a non-mesh peer still RECEIVES the record via lazy IHAVE/IWANT ─────────
+
+@pytest.mark.interop
+def test_non_mesh_peer_receives_record_via_lazy_ihave_iwant():
+    """A peer in nobody's mesh converges via the lazy gossip pull (IHAVE->IWANT).
+
+    The weaver grafts a bounded mesh that EXCLUDES one peer, weaves (that peer
+    gets no eager push), then runs one ``gossip_tick``: it sends the excluded peer
+    a ``mesh-ihave`` digest; the peer answers ``mesh-iwant`` for the CID it lacks
+    and the weaver serves the body through the EXISTING inv-data path. The fringe
+    peer ends up holding the verbatim record (same CID) and converged.
+    """
+    async def scenario():
+        reg: dict = {}
+        params = MeshParams(d=2, d_low=2, d_high=4)
+        a = _mem_node(reg, 1, gossip=Gossipsub(rng=random.Random(3), params=params))
+        peers = [_mem_node(reg, i + 2) for i in range(5)]
+        for i, p in enumerate(peers):
+            a.add_peer(f"p{i + 2}", p.address)
+
+        await a.maintain_mesh()
+        mesh = set(a._gossip.mesh_peers(WEB_TOPIC))
+        fringe_idx = next(i for i, p in enumerate(peers) if f"p{i + 2}" not in mesh)
+        fringe = peers[fringe_idx]
+
+        cid = await a.weave(_knowledge(a.pub, "lazy"))
+        # The fringe peer got NO eager push: zero inv announces from the weave.
+        assert fringe.web.get(cid) is None
+        assert _calls(fringe).get(INV, 0) == 0
+        assert _calls(fringe).get("mesh-ihave", 0) == 0
+
+        # One lazy gossip tick: the weaver IHAVEs the fringe; it IWANTs the CID it
+        # lacks; the weaver serves the body through the inv getdata path. The lazy
+        # serve reuses _announce_to, so the fringe sees ONE inv announce + ONE
+        # inv-data here — both triggered by the IHAVE digest, not the eager weave.
+        await a.gossip_tick()
+
+        # The fringe peer now holds the verbatim record (byte-identical CID) and
+        # converged purely over the lazy IHAVE-initiated path.
+        assert fringe.web.get(cid) is not None
+        assert canonical.cid(fringe.web.get(cid)) == cid
+        assert _converged(a, fringe)
+        assert _calls(fringe).get("mesh-ihave", 0) > 0  # the lazy digest arrived
+        assert _calls(fringe).get("inv-data", 0) > 0     # body via verbatim inv path
+        assert _calls(fringe).get(INV, 0) == 1           # exactly the lazy serve's announce
+
+    run(scenario())
+
+
+# ── 3. mesh control frames carry only ids — byte-identity preserved ───────────
+
+@pytest.mark.interop
+def test_mesh_control_frames_carry_only_ids_no_record_body():
+    """mesh-graft / mesh-ihave frames carry ids/topic + sender id, never a body.
+
+    The body always travels through the inv-data path; a mesh frame never
+    re-encodes a record, so a signed record's CID byte-identity is preserved
+    trivially. We intercept the actual control maps the weaver dials and assert
+    their keys are exactly the ids-only mesh schema plus the sender id envelope
+    key — no ``author`` / ``record`` / ``sig`` body fields ever ride a mesh kind.
+    """
+    async def scenario():
+        reg: dict = {}
+        a = _mem_node(reg, 1, gossip=Gossipsub(rng=random.Random(1)))
+        peers = [_mem_node(reg, i + 2) for i in range(4)]
+        for i, p in enumerate(peers):
+            a.add_peer(f"p{i + 2}", p.address)
+
+        # Intercept every outbound dial to capture the raw control maps.
+        sent: list[dict] = []
+        orig_send = a._send
+
+        async def spy(peer, msg):
+            sent.append(msg)
+            return await orig_send(peer, msg)
+
+        a._send = spy
+
+        await a.maintain_mesh()             # GRAFT frames
+        await a.weave(_knowledge(a.pub, "x"))
+        await a.gossip_tick()               # IHAVE frames
+
+        mesh_kinds = {"mesh-graft", "mesh-prune", "mesh-ihave", "mesh-iwant"}
+        seen_mesh = [m for m in sent if m.get("kind") in mesh_kinds]
+        assert seen_mesh, "expected at least one mesh control frame on the wire"
+        for m in seen_mesh:
+            # ids-only schema: kind/topic/ids/cids + the sender-id envelope key.
+            assert set(m) <= {"kind", "topic", "ids", "cids", _MESH_PEER_KEY}
+            # Never a record body.
+            assert "author" not in m and "record" not in m and "sig" not in m
+            # The sender id is this node's stable pubkey (the #58 keying).
+            assert m[_MESH_PEER_KEY] == a.pub
+
+    run(scenario())
+
+
+# ── 4. mesh degree stays within [d_low, d_high] across heartbeats ─────────────
+
+@pytest.mark.interop
+def test_mesh_degree_stays_within_band_over_heartbeats():
+    """The bounded-mesh invariant holds through the live node heartbeat driver."""
+    async def scenario():
+        reg: dict = {}
+        params = MeshParams(d=4, d_low=3, d_high=6)
+        a = _mem_node(reg, 1, gossip=Gossipsub(rng=random.Random(11), params=params))
+        peers = [_mem_node(reg, i + 2) for i in range(20)]
+        for i, p in enumerate(peers):
+            a.add_peer(f"p{i + 2}", p.address)
+
+        for _ in range(15):
+            await a.maintain_mesh()
+            deg = a._gossip.mesh_degree(WEB_TOPIC)
+            assert deg <= params.d_high
+            assert params.d_low <= deg  # plenty of candidates -> at/above d_low
+        assert params.d_low <= a._gossip.mesh_degree(WEB_TOPIC) <= params.d_high
+
+    run(scenario())
+
+
+# ── 5. partial mesh + churn: all nodes converge on one state_root ─────────────
+
+@pytest.mark.interop
+def test_partial_mesh_plus_churn_converges_to_one_state_root():
+    """A bounded mesh + a churning peer (drop + rejoin) -> one identical root.
+
+    The weaver keeps a STRICT-subset mesh (``D`` < peer-count), so eager push
+    never reaches every peer. Convergence relies on the union of three channels:
+    eager mesh push, the lazy IHAVE/IWANT tick (reaches the fringe), and the
+    anti-entropy backstop (catches a peer that churned through a publish gap). One
+    peer drops mid-stream (its candidacy removed), the weaver weaves more, the peer
+    rejoins fresh (same identity, empty Web) and pulls via sync_from. Every node
+    settles on the weaver's post-churn root.
+    """
+    async def scenario():
+        reg: dict = {}
+        params = MeshParams(d=2, d_low=2, d_high=3)
+        a = _mem_node(reg, 1, gossip=Gossipsub(rng=random.Random(5), params=params))
+        peers = [_mem_node(reg, i + 2) for i in range(5)]
+        names = [f"p{i + 2}" for i in range(5)]
+        for name, p in zip(names, peers):
+            a.add_peer(name, p.address)
+
+        await a.maintain_mesh()
+        assert a._gossip.mesh_degree(WEB_TOPIC) <= params.d
+        assert a._gossip.mesh_degree(WEB_TOPIC) < len(peers)  # strict partial mesh
+
+        # Weave two records, then run a lazy tick so the fringe pulls them.
+        c0 = await a.weave(_knowledge(a.pub, "r0"))
+        c1 = await a.weave(_knowledge(a.pub, "r1"))
+        await a.gossip_tick()
+
+        # Eager-mesh members + lazy-fringe peers all converged on the two records.
+        # (build_ihave digest covers the fringe; anti-entropy is the hard backstop
+        #  used below for the reborn peer.)
+        for p in peers:
+            # Either the eager push or the lazy tick delivered both records.
+            if p.web.size != (2, 0):
+                # Fringe peers that were not reached by this single tick fall back
+                # to the anti-entropy backstop: pull the weaver's full set.
+                await p.sync_from(a.address)
+            assert p.web.get(c0) is not None
+            assert p.web.get(c1) is not None
+        assert _converged(a, *peers)
+
+        # --- churn: drop p (remove its candidacy), weave more, then rejoin ---
+        churned_name = names[-1]
+        churned = peers[-1]
+        a._gossip.remove_peer(WEB_TOPIC, churned_name)
+        # Weave during the gap: the dropped peer misses the eager push entirely.
+        c2 = await a.weave(_knowledge(a.pub, "r2"))
+        await a.maintain_mesh()  # re-steer the mesh after the drop
+        await a.gossip_tick()
+
+        # The remaining peers track the new record (eager mesh or lazy tick;
+        # anti-entropy backstop otherwise).
+        for name, p in zip(names[:-1], peers[:-1]):
+            if p.web.get(c2) is None:
+                await p.sync_from(a.address)
+            assert p.web.get(c2) is not None
+
+        # The reborn peer: fresh listener (new transport id), same identity, empty
+        # Web. It re-syncs to the weaver's post-churn root via the unchanged
+        # anti-entropy backstop — convergence holds across the churn gap.
+        reborn = _mem_node(reg, 99, priv=churned._priv)
+        assert reborn.web.size == (0, 0)
+        await reborn.sync_from(a.address)
+        assert reborn.web.size == (3, 0)
+        assert reborn.web.get(c2) is not None
+
+        assert _converged(a, *peers[:-1], reborn)
+        assert web_state_root(reborn.web) == a.state_root
+
+    run(scenario())
+
+
+# ── 6. tiny net (D >= peer-count) behaves exactly like #75 all-peer announce ──
+
+@pytest.mark.interop
+def test_tiny_net_eager_announce_reaches_all_peers_like_75():
+    """With D >= peer-count the mesh is effectively all peers: #75 fan-out intact.
+
+    A two/three-node web with the default ``D`` (>= the candidate count) grafts
+    EVERY candidate into the mesh on heartbeat, so publish targets all of them and
+    the eager path is byte-for-byte #75's all-peer announce. AND: a weave issued
+    BEFORE any heartbeat (cold mesh) must still reach every peer via the all-
+    candidates fallback — this is the load-bearing tiny-net regression guard.
+    """
+    async def scenario():
+        reg: dict = {}
+        a = _mem_node(reg, 1)  # default MeshParams(d=6) >= 2 peers
+        b = _mem_node(reg, 2)
+        c = _mem_node(reg, 3)
+        a.add_peer("b", b.address)
+        a.add_peer("c", c.address)
+
+        # Weave immediately, BEFORE any heartbeat: cold mesh -> all-candidates
+        # fallback still eager-pushes to both peers (the #75 behaviour).
+        cid = await a.weave(_knowledge(a.pub, "cold"))
+        assert b.web.get(cid) is not None
+        assert c.web.get(cid) is not None
+        assert _converged(a, b, c)
+
+        # After a heartbeat D(=6) >= 2 grafts both, so publish == all candidates.
+        await a.maintain_mesh()
+        assert set(a._gossip.mesh_peers(WEB_TOPIC)) == {"b", "c"}
+        cid2 = await a.weave(_knowledge(a.pub, "warm"))
+        assert b.web.get(cid2) is not None
+        assert c.web.get(cid2) is not None
+        assert _converged(a, b, c)
+
+    run(scenario())

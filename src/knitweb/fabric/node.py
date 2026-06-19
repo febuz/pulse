@@ -43,12 +43,15 @@ identical ``web_state_root``.
 from __future__ import annotations
 
 import asyncio
+import random as _random_mod
 
 from ..core import canonical, crypto
 from ..p2p.anti_entropy import SyncRound
 from ..p2p.base_node import BaseNode
 from ..p2p import inventory
 from ..p2p.inventory import INV, GETDATA, InventoryRelay
+from ..p2p import mesh
+from ..p2p.mesh import GRAFT, PRUNE, IHAVE, IWANT, Gossipsub
 from .items import web_state_root
 from .web import Web
 from ..p2p.node import PeerAddress, StaticPeerBook
@@ -57,11 +60,24 @@ from ..p2p.transport import Transport
 from ..p2p import wire
 from ..p2p.wire import WireError
 
-__all__ = ["FabricNode", "FabricNodeError"]
+__all__ = ["FabricNode", "FabricNodeError", "WEB_TOPIC"]
 
 # Domain-separation tag: a signature over a broadcast fabric record can never be
 # replayed as a signature over a feed head, a Knit, or anything else.
 _RECORD_TAG = b"knitweb/fabric-record/v1\x00"
+
+# The single fixed gossipsub topic this increment maintains a mesh for. One web
+# topic per fabric (Kademlia + Erlay topic-splitting are separate activations).
+# Vocabulary stays Web/Knit/knitweb — never "loom"/"network".
+WEB_TOPIC = "web/fabric/v1"
+
+# The node-layer key carrying the SENDER's stable gossip peer-id (its pubkey)
+# alongside a mesh control frame. The mesh control frames themselves are ids-only
+# (mesh.py is unedited); this envelope key lets the RECEIVER key its own mesh /
+# score state on the announcer's stable ``node:<pubkey>`` rather than an
+# ephemeral carrier id, exactly as #58 keys reputation. It is a plain string in
+# the dict carrier and never touches a signed/hashed record body.
+_MESH_PEER_KEY = "peer"
 
 
 class FabricNodeError(RuntimeError):
@@ -98,6 +114,8 @@ class FabricNode(BaseNode):
         port: int = 0,
         transport: Transport | None = None,
         extra_transports: list[Transport] | None = None,
+        gossip: Gossipsub | None = None,
+        gossip_seed: int | None = None,
     ) -> None:
         super().__init__(
             host=host,
@@ -124,6 +142,18 @@ class FabricNode(BaseNode):
         # The lookup is into the frame store above (returns None for a CID we do
         # not hold, so on_getdata never fabricates a body).
         self._inv = InventoryRelay(lambda cid: self._frames.get(cid))
+        # One gossipsub mesh for the single web topic (#67 activated on top of the
+        # #75 inv->getdata propagation). It is purely a TARGET SELECTOR: it decides
+        # WHICH peers a weave eager-pushes to (the bounded <=D mesh) and WHICH get
+        # only a lazy IHAVE digest; it never moves a body. The peerbook NAME is the
+        # gossip peer-id on the announce side; a peer keys ITS mesh state on the
+        # sender's stable pubkey (carried in ``_MESH_PEER_KEY``). RNG/seed are
+        # injected so a test replays a byte-identical mesh; prod gets a fresh
+        # Random. The epoch is the integer the caller ticks via maintain_mesh().
+        if gossip is not None:
+            self._gossip = gossip
+        else:
+            self._gossip = Gossipsub(rng=_random_mod.Random(gossip_seed))
 
     # -- server lifecycle -------------------------------------------------
 
@@ -196,8 +226,16 @@ class FabricNode(BaseNode):
     # -- peer wiring ------------------------------------------------------
 
     def add_peer(self, name: str, peer: PeerAddress) -> None:
-        """Register a peer that local weaves will be broadcast to."""
+        """Register a peer that local weaves will be broadcast to.
+
+        The peerbook ``name`` doubles as this peer's gossipsub peer-id (the join
+        key between the two layers): it is registered as a topic *candidate*, not
+        a mesh member — :meth:`maintain_mesh` grafts candidates into the bounded
+        mesh as degree requires. ``peerbook.all()`` is the name -> PeerAddress
+        resolver that turns a mesh peer-id back into a dial target.
+        """
         self.peerbook.add(name, peer)
+        self._gossip.add_peer(WEB_TOPIC, name)
 
     # -- weaving + propagation --------------------------------------------
 
@@ -219,22 +257,45 @@ class FabricNode(BaseNode):
         # Store the verbatim signed-envelope frame bytes BEFORE announcing, so a
         # peer that wants this CID gets the exact bytes back (byte-identity).
         self._store_frame(cid, self._signed_record_msg(record))
-        await self._announce(cid)
+        await self._eager_announce(cid)
         return cid
 
-    async def _announce(self, cid: str) -> None:
-        """Announce ``cid`` to every peer; serve each peer the bodies it lacks.
+    def _eager_targets(self, cid: str) -> list[str]:
+        """The bounded set of peer NAMES this weave eager-pushes ``cid`` to.
 
-        Replaces the old O(N*body) full-flood. The relay's :meth:`announce`
-        returns ``None`` (and we skip the send) when the CID was already
-        announced — the redundant-traffic cut the SeenSet exists for.
+        Delegates target selection to the gossipsub mesh (``publish`` returns the
+        <=D mesh members for the topic, and records the id as held for future
+        IHAVE digests). FALLBACK for tiny nets / a cold mesh: when the mesh is
+        empty for the topic — which it is at construction before the first
+        :meth:`maintain_mesh`, and whenever ``D >= peer-count`` keeps every
+        candidate grafted — we announce to ALL candidates, so a weave issued
+        immediately after ``add_peer`` (the convergence test's fan-out case) still
+        gets the eager push and small nets behave byte-for-byte like #75. Once the
+        mesh is non-empty the eager fan-out is bounded to O(D).
         """
+        targets = self._gossip.publish(WEB_TOPIC, cid)
+        if targets:
+            return targets
+        return self._gossip.topic_peers(WEB_TOPIC)
+
+    async def _eager_announce(self, cid: str) -> None:
+        """Announce ``cid`` to the MESH (not every peer); serve the bodies it lacks.
+
+        Narrows the #75 eager path's target SET from ``peerbook.all()`` to the
+        bounded gossipsub mesh (or all candidates as a cold-mesh fallback) while
+        reusing :meth:`_announce_to` VERBATIM — so the inv -> getdata -> inv-data
+        body transfer, the SeenSet dedup, and byte-identity are unchanged. Peers
+        outside the mesh converge via the lazy IHAVE/IWANT tick and the unchanged
+        anti-entropy backstop. The relay's :meth:`announce` returns ``None`` (and
+        we skip the send) when the CID was already announced.
+        """
+        names = self._eager_targets(cid)
         frame = self._inv.announce([cid])
         if frame is None:
             return
         cids = inventory.parse_inv_frame(frame)
         self.metrics.incr("inv_announced", len(cids))
-        peers = list(self.peerbook.all().values())
+        peers = self._resolve_names(names)
         if not peers:
             return
         results = await asyncio.gather(
@@ -286,6 +347,104 @@ class FabricNode(BaseNode):
         ack = await self._send(peer, {"kind": "inv-data", "records": records})
         if ack.get("kind") == "error":
             raise FabricNodeError(f"{ack.get('code')}: {ack.get('message')}")
+
+    # -- mesh maintenance + lazy gossip (issue #67 activation) ------------
+
+    def _resolve_names(self, names: "list[str]") -> "list[PeerAddress]":
+        """Resolve gossip peer NAMES back to dial targets via the peerbook.
+
+        A name with no peerbook entry (e.g. a stale mesh id whose peer was
+        removed) is silently skipped — the mesh is a target *hint*, never a
+        source of truth about reachability.
+        """
+        book = self.peerbook.all()
+        return [book[name] for name in names if name in book]
+
+    async def maintain_mesh(self) -> None:
+        """Tick one integer heartbeat epoch and ship the resulting GRAFT/PRUNE.
+
+        Caller-driven (deterministic): a test ticks it explicitly; prod can
+        piggyback the anti-entropy interval. :meth:`Gossipsub.heartbeat` advances
+        the integer epoch and steers each topic mesh into ``[d_low, d_high]``,
+        returning ``{name: [control frames]}``; we resolve each name to a dial
+        target and push the GRAFT/PRUNE down the existing carrier (stamping our
+        stable pubkey so the receiver keys ITS mesh on ``node:<pubkey>``). A peer
+        offline this cycle is swallowed exactly like an eager-announce failure;
+        the mesh re-steers next heartbeat. No wall-clock — the epoch is the only
+        notion of time and it is an integer.
+        """
+        out = self._gossip.heartbeat([WEB_TOPIC])
+        await self._ship_control(out)
+
+    async def gossip_tick(self) -> None:
+        """Send a lazy IHAVE digest to every NON-mesh candidate (the fringe path).
+
+        A node in nobody's mesh receives no eager push; this is how it still
+        learns held CIDs. We advertise the topic's held ids to each candidate that
+        is NOT a current mesh member (mesh members already got the eager push). The
+        peer answers the IHAVE *in the dial response* with an IWANT for the ids it
+        lacks (no return route needed — fits the one-shot push carrier), and we
+        serve exactly those via the unchanged inv getdata path, so bodies travel
+        only through #75's verbatim frame store. Idempotent and bounded by the
+        SeenSet at both ends.
+        """
+        frame = self._gossip.build_ihave(WEB_TOPIC)
+        if frame is None:
+            return
+        mesh_members = set(self._gossip.mesh_peers(WEB_TOPIC))
+        fringe = [n for n in self._gossip.topic_peers(WEB_TOPIC) if n not in mesh_members]
+        book = self.peerbook.all()
+        ihave = wire.read_frame_bytes(frame)
+        ihave[_MESH_PEER_KEY] = self.pub
+        for name in fringe:
+            peer = book.get(name)
+            if peer is None:
+                continue
+            try:
+                resp = await self._send(peer, dict(ihave))
+            except (OSError, FabricNodeError, WireError):
+                continue
+            await self._serve_iwant_response(peer, resp)
+
+    async def _serve_iwant_response(self, peer: PeerAddress, resp: dict) -> None:
+        """A fringe peer answered our IHAVE with an IWANT; serve it via inv-data.
+
+        The IWANT names the CIDs the peer lacks; we push exactly those bodies
+        through the EXISTING :meth:`_announce_to` inv path (verbatim stored
+        frames), so the lazy fringe converges using the same byte-identical
+        transfer as the eager mesh. A non-IWANT reply (peer already held
+        everything) is a no-op.
+        """
+        if not isinstance(resp, dict) or resp.get("kind") != IWANT:
+            return
+        ids = resp.get("ids")
+        if not isinstance(ids, list) or not ids:
+            return
+        try:
+            await self._announce_to(peer, [str(c) for c in ids])
+        except (OSError, FabricNodeError, WireError):
+            self.metrics.incr("broadcasts_failed")
+
+    async def _ship_control(self, out: "dict[str, list[bytes]]") -> None:
+        """Push per-peer GRAFT/PRUNE control frames down the carrier.
+
+        ``out`` is the ``{name: [frame bytes]}`` map :meth:`Gossipsub.heartbeat`
+        returns. We decode each ids-only mesh frame to its dict, stamp our stable
+        pubkey, and dial it. Per-peer failures are swallowed (offline peer); the
+        mesh re-steers on the next heartbeat.
+        """
+        book = self.peerbook.all()
+        for name, frames in out.items():
+            peer = book.get(name)
+            if peer is None:
+                continue
+            for fr in frames:
+                msg = wire.read_frame_bytes(fr)
+                msg[_MESH_PEER_KEY] = self.pub
+                try:
+                    await self._send(peer, msg)
+                except (OSError, FabricNodeError, WireError):
+                    continue
 
     def _signed_record_msg(self, record: dict) -> dict:
         sig = crypto.sign(self._priv, _record_signable(record))
@@ -410,7 +569,58 @@ class FabricNode(BaseNode):
             return self._serve_inv(msg)
         elif kind == "inv-data":
             return self._serve_inv_data(msg)
+        elif kind in (GRAFT, PRUNE, IHAVE, IWANT):
+            return self._serve_mesh(kind, msg)
         return {"kind": "error", "code": "unknown-kind", "message": str(kind)}
+
+    # -- gossipsub mesh control server side (issue #67) -------------------
+
+    def _serve_mesh(self, kind, msg: dict) -> dict:
+        """Handle an inbound mesh control frame, delegating to the unchanged mesh.
+
+        Mesh frames carried over the dict carrier ride an extra ``_MESH_PEER_KEY``
+        naming the SENDER's stable pubkey (its gossip peer-id). We register that id
+        as a topic candidate (so reciprocal GRAFT/PRUNE/score state keys on the
+        stable ``node:<pubkey>``, never an ephemeral carrier id — #58), strip the
+        key, and re-encode the ids-only frame bytes mesh.py expects. mesh.py is
+        reused UNEDITED; no record body ever rides a mesh frame, so byte-identity
+        is preserved trivially.
+
+          * GRAFT -> :meth:`Gossipsub.on_graft` (bounce a PRUNE or accept).
+          * PRUNE -> :meth:`Gossipsub.on_prune`.
+          * IHAVE -> :meth:`Gossipsub.on_ihave`: reply an IWANT for ids we lack,
+            so the announcer serves them via the inv path IN-BAND on this round
+            trip (the fringe pull). No body travels in this response.
+          * IWANT -> :meth:`Gossipsub.on_iwant`: return a GETDATA of the held ids
+            so the body moves through the EXISTING inv getdata path verbatim.
+        """
+        sender = msg.get(_MESH_PEER_KEY)
+        if not isinstance(sender, str) or not sender:
+            raise FabricNodeError("mesh control frame missing peer id")
+        frame = wire.write_frame_bytes({k: v for k, v in msg.items() if k != _MESH_PEER_KEY})
+        # Make the sender a known candidate so on_graft/score state can key on it.
+        self._gossip.add_peer(WEB_TOPIC, sender)
+        if kind == GRAFT:
+            reply = self._gossip.on_graft(sender, frame)
+            if reply is None:
+                return {"kind": "mesh-ack"}
+            bounce = wire.read_frame_bytes(reply)
+            bounce[_MESH_PEER_KEY] = self.pub
+            return bounce
+        if kind == PRUNE:
+            self._gossip.on_prune(sender, frame)
+            return {"kind": "mesh-ack"}
+        if kind == IHAVE:
+            want = self._gossip.on_ihave(sender, frame)
+            if want is None:
+                return {"kind": "mesh-ack"}
+            return wire.read_frame_bytes(want)
+        # IWANT: return the held ids as a getdata so the sender serves the bodies
+        # through the inv path. We hold them in the frame store keyed by CID.
+        ids = self._gossip.on_iwant(sender, frame)
+        if not ids:
+            return {"kind": "mesh-ack"}
+        return {"kind": GETDATA, "cids": ids}
 
     # -- inventory (lazy relay) server side (#64) -------------------------
 
