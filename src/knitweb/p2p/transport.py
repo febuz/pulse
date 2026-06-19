@@ -39,16 +39,47 @@ from .wire import WireError, read_frame, write_frame
 __all__ = [
     "PeerAddress",
     "FrameHandler",
+    "FrameFaultHandler",
     "Transport",
     "Dialer",
     "TcpTransport",
     "DEFAULT_MAX_INBOUND",
     "DEFAULT_READ_TIMEOUT_S",
+    "TCP_PEER_PREFIX",
+    "tcp_peer_id",
     "parse_peer_uri",
 ]
 
 # A frame handler takes one decoded request map and returns the response map.
 FrameHandler = Callable[[dict], Awaitable[dict]]
+
+# A frame-fault handler turns a carrier-level read failure (a malformed or
+# oversized frame) for a positively-identified peer into a response map — letting
+# the node layer record the matching reputation penalty without the carrier ever
+# owning reputation itself. Takes ``(peer_id, WireError)`` and returns the error
+# map to write back. Optional: a carrier that cannot identify a sender (or a node
+# that does not supply one) simply omits it and a faulted frame is dropped.
+FrameFaultHandler = Callable[[str, "WireError"], dict]
+
+# Reputation-key prefix for a TCP sender, derived from its remote IP. It mirrors
+# the ``relay:`` prefix the relay carrier uses (:func:`knitweb.p2p.relay.relay_peer_id`)
+# so the two address spaces never collide in the reputation ledger.
+TCP_PEER_PREFIX = "tcp:"
+
+
+def tcp_peer_id(host: str) -> str:
+    """Stable reputation key for a TCP sender, derived from its remote IP only.
+
+    The id deliberately drops the *port*: a peer's source port is ephemeral and
+    changes every reconnect, so keying on ``host:port`` would mint a fresh
+    identity per connection and a repeat forger could never accrue a ban. Keying
+    on the remote IP alone makes misbehavior stick across connections. It is the
+    most stable identity a raw socket exposes; a NAT/proxy can share an IP across
+    honest peers, so the ban thresholds stay graded (one forgery never bans) to
+    keep an honest peer behind a shared IP from being collateral-banned by a
+    co-located attacker before its own honest traffic is even seen.
+    """
+    return f"{TCP_PEER_PREFIX}{host}"
 
 
 @dataclass(frozen=True)
@@ -129,8 +160,21 @@ class Transport(Protocol):
         """Send one ``request`` map to ``peer`` and return its response map."""
         ...
 
-    async def listen(self, handler: FrameHandler) -> None:
+    async def listen(
+        self, handler: FrameHandler, on_frame_fault: "FrameFaultHandler | None" = None
+    ) -> None:
         """Begin accepting inbound requests, dispatching each to ``handler``.
+
+        A carrier that can positively identify the sender stamps that identity
+        onto the decoded request as the transport-envelope key
+        (:data:`knitweb.p2p.relay.ENVELOPE_PEER_KEY`) before calling ``handler``,
+        so the carrier-agnostic dispatch can apply the same reputation/ban gate
+        uniformly. ``on_frame_fault`` is an optional hook the carrier calls when an
+        *identified* peer sends a malformed/oversized frame (one that never decodes
+        into a request map), letting the node record the matching reputation
+        penalty; it returns the error map to write back. A carrier with no stable
+        peer identity (or a node that supplies no hook) simply drops a faulted
+        frame, exactly as before.
 
         HOLE-PUNCH SEAM
         ---------------
@@ -255,9 +299,17 @@ class TcpTransport:
             writer.close()
             await writer.wait_closed()
 
-    async def listen(self, handler: FrameHandler) -> None:
+    async def listen(
+        self, handler: FrameHandler, on_frame_fault: "FrameFaultHandler | None" = None
+    ) -> None:
         if self._server is not None:
             return
+
+        # Imported lazily: relay.py imports from this module, so a top-level
+        # import here would be circular. ENVELOPE_PEER_KEY is the carrier-agnostic
+        # transport-envelope key the dispatch ban gate honours; stamping it makes
+        # the live TCP path carry a peer identity exactly like the relay carrier.
+        from .relay import ENVELOPE_PEER_KEY
 
         self._inbound = asyncio.Semaphore(self.max_inbound)
 
@@ -269,18 +321,34 @@ class TcpTransport:
             # handler coroutines and buffers.
             assert self._inbound is not None
             await self._inbound.acquire()
+            # The remote IP is the stable reputation identity a raw socket exposes
+            # (the port is ephemeral — see :func:`tcp_peer_id`). Stamped onto the
+            # request so the carrier-agnostic dispatch applies the same ban gate +
+            # signature-offense penalty the relay carrier already gets.
+            peer_id = self._socket_peer_id(writer)
             try:
                 # Read exactly one request frame under a deadline: a slow-loris
                 # peer that stalls mid-frame is dropped here, freeing the slot.
-                request = await asyncio.wait_for(
-                    read_frame(reader), timeout=self.read_timeout_s
-                )
+                try:
+                    request = await asyncio.wait_for(
+                        read_frame(reader), timeout=self.read_timeout_s
+                    )
+                except WireError as exc:
+                    # A malformed/oversized frame: hand the node a chance to record
+                    # the graded reputation penalty (it owns reputation, not the
+                    # carrier), then write back its error reply. With no hook or no
+                    # peer id the frame is dropped quietly as before.
+                    if on_frame_fault is not None and peer_id is not None:
+                        await write_frame(writer, on_frame_fault(peer_id, exc))
+                    return
+                if peer_id is not None:
+                    request[ENVELOPE_PEER_KEY] = peer_id
                 response = await handler(request)
                 await write_frame(writer, response)
             except (asyncio.TimeoutError, OSError, WireError):
                 # Carrier-level drop: a peer that cannot complete its single
                 # frame in time, or whose socket fails, loses its slot quietly
-                # rather than pinning resources. No reputation coupling here.
+                # rather than pinning resources.
                 pass
             finally:
                 self._inbound.release()
@@ -290,6 +358,19 @@ class TcpTransport:
         self._server = await asyncio.start_server(_accept, self.host, self.port)
         sock = self._server.sockets[0]
         self.host, self.port = sock.getsockname()[:2]
+
+    @staticmethod
+    def _socket_peer_id(writer: asyncio.StreamWriter) -> str | None:
+        """Stable ``tcp:<ip>`` reputation key for the connected peer, or None.
+
+        Returns None when the socket exposes no usable remote IP, so the dispatch
+        gate stays a no-op rather than minting a junk identity (and never
+        collateral-banning on a meaningless key).
+        """
+        peername = writer.get_extra_info("peername")
+        if isinstance(peername, tuple) and len(peername) >= 1 and peername[0]:
+            return tcp_peer_id(str(peername[0]))
+        return None
 
     async def close(self) -> None:
         if self._server is None:

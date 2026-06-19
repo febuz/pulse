@@ -50,7 +50,6 @@ from .wire import (
     knit_to_record,
     multiproof_from_record,
     multiproof_to_record,
-    write_frame,
 )
 
 __all__ = [
@@ -639,23 +638,3 @@ class AsyncioP2PNode(BaseNode):
         elif kind == PEER_EXCHANGE_KIND:
             return self._handle_peer_exchange(msg)
         return self._error("unknown-kind", str(kind))
-
-    async def _serve_connection(
-        self,
-        msg: dict,
-        writer: asyncio.StreamWriter,
-        peer_id: str,
-    ) -> None:
-        """Post-prologue TCP body: delegate to the shared carrier-agnostic dispatch.
-
-        The connection-level half of the Byzantine-consequence loop already
-        refused a banned peer and penalized any malformed/oversized frame in the
-        shared :meth:`BaseNode._handle_peer` prologue; here we route the decoded
-        request through the same carrier-agnostic :meth:`_dispatch` the relay
-        carrier funnels into directly.
-        """
-        try:
-            out = await self._dispatch(msg)
-            await write_frame(writer, out)
-        except (P2PError, ValueError) as exc:
-            await write_frame(writer, self._error("bad-request", str(exc)))

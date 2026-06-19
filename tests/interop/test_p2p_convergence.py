@@ -31,6 +31,8 @@ import pytest
 from knitweb.core import canonical, crypto
 from knitweb.fabric.items import web_state_root
 from knitweb.fabric.node import FabricNode, _RECORD_TAG
+from knitweb.p2p.reputation import Offense
+from knitweb.p2p.transport import tcp_peer_id
 
 
 def run(coro):
@@ -303,11 +305,19 @@ def test_byzantine_forged_record_is_excluded_and_honest_nodes_converge():
             assert resp.get("kind") == "error"
             assert resp.get("code") == "bad-request"
 
+            # Each forgery over the LIVE TCP path now also accrues an
+            # INVALID_SIGNATURE penalty against the attacker's reputation key (#52):
+            # two forged signatures (50 each) reach the 100-point ban threshold, so
+            # the attacker's IP is banned at b after forgery 2.
+            attacker_key = tcp_peer_id("127.0.0.1")
+            assert b.reputation.is_banned(attacker_key)
+
             # --- Forgery 3: equivocation/tamper — sign R0, ship over mutated R1. ---
             # m validly signs r0 then ships that same signature over a mutated r1
-            # (two conflicting payloads behind one signature). The verify is over
-            # the *received* r1 bytes, which the r0 signature does not cover, so the
-            # gate rejects it exactly like an outright bad signature.
+            # (two conflicting payloads behind one signature). m is already banned
+            # for its two prior forgeries, so b now refuses it at the ban gate —
+            # before any work — instead of merely rejecting the bad signature: the
+            # consequence layer is ACTIVE on the live transport, not just exclusion.
             r0 = {"kind": "knowledge", "title": "r0", "body": "a", "author": m.pub}
             r1 = {"kind": "knowledge", "title": "r0", "body": "MUTATED", "author": m.pub}
             sig_r0 = crypto.sign(m._priv, _RECORD_TAG + canonical.encode(r0))
@@ -315,7 +325,7 @@ def test_byzantine_forged_record_is_excluded_and_honest_nodes_converge():
             env_tamper = _forged_envelope(m.pub, r1, sig=sig_r0)  # sig is for r0, not r1
             resp = await m.dialer.dial(b.address, env_tamper)
             assert resp.get("kind") == "error"
-            assert resp.get("code") == "bad-request"
+            assert resp.get("code") == "banned"
 
             # The honest gate excluded EVERY forgery: b's Web is unchanged, no
             # forged/equivocating CID was woven, and the honest root still stands.
@@ -329,5 +339,73 @@ def test_byzantine_forged_record_is_excluded_and_honest_nodes_converge():
             # Honest pair still converged on the honest root, forgeries excluded.
             assert _converged(a, b)
             assert web_state_root(b.web) == a.state_root
+
+    run(scenario())
+
+
+@pytest.mark.interop
+def test_live_transport_repeat_forger_accrues_penalty_and_is_banned():
+    """#52: the reputation/ban layer is ACTIVE on the live ``start()`` TCP path.
+
+    Before #52 the live socket path was ``start() -> transport.listen(_dispatch)``,
+    which never reached ``_handle_peer``/``_serve_connection`` — so a forger's
+    records were *rejected* but accrued NO reputation penalty and were NEVER
+    banned: the consequence layer was effectively test-only on real sockets.
+
+    This test exercises the REAL path end to end. ``victim`` is a genuine
+    :class:`FabricNode` whose ``__aenter__`` runs ``start()`` (the live
+    ``asyncio.start_server`` accept loop wired to ``_dispatch``). ``attacker``
+    dials the victim's real address over the genuine :class:`TcpTransport` with a
+    stream of records whose author signature does not verify. We assert that:
+
+      * each forgery is rejected (``error`` reply, nothing woven), AND
+      * the attacker's reputation score climbs by ``INVALID_SIGNATURE`` per
+        forgery — proving the penalty is charged on the live carrier, not just on
+        the direct-stream wrapper — until it crosses the ban threshold, after
+        which the victim refuses the attacker at the ban gate (``banned``) before
+        doing any work. A pre-#52 build would leave the score at 0 and keep
+        replying ``bad-request`` forever.
+    """
+    async def scenario():
+        victim = FabricNode()
+        attacker = FabricNode()
+        # `async with` calls start(): the live transport.listen(_dispatch) accept
+        # loop — NOT _handle_peer — is what serves these dials.
+        async with victim, attacker:
+            attacker_key = tcp_peer_id("127.0.0.1")
+            assert victim.reputation.score(attacker_key) == 0
+
+            forgeries = 0
+            banned_seen = False
+            # INVALID_SIGNATURE is 50; two forgeries reach the 100 ban threshold,
+            # so by the third dial the victim refuses at the gate.
+            for i in range(3):
+                rec = {
+                    "kind": "knowledge", "title": f"lie-{i}", "body": "evil",
+                    "author": attacker.pub,
+                }
+                env = _forged_envelope(attacker.pub, rec, sig="00" * 64)
+                expected = victim.reputation.score(attacker_key)
+                resp = await attacker.dialer.dial(victim.address, env)
+                assert resp.get("kind") == "error"
+                if resp.get("code") == "banned":
+                    banned_seen = True
+                    # Refused at the gate: no further penalty, nothing woven.
+                    assert victim.reputation.score(attacker_key) == expected
+                else:
+                    forgeries += 1
+                    # The live path charged the signature offense to the attacker.
+                    assert resp.get("code") == "bad-request"
+                    assert (
+                        victim.reputation.score(attacker_key)
+                        == expected + Offense.INVALID_SIGNATURE.value
+                    )
+                # No forged record ever wove into the victim's Web.
+                assert victim.web.size == (0, 0)
+
+            # The attacker accrued real penalties and ended up banned + refused.
+            assert forgeries >= 1
+            assert banned_seen
+            assert victim.reputation.is_banned(attacker_key)
 
     run(scenario())

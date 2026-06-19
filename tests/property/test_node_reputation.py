@@ -24,6 +24,7 @@ from knitweb.fabric.feed import Feed
 from knitweb.fabric.node import FabricNode
 from knitweb.p2p.node import AsyncioP2PNode, FeedConflictError, FeedReplica
 from knitweb.p2p.reputation import Offense
+from knitweb.p2p.transport import tcp_peer_id
 from knitweb.p2p.wire import (
     equivocation_report_from_record,
     equivocation_report_to_record,
@@ -154,7 +155,7 @@ def test_equivocation_report_record_is_byte_identical_round_trip():
 
 def test_banned_peer_is_refused_before_any_work():
     node = AsyncioP2PNode()
-    node.reputation.penalize("10.0.0.9:7", Offense.EQUIVOCATION)
+    node.reputation.penalize(tcp_peer_id("10.0.0.9"), Offense.EQUIVOCATION)
 
     async def drive():
         reader = await _reader_with_frame({"kind": "feed-request", "feed": "x",
@@ -178,7 +179,7 @@ def test_malformed_frame_penalizes_sender_graded():
 
     reply = asyncio.run(drive())
     assert reply.get("code") == "bad-frame"
-    assert node.reputation.score("10.0.0.1:1") == Offense.MALFORMED_FRAME.value
+    assert node.reputation.score(tcp_peer_id("10.0.0.1")) == Offense.MALFORMED_FRAME.value
 
 
 def test_oversized_frame_penalizes_sender_graded():
@@ -194,7 +195,7 @@ def test_oversized_frame_penalizes_sender_graded():
 
     reply = asyncio.run(drive())
     assert reply.get("code") == "bad-frame"
-    assert node.reputation.score("10.0.0.2:2") == Offense.OVERSIZED_FRAME.value
+    assert node.reputation.score(tcp_peer_id("10.0.0.2")) == Offense.OVERSIZED_FRAME.value
 
 
 def test_two_malformed_frames_do_not_yet_ban():
@@ -223,15 +224,15 @@ def test_fabric_node_penalizes_forged_signature_and_bans():
 
     reply = asyncio.run(drive())
     assert reply.get("kind") == "error"
-    assert node.reputation.score("172.16.0.5:9") == Offense.INVALID_SIGNATURE.value
+    assert node.reputation.score(tcp_peer_id("172.16.0.5")) == Offense.INVALID_SIGNATURE.value
     assert node.web.size == (0, 0)  # forged record never woven
 
 
 def test_fabric_node_refuses_banned_peer():
     node = FabricNode()
-    node.reputation.penalize("172.16.0.6:9", Offense.INVALID_SIGNATURE)
-    node.reputation.penalize("172.16.0.6:9", Offense.STALE_OR_FORGED_PROOF)  # → 100, banned
-    assert node.reputation.is_banned("172.16.0.6:9")
+    node.reputation.penalize(tcp_peer_id("172.16.0.6"), Offense.INVALID_SIGNATURE)
+    node.reputation.penalize(tcp_peer_id("172.16.0.6"), Offense.STALE_OR_FORGED_PROOF)  # → 100, banned
+    assert node.reputation.is_banned(tcp_peer_id("172.16.0.6"))
 
     async def drive():
         reader = await _reader_with_frame({"kind": "fabric-sync-request"})

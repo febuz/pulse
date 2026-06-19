@@ -23,6 +23,7 @@ from knitweb.fabric.equivocation import prove_equivocation, verify_equivocation_
 from knitweb.fabric.feed import Feed
 from knitweb.p2p import AsyncioP2PNode, FeedConflictError, P2PError
 from knitweb.p2p.reputation import Offense
+from knitweb.p2p.transport import tcp_peer_id
 from knitweb.p2p.wire import write_frame
 
 
@@ -170,8 +171,8 @@ def test_banned_peer_is_refused_at_the_gate():
         # Drive the connection handler with an in-memory transport so we control
         # (and can ban) the exact peer endpoint the gate keys on.
         peername = ("203.0.113.7", 5555)
-        server.reputation.penalize("203.0.113.7:5555", Offense.EQUIVOCATION)
-        assert server.reputation.is_banned("203.0.113.7:5555")
+        server.reputation.penalize(tcp_peer_id("203.0.113.7"), Offense.EQUIVOCATION)
+        assert server.reputation.is_banned(tcp_peer_id("203.0.113.7"))
 
         reader = await _feed_reader(
             {"kind": "feed-request", "feed": feed.feed, "start": 0, "end": None}
@@ -199,7 +200,7 @@ def test_malformed_frame_penalizes_sender():
         reply = _decode_reply(writer)
         assert reply.get("kind") == "error"
         assert reply.get("code") == "bad-frame"
-        assert server.reputation.score("198.51.100.4:4444") == Offense.MALFORMED_FRAME.value
+        assert server.reputation.score(tcp_peer_id("198.51.100.4")) == Offense.MALFORMED_FRAME.value
 
     run(scenario())
 

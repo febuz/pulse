@@ -39,7 +39,7 @@ from .web import Web
 from ..p2p.node import PeerAddress, StaticPeerBook
 from ..p2p.reputation import Offense
 from ..p2p.transport import Transport
-from ..p2p.wire import WireError, write_frame
+from ..p2p.wire import WireError
 
 __all__ = ["FabricNode", "FabricNodeError"]
 
@@ -277,60 +277,18 @@ class FabricNode(BaseNode):
         return {"kind": "fabric-sync-data", "records": records}
 
     def _route(self, kind, msg: dict) -> dict:
-        """Fabric routing table: ingest a gossiped record, or serve a sync snapshot."""
+        """Fabric routing table: ingest a gossiped record, or serve a sync snapshot.
+
+        A forged author signature raises ``FabricNodeError("invalid author
+        signature ...")`` here; the shared :meth:`BaseNode._dispatch` catches it,
+        charges the relaying peer an :class:`Offense.INVALID_SIGNATURE` penalty
+        (the message carries the word "signature"), and refuses — so the offense
+        lands uniformly on the live TCP path and the relay path alike (#52), with
+        no node-specific ``_serve_connection`` override to keep in sync.
+        """
         if kind == "fabric-record":
             self._ingest_signed(msg)
             return {"kind": "fabric-ack"}
         elif kind == "fabric-sync-request":
             return self._serve_sync()
         return {"kind": "error", "code": "unknown-kind", "message": str(kind)}
-
-    async def _serve_connection(
-        self,
-        msg: dict,
-        writer: asyncio.StreamWriter,
-        peer_id: str,
-    ) -> None:
-        """Post-prologue TCP body: inline routing + the signature-offense tail.
-
-        Unlike :meth:`AsyncioP2PNode._serve_connection` this does NOT delegate to
-        :meth:`_dispatch` — it re-counts frames_in/frames_out itself and inlines
-        the same routing, plus (uniquely to the fabric node) turns a forged author
-        signature into an :class:`Offense.INVALID_SIGNATURE` penalty on the
-        relaying peer. The shared banned-peer gate and malformed/oversized-frame
-        penalty already ran in the :meth:`BaseNode._handle_peer` prologue.
-        """
-        try:
-            self.metrics.incr("frames_in")
-            kind = msg.get("kind")
-            if kind == "fabric-record":
-                self._ingest_signed(msg)
-                out = {"kind": "fabric-ack"}
-            elif kind == "fabric-sync-request":
-                out = self._serve_sync()
-            else:
-                out = {"kind": "error", "code": "unknown-kind", "message": str(kind)}
-            self.metrics.incr("frames_out")
-            await write_frame(writer, out)
-        except FabricNodeError as exc:
-            # A forged author signature (or other ingest fault) is a signature
-            # offense — penalize the relaying peer, then refuse.
-            if "signature" in str(exc):
-                self.reputation.penalize(peer_id, Offense.INVALID_SIGNATURE)
-            self.metrics.incr("frames_out")
-            await write_frame(
-                writer, {"kind": "error", "code": "bad-request", "message": str(exc)}
-            )
-        except WireError as exc:
-            # Explicit: a routing-time wire fault is refused as a bad request.
-            # (WireError subclasses ValueError, but we keep it explicit so the
-            # handling never silently rides on that subclassing.)
-            self.metrics.incr("frames_out")
-            await write_frame(
-                writer, {"kind": "error", "code": "bad-request", "message": str(exc)}
-            )
-        except ValueError as exc:
-            self.metrics.incr("frames_out")
-            await write_frame(
-                writer, {"kind": "error", "code": "bad-request", "message": str(exc)}
-            )

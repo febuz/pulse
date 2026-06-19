@@ -52,7 +52,7 @@ import secrets
 import urllib.request
 from typing import Any
 
-from .transport import FrameHandler, PeerAddress
+from .transport import FrameFaultHandler, FrameHandler, PeerAddress
 from .wire import MAX_FRAME_BYTES, WireError, read_frame_bytes, write_frame_bytes
 
 __all__ = [
@@ -241,7 +241,15 @@ class RelayTransport:
 
     # -- listen (poll mailbox, dispatch to handler) -----------------------
 
-    async def listen(self, handler: FrameHandler) -> None:
+    async def listen(
+        self, handler: FrameHandler, on_frame_fault: "FrameFaultHandler | None" = None
+    ) -> None:
+        # ``on_frame_fault`` is part of the Transport.listen contract but unused
+        # here: a relay frame that fails to base64/CBOR-decode is dropped in
+        # :meth:`_dispatch` *before* the sender's reply-mailbox identity is even
+        # parsed, so there is no positively-identified peer to penalize. The relay
+        # carrier therefore never charges a malformed-frame offense (it stays a TCP
+        # carrier concern), matching the pre-existing behavior.
         self._handler = handler
         if self._poll_task is None:
             self._start_polling()
