@@ -884,8 +884,12 @@ class FabricNode(BaseNode):
         records = [self._signed_record_msg(rec) for rec in self.web.nodes.values()]
         return {"kind": "fabric-sync-data", "records": records}
 
-    def _route(self, kind, msg: dict) -> dict:
+    def _route(self, kind, msg: dict, source_id: "str | None" = None) -> dict:
         """Fabric routing table: ingest a gossiped record, or serve a sync snapshot.
+
+        (``source_id`` is accepted for the shared :meth:`BaseNode._dispatch` signature; the
+        fabric node does no PEX, so it is unused — the #94 source-group keying lives in
+        :class:`~knitweb.p2p.node.AsyncioP2PNode`.)
 
         A forged author signature raises ``FabricNodeError("invalid author
         signature ...")`` here; the shared :meth:`BaseNode._dispatch` catches it,

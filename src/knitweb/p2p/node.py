@@ -424,28 +424,58 @@ class AsyncioP2PNode(BaseNode):
 
     # -- peer discovery (PEX) ---------------------------------------------
 
-    def _handle_peer_exchange(self, msg: dict) -> dict:
+    @staticmethod
+    def _pex_source(source_id: "str | None") -> "PeerAddress | None":
+        """The addrbook *source* for addresses advertised by carrier ``source_id``.
+
+        A ``tcp:<ip>`` sender keys on its remote IP (so its advertisements bucket by its
+        own /16 group); a ``relay:<mailbox>`` sender keys per mailbox. Anything else (a
+        proven ``node:<pubkey>`` with no network locator, or absent) stays ``None`` =
+        locally-heard. This is what makes the source-group eclipse defence actually
+        engage on the inbound path (#94).
+        """
+        if not isinstance(source_id, str):
+            return None
+        if source_id.startswith("tcp:"):
+            host = source_id[4:]
+            return PeerAddress(host, 0) if host else None
+        if source_id.startswith("relay:"):
+            mailbox = source_id[6:]
+            return PeerAddress(transport="relay", params={"mailbox": mailbox}) if mailbox else None
+        return None
+
+    def _handle_peer_exchange(self, msg: dict, source_id: "str | None" = None) -> dict:
         """Inbound ``peer-exchange``: merge the sender's peers, reply with ours.
 
         Carrier-agnostic — this is reached from :meth:`_dispatch` whether the request
         arrived over a TCP stream or a relay mailbox, and the reply frame bytes are
-        identical either way. The merge mirrors into the bucketed :attr:`addrbook`,
-        and the reply share is drawn from :func:`addrbook_share_message` (source-group
-        diverse, tried-biased) instead of the flat first-``k`` — so what this node
-        re-advertises cannot be dominated by a flooded group either. The reputation/
-        ban gate (handled in :meth:`_dispatch` before routing) already stripped the
-        carrier id, so the advertised peers are learned as locally-heard
-        (``source=None``); the source-tagged eclipse defence runs on the outbound
-        bootstrap-reply ingest where the advertising seed IS known.
+        identical either way. The freshly-advertised peers are mirrored into the bucketed
+        :attr:`addrbook` **keyed on the advertiser's source group** (``source_id``), which
+        is the heart of the eclipse defence: an attacker who floods addresses over one
+        connection shares one source group, so its addresses compete for a bounded set of
+        buckets and cannot crowd an honest minority out of :meth:`AddrBook.sample`. The
+        reply share is likewise drawn from :func:`addrbook_share_message` (source-group
+        diverse, tried-biased). Fixes #94 — previously these were learned as locally-heard
+        (``source=None``), collapsing every advertiser into one group and neutering the
+        new-table defence.
         """
         try:
             handle_peer_exchange(self.peers, msg)  # validate + merge into the flat truth
         except (ValueError, WireError) as exc:
             return self._error("bad-peer-exchange", str(exc))
-        # Mirror the freshly-merged set into the bucketed book (idempotent re-adds),
-        # then reply with the diversity-spread sample.
+        # Mirror into the bucketed book with first-source-wins (the `not in` guard keeps a
+        # peer's bucket keyed on its FIRST-heard source — re-adding under a different source
+        # would double-place it across buckets and dilute the defence):
+        #  1. peers advertised in THIS message → keyed on the advertiser's source group (#94),
+        #     added first so their source-group placement wins;
+        #  2. any remaining directory peers (e.g. hand-added via `peers.add`) → locally-heard.
+        source = self._pex_source(source_id)
+        for peer in peers_from_records((msg.get("peers") or [])[:MAX_PEX_INBOUND]):
+            if peer not in self.addrbook:
+                self.addrbook.add_new(peer, source=source)
         for peer in self.peers.known():
-            self.addrbook.add_new(peer, source=None)
+            if peer not in self.addrbook:
+                self.addrbook.add_new(peer, source=None)
         return addrbook_share_message(self.addrbook)
 
     async def bootstrap_peers(self, seeds: "list[PeerAddress] | None" = None) -> int:
@@ -699,8 +729,13 @@ class AsyncioP2PNode(BaseNode):
         # canonical frame bytes.
         return await self.dialer.dial(peer, self._stamp_id_proof(msg))
 
-    def _route(self, kind, msg: dict) -> dict:
-        """Asyncio routing table: feed sync, Knit handshake, equivocation, PEX."""
+    def _route(self, kind, msg: dict, source_id: "str | None" = None) -> dict:
+        """Asyncio routing table: feed sync, Knit handshake, equivocation, PEX.
+
+        ``source_id`` is the carrier id of the sender (``tcp:<ip>`` / ``relay:<mailbox>``),
+        threaded from :meth:`_dispatch` so PEX can key learned addresses on *who advertised
+        them* — the source-group eclipse defence (#94).
+        """
         if kind == "feed-request":
             return self._serve_feed(msg)
         elif kind == "knit-proposal":
@@ -710,5 +745,5 @@ class AsyncioP2PNode(BaseNode):
         elif kind == "equivocation-report":
             return self._handle_equivocation_report(msg)
         elif kind == PEER_EXCHANGE_KIND:
-            return self._handle_peer_exchange(msg)
+            return self._handle_peer_exchange(msg, source_id)
         return self._error("unknown-kind", str(kind))

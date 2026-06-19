@@ -296,7 +296,9 @@ class BaseNode:
                 self.metrics.incr("frames_out")
             return self._error("banned", "peer is banned")
         try:
-            out = self._route(msg.get("kind"), msg)
+            # Thread the carrier id (tcp:<ip>/relay:<mailbox>) to the router so PEX can
+            # key learned addresses on the advertiser's source group (eclipse defence, #94).
+            out = self._route(msg.get("kind"), msg, carrier_id)
         except self._dispatch_errors as exc:
             # A forged author signature surfaces here as a routing error mentioning
             # "signature"; with a positively-identified sender it is a graded
@@ -461,8 +463,13 @@ class BaseNode:
         self.reputation.penalize(peer_id, offense)
         return self._error("bad-frame", str(exc))
 
-    def _route(self, kind, msg: dict) -> dict:
-        """Subclass routing table: kind -> handler. Raises an unknown-kind error."""
+    def _route(self, kind, msg: dict, source_id: "str | None" = None) -> dict:
+        """Subclass routing table: kind -> handler. Raises an unknown-kind error.
+
+        ``source_id`` is the sender's carrier id, threaded by :meth:`_dispatch`; a subclass
+        that does PEX keys learned addresses on it (the source-group eclipse defence, #94),
+        others ignore it.
+        """
         raise NotImplementedError
 
     # -- direct-stream wrapper (test + future hole-punch seam) ------------
