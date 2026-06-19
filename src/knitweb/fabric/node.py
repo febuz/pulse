@@ -38,6 +38,20 @@ a hop. The unchanged ``sync_from`` / ``start_anti_entropy`` anti-entropy loop
 remains the convergence backstop: anything a best-effort announce/want misses is
 re-pulled by the periodic full sync, so every honest node still settles on the
 identical ``web_state_root``.
+
+Reconnect/periodic sync is no longer a full inv-announce flood either (#60 —
+Erlay activation): :meth:`reconcile_with` drives a
+:class:`~knitweb.p2p.reconcile.ReconcileSession` between this node's frame-store
+CID set and a peer's, exchanging only compact ``(count, integer-xor-fingerprint)``
+range summaries over the ``inv-recon-req`` / ``inv-recon-range`` /
+``inv-recon-result`` envelopes. The recursive range bisection zeroes in on the
+**symmetric difference** in traffic proportional to the *diff*, not the inventory;
+the locally-missing CIDs it discovers are then fetched through the EXISTING
+``inv-getdata`` path (stored frames served verbatim), so only ``|diff|`` bodies
+travel — O(diff) instead of O(total). Reconciliation moves only CIDs and range
+summaries, never a record body, so a signed record's byte-identity (and CID) is
+untouched. Anti-entropy stays the unconditional convergence backstop: anything a
+best-effort reconcile misses is still re-pulled by the periodic full sync.
 """
 
 from __future__ import annotations
@@ -49,9 +63,17 @@ from ..core import canonical, crypto
 from ..p2p.anti_entropy import SyncRound
 from ..p2p.base_node import BaseNode
 from ..p2p import inventory
-from ..p2p.inventory import INV, GETDATA, InventoryRelay
+from ..p2p.inventory import (
+    INV,
+    GETDATA,
+    RECON_REQ,
+    RECON_RANGE,
+    RECON_RESULT,
+    InventoryRelay,
+)
 from ..p2p import mesh
 from ..p2p.mesh import GRAFT, PRUNE, IHAVE, IWANT, Gossipsub
+from ..p2p.reconcile import ReconcileSession
 from .items import web_state_root
 from .web import Web
 from ..p2p.node import PeerAddress, StaticPeerBook
@@ -70,6 +92,17 @@ _RECORD_TAG = b"knitweb/fabric-record/v1\x00"
 # topic per fabric (Kademlia + Erlay topic-splitting are separate activations).
 # Vocabulary stays Web/Knit/knitweb — never "loom"/"network".
 WEB_TOPIC = "web/fabric/v1"
+
+# Erlay activation (#60): the envelope key carrying a reconcile session id, so the
+# RESPONDER can match a multi-round bisection's dials to one in-flight
+# ReconcileSession. A plain integer-string in the dict carrier; it never touches a
+# signed/hashed record body, so a Knit's CID is unaffected by its presence.
+_RECON_SESSION_KEY = "session"
+
+# Cap on concurrently-tracked responder reconcile sessions. A session is dropped
+# the moment it converges, so honest load is tiny; this integer ceiling stops a
+# peer from leaking unbounded session state. Oldest session is evicted on overflow.
+_MAX_RECON_SESSIONS = 1024
 
 # The node-layer key carrying the SENDER's stable gossip peer-id (its pubkey)
 # alongside a mesh control frame. The mesh control frames themselves are ids-only
@@ -142,6 +175,22 @@ class FabricNode(BaseNode):
         # The lookup is into the frame store above (returns None for a CID we do
         # not hold, so on_getdata never fabricates a body).
         self._inv = InventoryRelay(lambda cid: self._frames.get(cid))
+        # Erlay activation (#60): per-(peer, session) RESPONDER state. A reconcile
+        # session is a multi-round bisection; on the one-shot dict carrier each
+        # round is one dial, so the side being dialed must keep its
+        # ReconcileSession alive across dials. Keyed on the session id the
+        # initiator stamps. Bounded: a session is dropped as soon as it converges
+        # (an empty reply batch) and the map is integer-capped so a peer cannot
+        # leak unbounded sessions. The reconciler is socket/clock/RNG-free, so this
+        # touches no signed record and no hash path.
+        self._recon_sessions: dict[str, ReconcileSession] = {}
+        # Monotonic integer session-id counter (initiator side). Deterministic and
+        # injectable for tests via ``_recon_seq``; never a wall-clock/random value,
+        # so a replayed reconcile mints identical session ids.
+        self._recon_seq = 0
+        # Background reconcile loop handle (issue #60), opt-in like anti-entropy /
+        # gossip; stop() cancels it.
+        self._reconcile_task: "asyncio.Task | None" = None
         # One gossipsub mesh for the single web topic (#67 activated on top of the
         # #75 inv->getdata propagation). It is purely a TARGET SELECTOR: it decides
         # WHICH peers a weave eager-pushes to (the bounded <=D mesh) and WHICH get
@@ -276,6 +325,180 @@ class FabricNode(BaseNode):
         """
         await self.maintain_mesh()
         await self.gossip_tick()
+
+    # -- Erlay reconcile (issue #60 activation) ---------------------------
+
+    def _held_cids(self) -> list[str]:
+        """This node's authoritative CID set: the verbatim frame-store keys.
+
+        A CID is in the store iff this node holds the record's signed frame and can
+        re-serve it byte-identically (populated on every weave AND every ingest).
+        This is exactly the set a reconcile session bisects, and exactly the set
+        the inv path serves from — so a CID the session flags as locally-missing is
+        one ``inv-getdata`` can actually fetch.
+        """
+        return list(self._frames.keys())
+
+    def start_reconcile(
+        self,
+        peers: "list[PeerAddress] | None" = None,
+        *,
+        interval: int = 1,
+        sleep=None,
+    ) -> "asyncio.Task":
+        """Launch the periodic Erlay reconcile loop as a background task (#60).
+
+        Opt-in, exactly like :meth:`start_anti_entropy` / :meth:`start_gossip`:
+        nothing runs until this is called, so a plain ``start()`` keeps its
+        existing behaviour and every existing test is unaffected. Each tick runs
+        one :meth:`reconcile_tick`, which drives a :class:`ReconcileSession`
+        against every peer and fetches ONLY the locally-missing CIDs via the
+        existing ``inv-getdata`` path — O(diff) instead of an O(total) inv flood.
+
+        ``interval`` is an integer cadence (no wall-clock). The injected ``sleep``
+        defaults to :func:`asyncio.sleep`; a test passes a virtual-clock ``sleep``
+        so the cadence is deterministic with no real time. A raised tick is
+        swallowed (an offline peer this cycle) so one bad round never crashes the
+        loop — the next tick re-reconciles, and anti-entropy remains the backstop.
+        """
+        if not isinstance(interval, int) or isinstance(interval, bool):
+            raise TypeError("interval must be int")
+        if interval < 1:
+            raise ValueError("interval must be >= 1")
+        if self._reconcile_task is not None and not self._reconcile_task.done():
+            return self._reconcile_task
+        self._reconcile_task = asyncio.ensure_future(
+            self._gossip_run(
+                lambda: self.reconcile_tick(peers),
+                interval,
+                sleep or self._gossip_sleep,
+            )
+        )
+        return self._reconcile_task
+
+    async def stop_reconcile(self) -> None:
+        """Cancel the background reconcile loop if one is running."""
+        task = self._reconcile_task
+        self._reconcile_task = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    async def stop(self) -> None:
+        """Stop the listener and ALL background loops (adds reconcile to base).
+
+        :class:`~knitweb.p2p.base_node.BaseNode.stop` tears down the anti-entropy
+        and gossip loops; this override also cancels the opt-in reconcile loop
+        (#60) before delegating, so a node started with :meth:`start_reconcile`
+        shuts down just as cleanly as one started with the other loops.
+        """
+        await self.stop_reconcile()
+        await super().stop()
+
+    async def reconcile_tick(self, peers: "list[PeerAddress] | None" = None) -> int:
+        """One reconcile heartbeat: reconcile with every peer; return CIDs fetched.
+
+        Caller-driven (deterministic): a test ticks it explicitly; the #60 loop
+        ticks it on its integer cadence; :meth:`sync_from`-style reconnect can call
+        it directly. Per-peer transport faults are swallowed (an offline peer this
+        cycle) so one bad peer never sinks the tick — the next tick retries and the
+        anti-entropy backstop still converges that peer.
+        """
+        targets = peers if peers is not None else list(self.peerbook.all().values())
+        fetched = 0
+        for peer in targets:
+            try:
+                fetched += await self.reconcile_with(peer)
+            except (OSError, FabricNodeError, WireError):
+                continue
+        return fetched
+
+    async def reconcile_with(self, peer: PeerAddress) -> int:
+        """Reconcile our CID set with ``peer`` and fetch ONLY the CIDs we lack.
+
+        Drives a :class:`ReconcileSession` over the carrier: we open with a
+        full-keyspace probe (``inv-recon-req``), then ping-pong compact
+        ``(count, integer-xor-fingerprint)`` range summaries
+        (``inv-recon-range`` <-> ``inv-recon-result``) until the bisection has
+        zeroed in on the symmetric difference. The traffic is proportional to the
+        *diff*, not the inventory: an identical CID set prunes at the root in a
+        single round with zero CIDs exchanged.
+
+        The session's ``missing`` set is exactly the CIDs the peer holds and we
+        lack. We then issue ONE ``inv-getdata`` for precisely those CIDs; the peer
+        serves them as ``inv-data`` (the verbatim stored frames), which we ingest
+        through the same crypto gate as any other body — so byte-identity holds and
+        only ``|diff|`` bodies ever travel. Returns the number of newly-woven
+        records (``<= |missing|``).
+        """
+        session = ReconcileSession(self._held_cids())
+        self._recon_seq += 1
+        session_id = str(self._recon_seq)
+        # 1) open: send the first probe batch as inv-recon-req.
+        batch = session.open()
+        kind = RECON_REQ
+        while batch and not session.done:
+            resp = await self._send(
+                peer,
+                {
+                    "kind": kind,
+                    _RECON_SESSION_KEY: session_id,
+                    "frames": batch,
+                },
+            )
+            rkind = resp.get("kind")
+            if rkind == "error":
+                raise FabricNodeError(f"{resp.get('code')}: {resp.get('message')}")
+            if rkind != RECON_RESULT:
+                raise FabricNodeError(f"unexpected reconcile response kind: {rkind!r}")
+            reply = resp.get("frames")
+            if not isinstance(reply, list):
+                raise FabricNodeError("inv-recon-result frames must be a list")
+            batch = session.advance([bytes(fr) for fr in reply])
+            kind = RECON_RANGE
+        self.metrics.incr("reconcile_sessions")
+        # 2) fetch ONLY the locally-missing CIDs through the existing inv-getdata
+        #    path: one getdata for exactly the symmetric-difference CIDs we lack.
+        missing = sorted(session.missing)
+        if not missing:
+            return 0
+        self.metrics.incr("reconcile_missing", len(missing))
+        return await self._pull_cids(peer, missing)
+
+    async def _pull_cids(self, peer: PeerAddress, cids: list[str]) -> int:
+        """Fetch ``cids`` from ``peer`` via inv-getdata and ingest the bodies.
+
+        The pull leg of the lazy relay: we dial an ``inv-getdata`` naming exactly
+        the CIDs we lack, the peer replies ``inv-data`` carrying ONLY those bodies
+        (its stored frames verbatim), and we ingest each through the SAME
+        :meth:`_ingest_signed` crypto gate as a gossiped record — so a forged body
+        is rejected identically and a valid one keeps its exact CID. Returns the
+        number of newly-woven records.
+        """
+        if not cids:
+            return 0
+        resp = await self._send(peer, {"kind": GETDATA, "cids": cids})
+        kind = resp.get("kind")
+        if kind == "error":
+            raise FabricNodeError(f"{resp.get('code')}: {resp.get('message')}")
+        if kind != "inv-data":
+            # The peer no longer holds those CIDs (or answered an ack); nothing to
+            # ingest. Anti-entropy remains the backstop for that residue.
+            return 0
+        records = resp.get("records")
+        if not isinstance(records, list):
+            raise FabricNodeError("inv-data records must be a list")
+        added = 0
+        for item in records:
+            if self._ingest_signed(item):
+                added += 1
+        if added:
+            self.metrics.incr("reconcile_pulls", added)
+        return added
 
     # -- peer wiring ------------------------------------------------------
 
@@ -621,8 +844,12 @@ class FabricNode(BaseNode):
             return self._serve_sync()
         elif kind == INV:
             return self._serve_inv(msg)
+        elif kind == GETDATA:
+            return self._serve_getdata(msg)
         elif kind == "inv-data":
             return self._serve_inv_data(msg)
+        elif kind in (RECON_REQ, RECON_RANGE):
+            return self._serve_recon(kind, msg)
         elif kind in (GRAFT, PRUNE, IHAVE, IWANT):
             return self._serve_mesh(kind, msg)
         return {"kind": "error", "code": "unknown-kind", "message": str(kind)}
@@ -713,3 +940,66 @@ class FabricNode(BaseNode):
         for item in records:
             self._ingest_signed(item)
         return {"kind": "inv-ack"}
+
+    def _serve_getdata(self, msg: dict) -> dict:
+        """Handle an inbound ``inv-getdata`` (the reconcile PULL leg): serve bodies.
+
+        A reconciling peer that discovered it lacks some CIDs dials this with the
+        exact symmetric-difference CIDs it wants. We return an ``inv-data`` carrying
+        ONLY those bodies — the **stored frame bytes verbatim** via
+        :meth:`InventoryRelay.on_getdata`, decoded to their envelope maps to ride
+        the dict carrier — so the served bytes (and each record's CID) are
+        byte-identical, and a CID we do not hold is silently skipped (never
+        fabricated). This is the inverse direction of the eager :meth:`_announce_to`
+        push: there WE serve after announcing; here the peer pulls exactly its diff.
+        """
+        cids = msg.get("cids")
+        if not isinstance(cids, list):
+            raise FabricNodeError("inv-getdata cids must be a list")
+        frames = self._inv.on_getdata(inventory.build_getdata_frame(cids))
+        if not frames:
+            return {"kind": "inv-ack"}
+        records = [wire.read_frame_bytes(fr) for fr in frames]
+        self.metrics.incr("inv_served", len(records))
+        return {"kind": "inv-data", "records": records}
+
+    # -- Erlay reconcile server side (issue #60) --------------------------
+
+    def _serve_recon(self, kind, msg: dict) -> dict:
+        """Handle an inbound reconcile batch: drive the RESPONDER session, reply.
+
+        A reconcile session is a multi-round bisection; on the one-shot carrier
+        each round is one dial, so we keep a :class:`ReconcileSession` alive per
+        session id (stamped by the initiator in ``_RECON_SESSION_KEY``). On the
+        OPENING batch (``inv-recon-req``) we create the session over our current
+        held CID set; on each batch we feed its frames to the session and reply with
+        the frames it produced. An empty reply means we pruned/answered every range
+        — the session has converged — so we drop it (bounded state). Only range
+        summaries and CID lists ride these envelopes; no record body, so a signed
+        record's byte-identity is untouched. The reply is an ``inv-recon-result``.
+        """
+        session_id = msg.get(_RECON_SESSION_KEY)
+        if not isinstance(session_id, str) or not session_id:
+            raise FabricNodeError("reconcile frame missing session id")
+        frames = msg.get("frames")
+        if not isinstance(frames, list):
+            raise FabricNodeError("reconcile frames must be a list")
+        batch = [bytes(fr) for fr in frames]
+        if kind == RECON_REQ:
+            # A fresh request opens a new responder session over our held CIDs. Cap
+            # the session table so a peer cannot leak unbounded session state.
+            if len(self._recon_sessions) >= _MAX_RECON_SESSIONS:
+                self._recon_sessions.pop(next(iter(self._recon_sessions)))
+            session = ReconcileSession(self._held_cids())
+            self._recon_sessions[session_id] = session
+        else:
+            session = self._recon_sessions.get(session_id)
+            if session is None:
+                # Unknown/expired session (e.g. we converged + dropped it already):
+                # an empty result ends the exchange cleanly on the initiator side.
+                return {"kind": RECON_RESULT, "frames": []}
+        reply = session.respond(batch)
+        if not reply or session.done:
+            # Converged on our side: free the session state immediately.
+            self._recon_sessions.pop(session_id, None)
+        return {"kind": RECON_RESULT, "frames": reply}

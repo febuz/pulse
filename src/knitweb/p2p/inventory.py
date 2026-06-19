@@ -60,11 +60,17 @@ __all__ = [
     "SeenSet",
     "INV",
     "GETDATA",
+    "RECON_REQ",
+    "RECON_RANGE",
+    "RECON_RESULT",
+    "MAX_RECON_FRAMES",
     "record_cid",
     "build_inv_frame",
     "parse_inv_frame",
     "build_getdata_frame",
     "parse_getdata_frame",
+    "build_recon_frame",
+    "parse_recon_frame",
     "InventoryRelay",
 ]
 
@@ -73,11 +79,42 @@ __all__ = [
 INV = "inv-announce"
 GETDATA = "inv-getdata"
 
+# Erlay activation (#60): the inv-reconcile message family. A reconcile *session*
+# (the recursive range/bucket bisection in :mod:`knitweb.p2p.reconcile`) is a
+# multi-round ping-pong of ``reconcile-probe`` / ``reconcile-leaf`` frames. To
+# ride the one-request/one-response dict carrier (a pure-push topology where the
+# peer needs no route back to the initiator), each round's *batch* of reconcile
+# frames travels inside ONE of these envelopes:
+#
+#   * ``inv-recon-req``    — the initiator opens a session: its first probe batch
+#                            (a single full-keyspace ``reconcile-probe``).
+#   * ``inv-recon-range``  — a subsequent batch of probe/leaf frames the initiator
+#                            sends after receiving the responder's last batch.
+#   * ``inv-recon-result`` — the responder's reply batch (what its Reconciler
+#                            produced for the batch it just received); an empty
+#                            batch signals the responder pruned/answered all ranges
+#                            and the session has converged.
+#
+# Only ``(count, integer-xor-fingerprint)`` range summaries and bare CID *lists*
+# ever ride these envelopes — never a record body — so a signed record's
+# byte-identity (and CID) is untouched by reconciliation, exactly as the lazy
+# inv -> getdata path keeps it untouched. The differing CIDs the session
+# discovers are fetched through the EXISTING inv-getdata path, verbatim.
+RECON_REQ = "inv-recon-req"
+RECON_RANGE = "inv-recon-range"
+RECON_RESULT = "inv-recon-result"
+
 # Cap the number of CIDs a single frame may carry. An inv/getdata is a list of
 # fixed-width content addresses; bounding it keeps a frame small (the whole point
 # of announcing instead of flooding) and stops a peer from forcing an unbounded
 # allocation with one giant frame. wire.MAX_FRAME_BYTES is the hard backstop.
 MAX_CIDS_PER_FRAME = 50_000
+
+# Cap the number of reconcile frames a single envelope batch may carry. A bisection
+# level fans out by at most ``reconcile.FANOUT`` per mismatching range, so an honest
+# batch is small; this bounds a malicious peer from forcing an unbounded batch in
+# one envelope. wire.MAX_FRAME_BYTES is the hard backstop.
+MAX_RECON_FRAMES = 50_000
 
 
 class InventoryError(ValueError):
@@ -238,6 +275,60 @@ def parse_getdata_frame(frame: bytes) -> List[str]:
     if not isinstance(cids, list):
         raise InventoryError("getdata cids must be a list")
     return _check_cid_list(cids)
+
+
+# ---------------------------------------------------------------------------
+# Reconcile envelope codec — carry a batch of reconcile frames over the carrier
+# ---------------------------------------------------------------------------
+
+# A reconcile batch is a list of opaque ``reconcile-probe`` / ``reconcile-leaf``
+# wire frames (each already a length-prefixed canonical-CBOR frame produced by
+# :mod:`knitweb.p2p.reconcile`). The envelope just carries that ordered list of
+# byte strings under one ``inv-recon-*`` kind so a round of bisection rides a
+# single carrier dial; the envelope never decodes the inner frames, so the
+# byte-identity of each reconcile frame (and the determinism of the session) is
+# preserved exactly.
+
+
+def _check_recon_batch(frames: Iterable[bytes]) -> List[bytes]:
+    out: List[bytes] = []
+    for fr in frames:
+        if not isinstance(fr, (bytes, bytearray)):
+            raise InventoryError("reconcile batch entries must be bytes")
+        out.append(bytes(fr))
+    if len(out) > MAX_RECON_FRAMES:
+        raise InventoryError(
+            f"too many reconcile frames in one batch: {len(out)} > {MAX_RECON_FRAMES}"
+        )
+    return out
+
+
+def build_recon_frame(kind: str, frames: Iterable[bytes]) -> bytes:
+    """Build one length-prefixed reconcile *envelope* frame of ``kind``.
+
+    ``kind`` is one of :data:`RECON_REQ` / :data:`RECON_RANGE` /
+    :data:`RECON_RESULT`. ``frames`` is the ordered batch of opaque reconcile
+    frame bytes for this round (each a ``reconcile-probe`` / ``reconcile-leaf``
+    frame built by :mod:`knitweb.p2p.reconcile`). The batch may be empty — an
+    empty :data:`RECON_RESULT` is exactly how the responder signals convergence.
+    """
+    if kind not in (RECON_REQ, RECON_RANGE, RECON_RESULT):
+        raise InventoryError(f"not a reconcile envelope kind: {kind!r}")
+    return wire.write_frame_bytes(
+        {"kind": kind, "frames": _check_recon_batch(frames)}
+    )
+
+
+def parse_recon_frame(frame: bytes) -> Tuple[str, List[bytes]]:
+    """Parse a reconcile envelope -> ``(kind, [reconcile frame bytes, ...])``."""
+    msg = wire.read_frame_bytes(frame)
+    kind = msg.get("kind")
+    if kind not in (RECON_REQ, RECON_RANGE, RECON_RESULT):
+        raise InventoryError("not a reconcile envelope frame")
+    frames = msg.get("frames")
+    if not isinstance(frames, list):
+        raise InventoryError("reconcile envelope frames must be a list")
+    return kind, _check_recon_batch(frames)
 
 
 # ---------------------------------------------------------------------------

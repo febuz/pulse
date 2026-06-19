@@ -82,6 +82,7 @@ __all__ = [
     "build_leaf_frame",
     "parse_leaf_frame",
     "Reconciler",
+    "ReconcileSession",
     "reconcile_pair",
 ]
 
@@ -520,6 +521,97 @@ class Reconciler:
             return []
         self._answered_leaves.add(key)
         return [build_leaf_frame(lo, hi, my_cids)]
+
+
+# ---------------------------------------------------------------------------
+# ReconcileSession — carrier-oriented session lifecycle around a Reconciler
+# ---------------------------------------------------------------------------
+
+class ReconcileSession:
+    """A carrier-oriented session lifecycle wrapper around one :class:`Reconciler`.
+
+    :class:`Reconciler` is the pure range-bisection state machine: feed it a
+    frame, get back the reply frame(s). It is symmetric and has no notion of
+    "session" — it does not know when the exchange is over. :class:`ReconcileSession`
+    adds exactly that lifecycle so the bisection can ride a **one-request /
+    one-response** carrier (the live :class:`~knitweb.fabric.node.FabricNode` dial
+    model, a pure-push topology where the peer needs no route back to us): each
+    carrier round trip carries one *batch* of reconcile frames each way.
+
+      * The **initiator** calls :meth:`open` once to get the first probe batch,
+        dials it, feeds the response batch to :meth:`advance` to get the next
+        batch, and repeats until :meth:`advance` returns an empty batch — the
+        session has converged. :attr:`missing` then holds exactly the CIDs the
+        initiator lacks (handed to the inv-getdata path).
+      * The **responder** is created fresh per session id, and calls
+        :meth:`respond` on each inbound batch to produce its reply batch; its own
+        :attr:`missing` accumulates what *it* lacks (which it reconciles back on
+        its own next initiation, or via the anti-entropy backstop).
+
+    The session never touches a socket, a clock, or randomness: it is the same
+    deterministic state machine as :func:`reconcile_pair`, just sliced into
+    carrier-sized batches. ``done`` flips ``True`` once a batch produces no reply,
+    so a driver knows to stop dialing.
+    """
+
+    def __init__(
+        self,
+        cids: Iterable[str],
+        *,
+        fanout: int = FANOUT,
+        leaf_max: int = LEAF_MAX,
+        max_depth: int = MAX_DEPTH,
+        max_rounds: int | None = None,
+    ) -> None:
+        self._recon = Reconciler(
+            cids, fanout=fanout, leaf_max=leaf_max, max_depth=max_depth
+        )
+        # Defensive round ceiling, mirroring reconcile_pair's bound: the keyspace
+        # partition depth times a safety factor. A driver that exceeds it raises
+        # rather than dialing forever against a pathological/adversarial peer.
+        self._max_rounds = (
+            max_rounds
+            if max_rounds is not None
+            else (max_depth + 2) * (fanout + 2) * 64
+        )
+        self.rounds = 0
+        self.done = False
+
+    @property
+    def missing(self) -> set:
+        """CIDs this side learned it lacks (for handoff to inv-getdata)."""
+        return self._recon.missing
+
+    def open(self) -> List[bytes]:
+        """Initiator: the opening probe batch (a full-keyspace probe)."""
+        return self._recon.open()
+
+    def advance(self, batch: Iterable[bytes]) -> List[bytes]:
+        """Initiator: consume the responder's reply batch, return the next batch.
+
+        Returns ``[]`` (and sets :attr:`done`) once the exchange has converged —
+        i.e. the responder's last batch produced no further frames on our side.
+        """
+        return self._consume(batch)
+
+    def respond(self, batch: Iterable[bytes]) -> List[bytes]:
+        """Responder: consume one inbound batch, return our reply batch.
+
+        Symmetric to :meth:`advance`; named separately only for call-site clarity
+        on each end of the carrier.
+        """
+        return self._consume(batch)
+
+    def _consume(self, batch: Iterable[bytes]) -> List[bytes]:
+        self.rounds += 1
+        if self.rounds > self._max_rounds:
+            raise ReconcileError("reconcile session did not converge within bound")
+        replies: List[bytes] = []
+        for frame in batch:
+            replies.extend(self._recon.on_frame(frame))
+        if not replies:
+            self.done = True
+        return replies
 
 
 # ---------------------------------------------------------------------------
