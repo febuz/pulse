@@ -185,6 +185,78 @@ def test_sample_k_bounds_and_known():
     assert set(book.known()) == set(book.sample(None))
 
 
+# -- multi-/16 flood (realistic /8-owning attacker) -------------------------
+
+
+@pytest.mark.property
+def test_multi_slash16_flood_tried_peers_survive_in_top8():
+    """A /8-owning attacker (256 distinct /16s, 256 distinct sources) cannot eclipse
+    honest peers that have been promoted to the tried table.
+
+    The new-table diversity guarantee (round-robin + per-bucket caps) narrows when the
+    attacker spans *many* /16s with *many* source groups: each (src_group, addr_group)
+    pair maps to a distinct new-table bucket, so the attacker can spread across the
+    whole new table rather than being confined to a few buckets.  In that scenario,
+    tried-promotion is the load-bearing eclipse defence: tried peers are emitted first
+    by sample() (tried_bias=True) regardless of how saturated the new table is, so any
+    honest peer we have actually dialled always beats every new-table attacker entry.
+
+    This test instantiates that exact scenario:
+      * 8 honest peers promoted to the tried table (simulating successful dials).
+      * 5120 attacker addresses spread across 256 distinct /16s from 256 distinct
+        source /16s (a realistic /8-owning attacker).
+    Assert: all 8 honest tried peers appear in sample(k=8), proving tried-promotion
+    is the load-bearing eclipse defence that survives multi-/16 flooding.
+    """
+    book = AddrBook(SECRET)
+
+    # Honest peers: span distinct /16s to avoid tried-table slot collisions under
+    # test-before-evict (two peers hashing to the same (bucket, slot) would leave
+    # the second unplaced — that is correct table behaviour, not a test flaw).
+    honest_candidates = [
+        _p(f"{a}.{b}.0.1", 9000 + a * 10 + b)
+        for a in range(1, 240, 20)
+        for b in range(0, 20, 5)
+    ]
+    honest_tried: list[PeerAddress] = []
+    for h in honest_candidates:
+        book.add_new(h, source=_p("8.8.8.8"))
+        if book.mark_tried(h):
+            honest_tried.append(h)
+        if len(honest_tried) >= 8:
+            break
+
+    assert len(honest_tried) == 8, (
+        f"setup: could not place 8 honest peers in tried table "
+        f"(placed {len(honest_tried)}); expand honest_candidates"
+    )
+
+    # Attacker: owns a full /8 = 256 distinct /16s; uses 256 distinct source /16s.
+    # 20 addresses per (src_group, addr_group) pair -> 5120 addresses total.
+    # Each (src_group, addr_group) pair hashes to a distinct new-table bucket, so
+    # the flood saturates many buckets across the whole new table — the worst case
+    # that the single-/16 test does NOT cover.
+    for s16 in range(256):
+        src = _p(f"66.{s16}.0.1")
+        for j in range(20):
+            book.add_new(_p(f"10.{s16}.{j}.1", 7000 + j), source=src)
+
+    assert book.tried_count() == 8  # honest peers are still in tried
+    # new table is heavily populated by the flood
+    assert book.new_count() > DEFAULT_BUCKET_SIZE * 8
+
+    # tried_bias=True: tried peers are emitted before any new-table peer.
+    top8 = book.sample(k=8)
+    honest_in_top8 = [p for p in top8 if p in honest_tried]
+
+    # All 8 honest tried peers must survive in the top-8 sample.
+    assert set(honest_in_top8) == set(honest_tried), (
+        f"Multi-/16 flood eclipsed honest tried peers; "
+        f"only {len(honest_in_top8)} of {len(honest_tried)} survived in top-8. "
+        f"tried_count={book.tried_count()}, new_count={book.new_count()}"
+    )
+
+
 # -- byte-identity / canonical safety (SACRED) ------------------------------
 
 

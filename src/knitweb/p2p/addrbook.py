@@ -300,6 +300,30 @@ class AddrBook:
         With ``tried_bias`` (default) proven (*tried*) peers are preferred over merely-heard
         (*new*) ones, matching Bitcoin Core's preference for addresses we have reached before.
         ``k=None`` returns everything (still in the diversity-spread order).
+
+        Eclipse-defence layers, from strongest to narrowest:
+
+        1. **Tried-promotion is the load-bearing defence** (``tried_bias=True``, the
+           default).  Addresses we have *actually connected to* occupy the *tried* table and
+           are emitted first, before any *new*-table entry.  A realistic multi-``/16`` attacker
+           owning a full ``/8`` (256 distinct ``/16`` prefixes, each with a distinct source
+           group) can saturate the *new* table's per-bucket slots across many buckets — the
+           round-robin diversity guarantee is narrower there.  But the *tried* table is
+           populated only by live contacts, so an attacker who has never successfully dialled
+           in cannot occupy a tried slot.  Any honest peer we have connected to therefore
+           survives in the tried table and beats every new-table attacker entry in ``sample``.
+           Call :meth:`mark_tried` after every successful dial to activate this layer.
+
+        2. **New-table diversity** (round-robin + per-bucket caps) limits the fraction of
+           the sample a single source group or address group can occupy, but it is a
+           *narrower* guarantee: a sufficiently diverse attacker (many ``/16`` prefixes,
+           many source groups) can still fill large parts of the new table.  The new-table
+           guarantee is "no single ``/16`` dominates"; it is not "honest peers survive
+           against an attacker spanning many ``/16``s."
+
+        Therefore: if the node has any tried peers, those are always presented first and
+        form the eclipse-resistant core; the new table is a discovery supplement, not the
+        primary safety net.
         """
         ordered = self._round_robin(self._tried) if tried_bias else []
         if tried_bias:
