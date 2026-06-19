@@ -12,6 +12,7 @@ import asyncio
 from dataclasses import dataclass
 
 from ..core import crypto
+from .anti_entropy import AntiEntropy, Backoff, SyncRound
 from ..fabric.equivocation import (
     EquivocationReport,
     prove_equivocation,
@@ -150,6 +151,11 @@ class AsyncioP2PNode:
         for tr in [self.transport, *(extra_transports or [])]:
             self.dialer.register(tr)
         self._listening = False
+        # Opt-in self-healing convergence loop (issue #44). Off by default — a
+        # node only starts re-bootstrapping + re-syncing on a background task
+        # once start_anti_entropy is called, so existing serve behaviour is
+        # unchanged. The handle lets stop() cancel the loop cleanly.
+        self._anti_entropy_task: "asyncio.Task | None" = None
 
     # -- server lifecycle -------------------------------------------------
 
@@ -177,11 +183,115 @@ class AsyncioP2PNode:
         self._listening = True
 
     async def stop(self) -> None:
-        """Stop the listener."""
+        """Stop the listener (and any running anti-entropy loop)."""
+        await self.stop_anti_entropy()
         if not self._listening:
             return
         await self.transport.close()
         self._listening = False
+
+    def start_anti_entropy(
+        self,
+        peers: "list[PeerAddress] | None" = None,
+        *,
+        feeds: "list[str] | None" = None,
+        interval: int = 1,
+        ceiling: int = 64,
+        sleep=None,
+    ) -> "asyncio.Task":
+        """Launch the self-healing anti-entropy loop as a background task (#44).
+
+        Opt-in: nothing runs until this is called, so a plain ``start()`` keeps
+        its existing behaviour. The loop periodically re-bootstraps the peer
+        directory and re-pulls every named feed, so a peer that fell out of the
+        Web after a disconnect climbs back in and re-converges on reconnect.
+
+        ``peers`` are dialed as PEX seeds each cycle (``None`` uses the configured
+        peerbook); ``feeds`` are the feed ids to re-sync from those peers. The
+        injected clock defaults to :func:`asyncio.sleep` (the prod clock); a test
+        passes a virtual-clock ``sleep`` so convergence is deterministic with no
+        real time. The schedule is the integer backoff from #43. The driver
+        swallows a failed round, so a refusing/dropped peer never crashes the
+        loop. Returns the background task.
+        """
+        if self._anti_entropy_task is not None and not self._anti_entropy_task.done():
+            return self._anti_entropy_task
+        rounds = self._anti_entropy_rounds(peers, feeds)
+        driver = AntiEntropy(
+            rounds,
+            sleep=sleep or self._anti_entropy_sleep,
+            backoff=Backoff(base=interval, ceiling=ceiling),
+        )
+        self._anti_entropy = driver
+        self._anti_entropy_task = asyncio.ensure_future(self._anti_entropy_run(driver))
+        return self._anti_entropy_task
+
+    async def stop_anti_entropy(self) -> None:
+        """Cancel the background anti-entropy loop if one is running."""
+        task = self._anti_entropy_task
+        self._anti_entropy_task = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    @staticmethod
+    async def _anti_entropy_sleep(delay: int) -> None:
+        # The prod clock: a seconds-based asyncio sleep. Tests inject a virtual
+        # clock by driving the AntiEntropy driver directly instead.
+        await asyncio.sleep(delay)
+
+    async def _anti_entropy_run(self, driver: AntiEntropy) -> None:
+        # Drive cycles forever (until cancelled). Each cycle re-bootstraps and
+        # re-syncs; the driver already swallows a failed round, so a dropped peer
+        # only backs the schedule off rather than crashing the loop.
+        try:
+            while True:
+                await driver.run_cycle()
+        except asyncio.CancelledError:
+            raise
+
+    def _anti_entropy_rounds(
+        self,
+        peers: "list[PeerAddress] | None",
+        feeds: "list[str] | None",
+    ) -> "list[SyncRound]":
+        seeds = peers  # None → bootstrap_peers falls back to the peerbook
+
+        async def bootstrap_round() -> int:
+            return await self.bootstrap_peers(seeds)
+
+        rounds: list[SyncRound] = [bootstrap_round]
+        for feed_id in feeds or []:
+            rounds.append(self._make_feed_round(feed_id, seeds))
+        return rounds
+
+    def _make_feed_round(
+        self, feed_id: str, seeds: "list[PeerAddress] | None"
+    ) -> "SyncRound":
+        async def feed_round() -> int:
+            targets = seeds if seeds is not None else list(self.peerbook.all().values())
+            pulled = 0
+            for peer in targets:
+                before = self._feed_length(feed_id)
+                # A refusing/unreachable peer raises here; the driver treats a
+                # cycle where *every* round raised as a failure and backs off,
+                # but a single bad peer among several never sinks the round.
+                try:
+                    await self.sync_feed(peer, feed_id)
+                except (P2PError, WireError, OSError):
+                    continue
+                pulled += max(0, self._feed_length(feed_id) - before)
+            return pulled
+
+        return feed_round
+
+    def _feed_length(self, feed_id: str) -> int:
+        replica = self._owned_or_replicated(feed_id)
+        return replica.head.length if replica is not None else 0
 
     async def __aenter__(self) -> "AsyncioP2PNode":
         await self.start()

@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 
 from ..core import canonical, crypto
+from ..p2p.anti_entropy import AntiEntropy, Backoff, SyncRound
 from .items import web_state_root
 from .web import Web
 from ..p2p.metrics import Metrics
@@ -99,6 +100,10 @@ class FabricNode:
         # no signed record and no hash path, so a woven Knit's CID is unchanged.
         self.metrics = Metrics()
         self._listening = False
+        # Opt-in self-healing convergence loop (issue #44). Off by default: a
+        # node only starts re-syncing on a background task once
+        # start_anti_entropy is called, so existing serve behaviour is unchanged.
+        self._anti_entropy_task: "asyncio.Task | None" = None
 
     # -- server lifecycle -------------------------------------------------
 
@@ -131,10 +136,101 @@ class FabricNode:
         self._listening = True
 
     async def stop(self) -> None:
+        await self.stop_anti_entropy()
         if not self._listening:
             return
         await self.transport.close()
         self._listening = False
+
+    # -- self-healing anti-entropy (issue #44) ----------------------------
+
+    def start_anti_entropy(
+        self,
+        peers: "list[PeerAddress] | None" = None,
+        *,
+        interval: int = 1,
+        ceiling: int = 64,
+        sleep=None,
+    ) -> "asyncio.Task":
+        """Launch the self-healing anti-entropy loop as a background task (#44).
+
+        Opt-in: nothing runs until this is called, so a plain ``start()`` keeps
+        its existing behaviour. The loop periodically re-pulls every peer's Web
+        snapshot via :meth:`sync_from`, so a node that drifted apart after a
+        disconnect re-converges on its peer's ``state_root`` once the peer is
+        reachable again.
+
+        ``peers`` are the endpoints to re-sync from (``None`` uses the configured
+        peerbook). The injected clock defaults to :func:`asyncio.sleep` (the prod
+        clock); a test passes a virtual-clock ``sleep`` so convergence is
+        deterministic with no real time. The schedule is the integer backoff from
+        #43. The driver swallows a failed round, so a dropped/refusing peer backs
+        the schedule off rather than crashing the loop; on reconnect the next
+        round re-syncs and the node re-converges.
+        """
+        if self._anti_entropy_task is not None and not self._anti_entropy_task.done():
+            return self._anti_entropy_task
+        driver = AntiEntropy(
+            self._anti_entropy_rounds(peers),
+            sleep=sleep or self._anti_entropy_sleep,
+            backoff=Backoff(base=interval, ceiling=ceiling),
+        )
+        self._anti_entropy = driver
+        self._anti_entropy_task = asyncio.ensure_future(self._anti_entropy_run(driver))
+        return self._anti_entropy_task
+
+    async def stop_anti_entropy(self) -> None:
+        """Cancel the background anti-entropy loop if one is running."""
+        task = self._anti_entropy_task
+        self._anti_entropy_task = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    @staticmethod
+    async def _anti_entropy_sleep(delay: int) -> None:
+        # The prod clock: a seconds-based asyncio sleep. Tests inject a virtual
+        # clock by driving the AntiEntropy driver directly instead.
+        await asyncio.sleep(delay)
+
+    async def _anti_entropy_run(self, driver: AntiEntropy) -> None:
+        try:
+            while True:
+                await driver.run_cycle()
+        except asyncio.CancelledError:
+            raise
+
+    def _anti_entropy_rounds(
+        self, peers: "list[PeerAddress] | None"
+    ) -> "list[SyncRound]":
+        async def sync_round() -> int:
+            targets = (
+                peers if peers is not None else list(self.peerbook.all().values())
+            )
+            if not targets:
+                return 0
+            pulled = 0
+            reached = False
+            for peer in targets:
+                # A dropped/refusing peer raises here; swallow it so one bad peer
+                # never sinks the round. If *every* peer raised the round itself
+                # raises (below), and the driver backs the schedule off.
+                try:
+                    pulled += await self.sync_from(peer)
+                except (OSError, FabricNodeError, WireError):
+                    continue
+                reached = True
+            if not reached:
+                # No peer was reachable this cycle: surface a failed round so the
+                # driver escalates the backoff (it swallows the raise itself).
+                raise FabricNodeError("no peer reachable for anti-entropy round")
+            return pulled
+
+        return [sync_round]
 
     async def __aenter__(self) -> "FabricNode":
         await self.start()
