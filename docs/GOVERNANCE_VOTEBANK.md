@@ -94,6 +94,21 @@ exactly what was pledged), and like `pouw/dispute.py` this is **advisory integer
 exponentially more** — a campaign gaining backers *now* reads hotter than a stalled one —
 without affecting the all-or-nothing settlement.
 
+## 5. Bluetooth local backers (`govern/proximity.py`)
+
+Some crowdfunding is inherently *local* — a neighbourhood repair, a village solar array. For
+those, "anyone on the internet can pledge" is the wrong gate; you want backers who are **actually
+there**. A `Campaign` may advertise a **beacon** (a BLE anchor at the place) and require
+`min_local_backers` who present a `ProximityProof`: a content-addressed record that their device
+(the same IMEI the freeport on-ramp keys on) was within Bluetooth range (`rssi_dbm`) of that
+beacon, co-timed with the pledge (`proximity_window` beats).
+
+This is an **orthogonal gate to capital**: presence can't be faked from afar. A proof for the
+wrong backer/beacon is rejected; one merely out of range or stale is accepted as an ordinary
+(non-local) pledge. `is_goal_met()` then requires capital **and** breadth **and** local presence.
+Integer/hash only (signal strength is integer dBm; the proof is content-addressed). Beacon
+co-signing of the encounter is a noted production-hardening follow-up.
+
 ## Why these choices
 
 - **Anchored supply, not fiat.** Tying the cap to registered humans + births is what keeps
@@ -123,3 +138,8 @@ full register → issue → recency-weighted vote loop.
 back; one backing per person (no whale stuffing); capital-met-but-breadth-missing expires;
 underfunded refunds everyone; funded releases all to beneficiary; resolve idempotent and closes
 pledging; freeport backers count for breadth; momentum weights recent backing more.
+
+`tests/property/test_govern_proximity.py` — proximity proof validation + BLE range; local pledge
+counts when present; capital met but no local presence expires; out-of-range/stale proof is
+non-local (not an error); wrong-backer/beacon proof rejected; `min_local_backers` requires a
+beacon; freeport device can be a local backer; non-local campaigns unaffected.

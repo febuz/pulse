@@ -29,6 +29,7 @@ from enum import Enum
 from typing import List, Optional, Set, Tuple
 
 from ..core import canonical
+from .proximity import ProximityProof
 from .registry import Registration
 from .tally import Decay, Vote, tally
 from .votebank import VoteBank
@@ -44,11 +45,13 @@ class CampaignStatus(Enum):
     EXPIRED = "expired"    # not met at resolution → every backer refunded
 
 
-def _require_int(name: str, value: int, *, minimum: int) -> int:
+def _require_int(name: str, value: int, *, minimum: int, maximum: Optional[int] = None) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         raise TypeError(f"{name} must be int, not {type(value).__name__}")
     if value < minimum:
         raise ValueError(f"{name} must be >= {minimum} (got {value})")
+    if maximum is not None and value > maximum:
+        raise ValueError(f"{name} must be <= {maximum} (got {value})")
     return value
 
 
@@ -113,6 +116,10 @@ class Campaign:
         *,
         min_backers: int = 1,
         created: int = 0,
+        beacon: Optional[str] = None,
+        min_local_backers: int = 0,
+        proximity_window: int = 0,
+        min_rssi_dbm: int = -90,
     ) -> None:
         if not isinstance(bank, VoteBank):
             raise TypeError("bank must be a VoteBank")
@@ -125,18 +132,40 @@ class Campaign:
             raise ValueError("deadline must be >= created")
         self.min_backers = _require_int("min_backers", min_backers, minimum=1)
 
+        # Bluetooth local backing: optionally require N backers physically present at a beacon.
+        self.beacon = _require_text("beacon", beacon) if beacon is not None else None
+        self.min_local_backers = _require_int("min_local_backers", min_local_backers, minimum=0)
+        self.proximity_window = _require_int("proximity_window", proximity_window, minimum=0)
+        self.min_rssi_dbm = _require_int("min_rssi_dbm", min_rssi_dbm, minimum=-120, maximum=0)
+        if self.min_local_backers > 0 and self.beacon is None:
+            raise ValueError("min_local_backers requires a beacon to attest presence against")
+
         self.status = CampaignStatus.OPEN
         self._pledges: List[Pledge] = []
         self._backers: Set[str] = set()
+        self._local_backers: Set[str] = set()
         self._result: Optional[CampaignResult] = None
 
     # -- backing ----------------------------------------------------------------------
 
-    def pledge(self, registration: Registration, amount: int, *, beat: int) -> Optional[Pledge]:
+    def pledge(
+        self,
+        registration: Registration,
+        amount: int,
+        *,
+        beat: int,
+        proximity: Optional[ProximityProof] = None,
+    ) -> Optional[Pledge]:
         """Back this campaign once with ``amount`` PLS-wei. None if this person already backed.
 
         Requires the campaign OPEN, the person **registered** in the bank's registry, and the
         pledge to land within ``[created, deadline]``. One backing per person (votebank rule).
+
+        An optional ``proximity`` proof marks the pledge as a **local** (Bluetooth-present)
+        backing: the proof must be for this ``subject`` and the campaign's ``beacon``, in range
+        (``rssi_dbm >= min_rssi_dbm``) and co-timed within ``proximity_window`` beats of the
+        pledge. A proof that names the wrong backer/beacon is rejected; one merely out of
+        range/stale is accepted as an ordinary (non-local) pledge.
         """
         if not isinstance(registration, Registration):
             raise TypeError("registration must be a Registration")
@@ -155,10 +184,29 @@ class Campaign:
         if subject in self._backers:
             return None  # one backing per person — no whale stuffing the ballot
 
+        is_local = self._verify_local(subject, beat, proximity)
+
         pledge = Pledge(backer=subject, amount=amount, beat=beat)
         self._backers.add(subject)
+        if is_local:
+            self._local_backers.add(subject)
         self._pledges.append(pledge)
         return pledge
+
+    def _verify_local(self, subject: str, beat: int, proximity: Optional[ProximityProof]) -> bool:
+        """Validate a Bluetooth proximity proof; return whether the pledge counts as local."""
+        if proximity is None:
+            return False
+        if not isinstance(proximity, ProximityProof):
+            raise TypeError("proximity must be a ProximityProof")
+        if self.beacon is None:
+            raise ValueError("campaign has no beacon — it does not accept local proximity proofs")
+        if proximity.backer != subject:
+            raise ValueError("proximity proof is for a different backer")
+        if proximity.beacon != self.beacon:
+            raise ValueError("proximity proof is for a different beacon")
+        in_time = abs(proximity.beat - beat) <= self.proximity_window
+        return proximity.is_within_range(self.min_rssi_dbm) and in_time
 
     # -- views ------------------------------------------------------------------------
 
@@ -170,9 +218,17 @@ class Campaign:
         """Distinct registered people backing the campaign (its breadth)."""
         return len(self._backers)
 
+    def local_backers(self) -> int:
+        """Distinct backers who attested Bluetooth presence at the campaign's beacon."""
+        return len(self._local_backers)
+
     def is_goal_met(self) -> bool:
-        """True iff both the capital goal and the breadth threshold are currently satisfied."""
-        return self.total_raised() >= self.goal and self.backers() >= self.min_backers
+        """True iff the capital, breadth, and local-presence thresholds are all satisfied."""
+        return (
+            self.total_raised() >= self.goal
+            and self.backers() >= self.min_backers
+            and self.local_backers() >= self.min_local_backers
+        )
 
     def momentum(self, *, now: int, decay: Optional[Decay] = None) -> int:
         """Recency-weighted backing: recent pledges weigh exponentially more (governance tally).
@@ -224,6 +280,8 @@ class Campaign:
             "deadline": self.deadline,
             "min_backers": self.min_backers,
             "created": self.created,
+            "beacon": self.beacon,
+            "min_local_backers": self.min_local_backers,
         }
 
     @property

@@ -11,7 +11,8 @@ changes):
   * :mod:`~knitweb.govern.tally` — aggregates cast votes so **more recent votes weigh
     exponentially more**, via an integer geometric decay.
   * :mod:`~knitweb.govern.crowdfund` — applies the one-person-one-vote rule to funding
-    (**one person, one backing**): all-or-nothing campaigns gated on breadth + capital.
+    (**one person, one backing**): all-or-nothing campaigns gated on breadth + capital, with an
+    optional Bluetooth **local-backers** presence gate (:mod:`~knitweb.govern.proximity`).
 """
 
 from .registry import (
@@ -24,6 +25,7 @@ from .registry import (
 from .tally import Decay, Vote, WeightedTally, tally
 from .votebank import VoteBank, VoteIssuance
 from .crowdfund import Campaign, CampaignResult, CampaignStatus, Pledge
+from .proximity import ProximityProof, attest
 
 __all__ = [
     "Registration",
@@ -41,4 +43,6 @@ __all__ = [
     "CampaignResult",
     "CampaignStatus",
     "Pledge",
+    "ProximityProof",
+    "attest",
 ]

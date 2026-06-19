@@ -24,6 +24,10 @@ All notable changes to Knitweb. Versions are representative of implemented layer
   manufacture support). All-or-nothing settlement (release to beneficiary, else refund all), no
   premine, advisory integer accounting. `momentum()` reuses the tally so recent backing weighs
   exponentially more. Proofs: `tests/property/test_govern_crowdfund.py` (13 tests).
+- **Bluetooth local backers** (`govern/proximity.py`) — a `ProximityProof` (content-addressed BLE
+  co-presence: backer device ↔ campaign beacon, integer `rssi_dbm`) lets a `Campaign` require
+  `min_local_backers` who are *physically present*, an orthogonal gate to capital that can't be
+  faked remotely. Proofs: `tests/property/test_govern_proximity.py` (8 tests).
 - Docs: `docs/GOVERNANCE_VOTEBANK.md`. Proofs: `tests/property/test_govern_votebank.py`
   (20 tests).
 
