@@ -21,6 +21,8 @@ node module can import this glue at top level without an import cycle.
 
 from __future__ import annotations
 
+from collections import deque
+
 from .addrbook import AddrBook
 from .transport import PeerAddress
 
@@ -89,8 +91,10 @@ class PeerDirectory:
         self._peers: dict[str, PeerAddress] = {}
         # Keys of peers that were explicitly seeded at construction: never evicted.
         self._static: set[str] = set()
-        # Insertion-ordered list of learned (non-static) keys for LRU eviction.
-        self._learned_order: list[str] = []
+        # Insertion-ordered queue of learned (non-static) keys for LRU eviction.
+        # A deque gives O(1) ``popleft`` eviction at the MAX_DIR_SIZE cap (a list's
+        # ``pop(0)`` is O(n) and would dominate under a sustained PEX flood).
+        self._learned_order: deque[str] = deque()
         for p in seeds:
             self.add(p, static=True)
 
@@ -147,11 +151,20 @@ class PeerDirectory:
         for p in peers:
             k = _key(p)
             if k in self._peers:
+                # LRU refresh: a re-advertised learned peer moves to the back of the
+                # eviction queue, so actively-gossiped peers outlive stale ones under
+                # the size cap. Static peers aren't in the queue, so skip them.
+                if k not in self._static:
+                    try:
+                        self._learned_order.remove(k)
+                    except ValueError:
+                        pass
+                    self._learned_order.append(k)
                 continue  # already known — dedup
             # Enforce the size cap before inserting: evict the oldest learned entry
             # if needed. If nothing is evictable (all static), skip this peer.
             while len(self._peers) >= max_size and self._learned_order:
-                evict_key = self._learned_order.pop(0)
+                evict_key = self._learned_order.popleft()
                 del self._peers[evict_key]
             if len(self._peers) >= max_size:
                 # Directory is full and all entries are static — cannot make room.
@@ -277,7 +290,11 @@ def directory_from_peerbook(peerbook, extra: "list[PeerAddress] | None" = None) 
 
 
 def bootstrap_round(
-    directory: PeerDirectory, reply: dict, share_k: "int | None" = DEFAULT_SHARE_K
+    directory: PeerDirectory,
+    reply: dict,
+    share_k: "int | None" = DEFAULT_SHARE_K,
+    *,
+    inbound_cap: int = MAX_PEX_INBOUND,
 ) -> int:
     """Fold a peer's ``peer-exchange`` reply into ``directory``; return peers learned.
 
@@ -286,10 +303,16 @@ def bootstrap_round(
     merges the freshly-learned peers and reports how many were new. ``share_k`` is
     accepted for symmetry with :func:`handle_peer_exchange` (the caller's request was
     built with the same bound) and ignored here since merging shares nothing.
+
+    At most ``inbound_cap`` addresses (default :data:`MAX_PEX_INBOUND`) are merged —
+    excess records in the reply are truncated *before* parsing, mirroring the inbound
+    cap in :func:`handle_peer_exchange`. Without this a malicious *reply* could flood
+    the directory even though the request side is capped (#87).
     """
     if not isinstance(reply, dict) or reply.get("kind") != PEER_EXCHANGE_KIND:
         raise ValueError("not a peer-exchange reply")
-    return directory.merge(peers_from_records(reply.get("peers") or []))
+    truncated = (reply.get("peers") or [])[:inbound_cap]
+    return directory.merge(peers_from_records(truncated))
 
 
 # -- eclipse-resistant sampling (AddrBook live path) ----------------------------

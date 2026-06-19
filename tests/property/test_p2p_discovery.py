@@ -8,6 +8,7 @@ from knitweb.p2p.discovery import (
     MAX_PEX_INBOUND,
     PEER_EXCHANGE_KIND,
     PeerDirectory,
+    bootstrap_round,
     handle_peer_exchange,
     peer_exchange_message,
     peers_from_records,
@@ -186,3 +187,28 @@ def test_static_peer_added_after_construction_protected():
 
     # The explicitly-static peer is never evicted.
     assert special in d
+
+
+def test_bootstrap_round_caps_inbound_flood():
+    """#87: a peer-exchange *reply* flooded with more than MAX_PEX_INBOUND peers is
+    truncated before merge — a malicious reply cannot grow the directory past the cap
+    (the request side, handle_peer_exchange, was already capped; this closes the gap)."""
+    flood = [PeerAddress(f"10.{(i // 256) % 256}.{i % 256}.1", 20000 + i)
+             for i in range(MAX_PEX_INBOUND * 5)]
+    reply = {"kind": PEER_EXCHANGE_KIND, "peers": records_from_peers(flood)}
+    assert len(reply["peers"]) > MAX_PEX_INBOUND
+    d = PeerDirectory()
+    learned = bootstrap_round(d, reply)
+    assert learned <= MAX_PEX_INBOUND
+    assert len(d) <= MAX_PEX_INBOUND
+
+
+def test_lru_refresh_protects_re_advertised_peer():
+    """#87: re-advertising a learned peer moves it to the back of the eviction queue,
+    so an actively-gossiped peer outlives a stale one when the directory is full."""
+    d = PeerDirectory()
+    a, b, c = _p(9001), _p(9002), _p(9003)
+    d.merge([a, b], max_size=2)        # queue order: [a, b] — a is oldest
+    d.merge([a], max_size=2)           # re-advertise a -> moves to back; b becomes oldest
+    d.merge([c], max_size=2)           # insert c -> evicts the oldest *learned* = b, not a
+    assert a in d and c in d and b not in d
