@@ -18,13 +18,26 @@ reuses the existing Phase-3 transport primitives rather than inventing a new one
 
 Scope of this increment: **record propagation + convergence**.
 
-  * ``weave(record)``      — weave locally *and* broadcast to all known peers.
+  * ``weave(record)``      — weave locally *and* announce its CID to all peers.
   * ``sync_from(peer)``    — pull a peer's full record set (catch-up for a node
                              that joined after some records were already woven).
   * convergence            — after gossip/sync settles, ``state_root`` matches.
 
 Conflict quarantine, partial proofs, and a real DHT are explicitly out of scope
 here and continue to live in / evolve from the feed and ``AsyncioP2PNode`` layers.
+
+Propagation is no longer a full-flood (#64): a weave **announces** the record's
+canonical CID (``inv-announce``); each peer replies with only the CIDs it lacks
+(``inv-getdata``); the announcer then serves those wants by sending the **stored
+frame bytes verbatim** (``inv-data``), so a peer that already holds the CID never
+receives the body — collapsing redundant traffic from O(N*body) to ~O(diff). The
+:class:`~knitweb.p2p.inventory.InventoryRelay` drives the announce/want dedup; a
+per-node ``CID -> verbatim signed-frame bytes`` store backs its ``FrameLookup``
+so the served bytes — and therefore the record's CID — are byte-identical across
+a hop. The unchanged ``sync_from`` / ``start_anti_entropy`` anti-entropy loop
+remains the convergence backstop: anything a best-effort announce/want misses is
+re-pulled by the periodic full sync, so every honest node still settles on the
+identical ``web_state_root``.
 """
 
 from __future__ import annotations
@@ -34,11 +47,14 @@ import asyncio
 from ..core import canonical, crypto
 from ..p2p.anti_entropy import SyncRound
 from ..p2p.base_node import BaseNode
+from ..p2p import inventory
+from ..p2p.inventory import INV, GETDATA, InventoryRelay
 from .items import web_state_root
 from .web import Web
 from ..p2p.node import PeerAddress, StaticPeerBook
 from ..p2p.reputation import Offense
 from ..p2p.transport import Transport
+from ..p2p import wire
 from ..p2p.wire import WireError
 
 __all__ = ["FabricNode", "FabricNodeError"]
@@ -95,6 +111,19 @@ class FabricNode(BaseNode):
         self.pub = crypto.public_from_private(priv)
         self.web = Web()
         self.peerbook = StaticPeerBook()
+        # The single load-bearing new piece for lazy relay (#64): a per-node
+        # CID -> verbatim signed-envelope frame bytes store. The frame is the
+        # exact ``write_frame_bytes`` of the ``fabric-record`` envelope we wove
+        # or verified; serving these bytes UNCHANGED is what preserves a signed
+        # record's byte-identity (and CID) across a relay hop. Populated on every
+        # weave AND every successful ingest so a node can re-serve anything it
+        # holds. It is node-local, integer-bounded by the relay's SeenSet, and
+        # touches no canonical/hash path beyond storing already-canonical bytes.
+        self._frames: dict[str, bytes] = {}
+        # One inventory relay per node; its SeenSet is the announce/want dedup.
+        # The lookup is into the frame store above (returns None for a CID we do
+        # not hold, so on_getdata never fabricates a body).
+        self._inv = InventoryRelay(lambda cid: self._frames.get(cid))
 
     # -- server lifecycle -------------------------------------------------
 
@@ -173,27 +202,43 @@ class FabricNode(BaseNode):
     # -- weaving + propagation --------------------------------------------
 
     async def weave(self, record: dict) -> str:
-        """Weave ``record`` into the local Web and broadcast it to all peers.
+        """Weave ``record`` into the local Web and announce its CID to all peers.
 
-        Returns the record's CID. Broadcast failures to individual peers are
-        swallowed (a peer may be offline); convergence for such a peer can later
-        be reached with :meth:`sync_from`. Returns once every reachable peer has
-        acknowledged the record.
+        Returns the record's CID. Propagation is the lazy two-step relay (#64):
+        we announce the canonical CID, each peer wants only what it lacks, and we
+        serve the wanted bodies verbatim — so a peer that already holds the CID
+        never receives the body. Per-peer failures are swallowed (a peer may be
+        offline); convergence for such a peer is reached later by the unchanged
+        anti-entropy / :meth:`sync_from` backstop. The signed-envelope frame is
+        stored under the CID so the relay can serve it byte-identically.
         """
         before = len(self.web.nodes)
         cid = self.web.weave(record)
         if len(self.web.nodes) > before:
             self.metrics.incr("records_woven")
-        await self._broadcast(record)
+        # Store the verbatim signed-envelope frame bytes BEFORE announcing, so a
+        # peer that wants this CID gets the exact bytes back (byte-identity).
+        self._store_frame(cid, self._signed_record_msg(record))
+        await self._announce(cid)
         return cid
 
-    async def _broadcast(self, record: dict) -> None:
-        msg = self._signed_record_msg(record)
+    async def _announce(self, cid: str) -> None:
+        """Announce ``cid`` to every peer; serve each peer the bodies it lacks.
+
+        Replaces the old O(N*body) full-flood. The relay's :meth:`announce`
+        returns ``None`` (and we skip the send) when the CID was already
+        announced — the redundant-traffic cut the SeenSet exists for.
+        """
+        frame = self._inv.announce([cid])
+        if frame is None:
+            return
+        cids = inventory.parse_inv_frame(frame)
+        self.metrics.incr("inv_announced", len(cids))
         peers = list(self.peerbook.all().values())
         if not peers:
             return
         results = await asyncio.gather(
-            *(self._send(peer, msg) for peer in peers),
+            *(self._announce_to(peer, cids) for peer in peers),
             return_exceptions=True,
         )
         # Swallow per-peer transport errors (offline peer); they are recoverable
@@ -206,6 +251,42 @@ class FabricNode(BaseNode):
             else:
                 self.metrics.incr("broadcasts_sent")
 
+    async def _announce_to(self, peer: PeerAddress, cids: list[str]) -> None:
+        """Run the inv -> getdata -> inv-data exchange against one peer.
+
+        Carrier model: each ``dial`` is one request map -> one response map, and
+        every leg is announcer -> peer (so a pure-push topology where the peer has
+        no route back to us still works — matching the convergence test, where a
+        weaver knows its peers but the peers need not know the weaver).
+
+          1. dial ``inv-announce`` -> peer replies ``inv-getdata`` (CIDs it lacks)
+             or ``inv-ack`` (it has them all -> NO body travels: the O(diff) win).
+          2. if it wanted any, dial ``inv-data`` carrying ONLY those bodies
+             (stored frames verbatim), which the peer ingests.
+        """
+        resp = await self._send(peer, {"kind": INV, "cids": cids})
+        kind = resp.get("kind")
+        if kind == "error":
+            raise FabricNodeError(f"{resp.get('code')}: {resp.get('message')}")
+        if kind != GETDATA:
+            # inv-ack (peer wanted nothing) or any non-want response: done. The
+            # body was NOT sent — the whole point of the lazy relay.
+            return
+        wanted = resp.get("cids")
+        if not isinstance(wanted, list):
+            raise FabricNodeError("inv-getdata cids must be a list")
+        # Serve exactly the wanted CIDs as verbatim stored frames, decoded to
+        # their envelope maps to ride the dict carrier (canonical CBOR is
+        # deterministic, so the inner record + its CID are byte-stable).
+        frames = self._inv.on_getdata(inventory.build_getdata_frame(wanted))
+        if not frames:
+            return
+        records = [wire.read_frame_bytes(fr) for fr in frames]
+        self.metrics.incr("inv_served", len(records))
+        ack = await self._send(peer, {"kind": "inv-data", "records": records})
+        if ack.get("kind") == "error":
+            raise FabricNodeError(f"{ack.get('code')}: {ack.get('message')}")
+
     def _signed_record_msg(self, record: dict) -> dict:
         sig = crypto.sign(self._priv, _record_signable(record))
         return {
@@ -214,6 +295,17 @@ class FabricNode(BaseNode):
             "record": record,
             "sig": sig,
         }
+
+    def _store_frame(self, cid: str, envelope: dict) -> None:
+        """Store the verbatim signed-envelope frame bytes for ``cid``.
+
+        The frame is the canonical ``write_frame_bytes`` of the ``fabric-record``
+        envelope. ``on_getdata`` returns these bytes UNCHANGED, so the inner
+        record dict (and its CID) are byte-identical across a relay hop. Indexing
+        is by ``canonical.cid(record)`` — the Web's own content address — never by
+        a CID over the envelope (the envelope is re-signed per relayer by design).
+        """
+        self._frames[cid] = wire.write_frame_bytes(envelope)
 
     def _id_signing_key(self) -> "str | None":
         """This node's author key signs its OPTIONAL piggybacked identity proofs.
@@ -273,8 +365,18 @@ class FabricNode(BaseNode):
             raise FabricNodeError("record must be a map")
         if not crypto.verify(author, _record_signable(record), sig):
             raise FabricNodeError("invalid author signature on fabric record")
+        cid = canonical.cid(record)
         before = len(self.web.nodes)
         self.web.weave(record)
+        # Store the verbatim envelope frame for this CID so a node that learned a
+        # record by relay/sync can re-serve it byte-identically (the FrameLookup
+        # backing store must be populated on ingest, not just on weave — else
+        # on_getdata returns None and that peer relies on the anti-entropy
+        # backstop). Re-sign under our key on serve happens via _signed_record_msg
+        # in weave; here we keep the exact verified envelope bytes.
+        self._store_frame(cid, item)
+        # Mark the CID seen in the relay so a later inv does not re-want it.
+        self._inv.on_record(cid)
         if len(self.web.nodes) > before:
             self.metrics.incr("records_woven")
             return True
@@ -304,4 +406,46 @@ class FabricNode(BaseNode):
             return {"kind": "fabric-ack"}
         elif kind == "fabric-sync-request":
             return self._serve_sync()
+        elif kind == INV:
+            return self._serve_inv(msg)
+        elif kind == "inv-data":
+            return self._serve_inv_data(msg)
         return {"kind": "error", "code": "unknown-kind", "message": str(kind)}
+
+    # -- inventory (lazy relay) server side (#64) -------------------------
+
+    def _serve_inv(self, msg: dict) -> dict:
+        """Handle an inbound ``inv-announce``: reply with the CIDs we lack.
+
+        Diffs the announced CIDs against our frame store AND the relay SeenSet via
+        :meth:`InventoryRelay.on_inv`. Returns an ``inv-getdata`` naming exactly
+        the CIDs we want (so the announcer sends only those bodies), or an
+        ``inv-ack`` when we already hold everything — in which case NO body ever
+        travels (the O(diff) collapse). A malformed inv frame raises
+        ``InventoryError`` (a ``ValueError`` subclass), which the shared
+        ``_dispatch`` maps to a ``bad-request`` with no new error wiring.
+        """
+        cids = msg.get("cids")
+        if not isinstance(cids, list):
+            raise FabricNodeError("inv-announce cids must be a list")
+        want_frame = self._inv.on_inv(inventory.build_inv_frame(cids))
+        if want_frame is None:
+            return {"kind": "inv-ack"}
+        wanted = inventory.parse_getdata_frame(want_frame)
+        self.metrics.incr("inv_wanted", len(wanted))
+        return {"kind": GETDATA, "cids": wanted}
+
+    def _serve_inv_data(self, msg: dict) -> dict:
+        """Handle an inbound ``inv-data``: ingest the served record envelopes.
+
+        Each envelope flows through the same :meth:`_ingest_signed` crypto gate as
+        a ``fabric-record`` or a ``fabric-sync-data`` item, so a forged body served
+        via the lazy path is rejected identically — the Byzantine tests are
+        unaffected. Ingest stores the verbatim frame and marks the relay seen.
+        """
+        records = msg.get("records")
+        if not isinstance(records, list):
+            raise FabricNodeError("inv-data records must be a list")
+        for item in records:
+            self._ingest_signed(item)
+        return {"kind": "inv-ack"}

@@ -172,8 +172,14 @@ def test_broadcast_counts_sent_and_failed_per_peer():
     assert sender.metrics.get("broadcasts_failed") == 1  # offline peer errored
     # The live peer ingested the record over its dispatch path.
     assert live.metrics.get("records_woven") == 1
-    assert live.metrics.get("frames_in") == 1
-    assert live.metrics.get("frames_out") == 1
+    # Lazy relay (#64): propagation is now a two-step exchange per peer that lacks
+    # the CID — an inv-announce dial then an inv-data dial carrying the body — so a
+    # delivering weave drives TWO frames in/out at the live peer (was one when the
+    # weave full-flooded a single fabric-record). The per-peer broadcasts_sent /
+    # broadcasts_failed counters above are unchanged: one logical delivery / one
+    # offline failure, regardless of how many legs the lazy exchange takes.
+    assert live.metrics.get("frames_in") == 2
+    assert live.metrics.get("frames_out") == 2
 
 
 def test_dispatch_counts_frames_in_and_out():
