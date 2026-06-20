@@ -184,6 +184,7 @@ class FabricNode(BaseNode):
         serve_budget: "inventory.ServeBudget | None" = None,
         ingest_budget: "inventory.ServeBudget | None" = None,
         inv_probe_budget: "inventory.ServeBudget | None" = None,
+        recon_budget: "inventory.ServeBudget | None" = None,
         max_gossiped_frames: int = 50_000,
         diffuse_max_ms: int = 0,
         diffuse_seed: int | None = None,
@@ -260,6 +261,23 @@ class FabricNode(BaseNode):
             if inv_probe_budget is not None
             else inventory.ServeBudget(
                 bytes_per_window=inventory.INV_PROBE_CIDS_PER_WINDOW
+            )
+        )
+        # A SEPARATE per-peer budget gates the anti-entropy reconcile responder
+        # (#159). Each reconcile probe costs O(in-range inventory) SHA-256 work, and
+        # this was the one serve path with no debit — an 8 MiB request could carry
+        # ~95k full-keyspace probes and burn minutes of CPU. We debit ONE token per
+        # inbound reconcile FRAME before driving the session, so a near-synced honest
+        # reconcile (a handful of O(diff) frames) is served unchanged while a probe
+        # flood exhausts the window and is answered with an empty (converged) result
+        # — the expensive hashing is never run. Same ServeBudget primitive as #91
+        # (bytes) and #146 (probed CIDs); separate bucket so reconcile and body-serve
+        # never starve each other. ``max_peers`` LRU bounds its memory.
+        self._recon_budget = (
+            recon_budget
+            if recon_budget is not None
+            else inventory.ServeBudget(
+                bytes_per_window=inventory.RECON_FRAMES_PER_WINDOW
             )
         )
         # The per-peer serve key for the request currently being dispatched. Set by
@@ -1382,10 +1400,22 @@ class FabricNode(BaseNode):
         session_id = msg.get(_RECON_SESSION_KEY)
         if not isinstance(session_id, str) or not session_id:
             raise FabricNodeError("reconcile frame missing session id")
-        frames = msg.get("frames")
-        if not isinstance(frames, list):
-            raise FabricNodeError("reconcile frames must be a list")
-        batch = [bytes(fr) for fr in frames]
+        # Validate the inbound batch off the wire — enforce MAX_RECON_FRAMES so an
+        # 8 MiB envelope can't smuggle ~95k probes past the per-probe O(inventory)
+        # hashing (#159). InventoryError (a ValueError) maps to bad-request.
+        batch = inventory.parse_recon_batch(msg.get("frames"))
+        # Anti-amplification: debit the per-peer reconcile budget BEFORE driving the
+        # session (the costly hashing). Over budget ⇒ withhold the work and return an
+        # empty result, which cleanly ends the round on the initiator side; honest
+        # near-synced sessions stay well under the cap and are served unchanged. An
+        # unidentifiable carrier shares one ``_anon`` bucket so anonymity can't bypass
+        # the ceiling.
+        nframes = len(batch)
+        if nframes:
+            peer = self._serve_peer_key if self._serve_peer_key is not None else "_anon"
+            if self._recon_budget.take(peer, nframes) < nframes:
+                self.metrics.incr("recon_throttled")
+                return {"kind": RECON_RESULT, "frames": []}
         if kind == RECON_REQ:
             # A fresh request opens a new responder session over our held CIDs. Cap
             # the session table so a peer cannot leak unbounded session state.

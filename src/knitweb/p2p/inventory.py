@@ -69,6 +69,8 @@ __all__ = [
     "SERVE_BYTES_PER_WINDOW",
     "SERVE_WINDOW_SECONDS",
     "INV_PROBE_CIDS_PER_WINDOW",
+    "RECON_FRAMES_PER_WINDOW",
+    "parse_recon_batch",
     "record_cid",
     "build_inv_frame",
     "parse_inv_frame",
@@ -171,6 +173,20 @@ SERVE_WINDOW_SECONDS = 10
 # admit honest batches (a full MAX_GETDATA_BATCH reconcile diff, with headroom)
 # while a mass-enumeration sweep of distinct candidate CIDs exhausts it fast.
 INV_PROBE_CIDS_PER_WINDOW = 4 * MAX_GETDATA_BATCH  # 8192 probed CIDs / window / peer
+
+# (d) Per-PEER reconcile-frame budget over the same integer window (#159). The
+# anti-entropy reconcile responder (``FabricNode._serve_recon``) drives a
+# bisection session whose per-probe cost is O(in-range inventory) — each probe
+# SHA-256-hashes every held CID in its range (``reconcile.cid_fingerprint``). That
+# is the one serve path with NO budget: only ``wire.MAX_FRAME_BYTES`` bounds the
+# envelope, so a single 8 MiB request can smuggle ~95k full-keyspace probes and
+# burn minutes of CPU (a HIGH CPU-amplification DoS). Reconcile is designed for
+# NEAR-SYNCED peers (O(diff) frames, a handful of rounds); a from-empty node syncs
+# via inv-announce/getdata, not reconcile. So a per-window cap at one getdata batch
+# is generous for honest sessions yet cuts off a probe flood. Token unit = one
+# reconcile FRAME (the per-probe hashing unit), reusing the ServeBudget primitive
+# exactly as the #91 byte budget and the #146 inv-probe CID budget do.
+RECON_FRAMES_PER_WINDOW = MAX_GETDATA_BATCH  # 2048 reconcile frames / window / peer
 
 
 class InventoryError(ValueError):
@@ -475,6 +491,21 @@ def _check_recon_batch(frames: Iterable[bytes]) -> List[bytes]:
             f"too many reconcile frames in one batch: {len(out)} > {MAX_RECON_FRAMES}"
         )
     return out
+
+
+def parse_recon_batch(frames: object) -> List[bytes]:
+    """Validate an INBOUND reconcile batch off the wire (#159).
+
+    The responder reads ``msg["frames"]`` straight off an untrusted carrier; this
+    enforces the same ``MAX_RECON_FRAMES`` cap the *builder* assumes, so an 8 MiB
+    envelope can no longer smuggle ~95k probes past the responder's per-probe
+    O(inventory) hashing. Raises :class:`InventoryError` (a ``ValueError``) on a
+    non-list batch, non-bytes entry, or over-cap count — which the shared
+    ``_dispatch`` already maps to a ``bad-request`` with no new error wiring.
+    """
+    if not isinstance(frames, list):
+        raise InventoryError("reconcile frames must be a list")
+    return _check_recon_batch(frames)
 
 
 def build_recon_frame(kind: str, frames: Iterable[bytes]) -> bytes:
