@@ -594,3 +594,72 @@ def test_honest_reconcile_still_converges_under_the_serve_budget():
         assert sum(a.transport.getdata_cid_counts) == diff_n
 
     run(scenario())
+
+
+@pytest.mark.interop
+def test_honest_over_budget_fetch_fully_converges_across_windows():
+    """An honest peer whose diff exceeds ONE window's byte budget STILL converges,
+    across successive windows — the positive liveness counterpart to the throttle
+    test (which proves a hammering peer is cut off in-window).
+
+    The #91 byte budget must throttle abuse WITHOUT permanently starving honest
+    sync. Each window serves only a budget-bounded subset of WHOLE bodies (#189
+    all-or-nothing), so a large honest diff cannot land in a single window. It still
+    converges because honest reconcile re-requests only the still-MISSING CIDs each
+    round (the shrinking symmetric difference) — never the full list. on_getdata is
+    stateless and serves the requested list in REQUEST ORDER up to budget EVERY
+    window, so re-asking for the full list would re-serve the same prefix forever;
+    progress relies on asking for the missing tail, which reconcile_with does by
+    recomputing the diff each call. Guards that whole path end-to-end: a broken
+    window refill, a budget that never recovers, or a reconcile that stopped
+    recomputing the diff would leave ``a`` permanently short of ``b`` here.
+    """
+    async def scenario():
+        reg: dict = {}
+        clock = _Clock(0)
+        a_tr = _IdMemTransport(reg, 1, sender_id="tcp:a")
+        b_tr = _IdMemTransport(reg, 2, sender_id="tcp:b")
+        a = FabricNode(transport=a_tr)
+        a_tr.bind(a)
+        b = FabricNode(
+            transport=b_tr,
+            serve_budget=ServeBudget(bytes_per_window=1, window_seconds=5, clock=clock),
+        )
+        b_tr.bind(b)
+
+        # An honest diff b holds that a lacks — well under the batch cap, so the
+        # per-window BYTE budget (not the count cap) is the only limiter under test.
+        diff_n = 24
+        b_only = [
+            await b.weave(_knowledge(i, b.pub))
+            for i in range(800000, 800000 + diff_n)
+        ]
+        a.add_peer("b", b.address)
+
+        # Size b's window to ~6 whole bodies: small enough that a 24-record diff
+        # needs several windows, large enough to always admit >=1 whole body (so it
+        # can never stall). Signed frames jitter a couple bytes per keypair, so size
+        # by a real body with a wide margin — no exact-boundary assertion is made.
+        body = len(b._frames[b_only[0]])
+        b._serve_budget = ServeBudget(
+            bytes_per_window=body * 6, window_seconds=5, clock=clock
+        )
+        b._inv.budget = b._serve_budget
+
+        # Round 1: the budget BITES — fewer than the whole diff is pulled at once.
+        first = await a.reconcile_with(b.address)
+        assert 0 < first < diff_n
+
+        # Advance windows and re-reconcile the missing tail until converged.
+        rounds = 1
+        while [c for c in b_only if a.web.get(c) is None] and rounds < 20:
+            clock.advance(5)
+            await a.reconcile_with(b.address)
+            rounds += 1
+
+        # Converged: every diff CID is now held by a — honest sync was throttled
+        # but never starved, and it genuinely spanned multiple windows.
+        assert all(a.web.get(c) is not None for c in b_only)
+        assert rounds > 1
+
+    run(scenario())
