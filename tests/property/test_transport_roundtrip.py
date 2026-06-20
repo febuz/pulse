@@ -83,3 +83,97 @@ def test_peer_address_is_hashable_with_params():
     # Equal addresses (order-independent params) hash equal and dedupe in a set.
     assert a == b
     assert len({a, b}) == 1
+
+
+def _valid_knit_record() -> dict:
+    return {
+        "from": "a",
+        "to": "b",
+        "symbol": "s",
+        "amount": 1,
+        "from_nonce": 0,
+        "timestamp": 0,
+        "network": 0,
+        "from_sig": "x",
+        "to_sig": "y",
+    }
+
+
+def _valid_feed_head_record() -> dict:
+    return {"feed": "f", "root": "r", "length": 1, "fork": 0, "sig": "s"}
+
+
+def _valid_multiproof_record() -> dict:
+    return {"start": 0, "count": 1, "length": 1, "siblings": ["h"]}
+
+
+def _valid_equivocation_record() -> dict:
+    return {
+        "kind": "equivocation-report",
+        "feed": "f",
+        "reporter": "rep",
+        "head_a": {"root": "ra", "length": 1, "fork": 0, "sig": "sa"},
+        "head_b": {"root": "rb", "length": 1, "fork": 1, "sig": "sb"},
+    }
+
+
+@pytest.mark.property
+def test_valid_records_parse_as_baseline():
+    # Confirm the minimal baselines are accepted before flipping int fields to bool.
+    from knitweb.p2p.wire import (
+        equivocation_report_from_record,
+        feed_head_from_record,
+        knit_from_record,
+        multiproof_from_record,
+    )
+
+    assert knit_from_record(_valid_knit_record()).amount == 1
+    assert feed_head_from_record(_valid_feed_head_record()).length == 1
+    assert multiproof_from_record(_valid_multiproof_record()).count == 1
+    assert equivocation_report_from_record(_valid_equivocation_record()).feed == "f"
+
+
+@pytest.mark.property
+@pytest.mark.parametrize("field", ["amount", "from_nonce", "network"])
+def test_knit_from_record_rejects_bool_int_field(field):
+    # bool is an int subclass; _require_int must still reject it on int fields.
+    from knitweb.p2p.wire import WireError, knit_from_record
+
+    record = _valid_knit_record()
+    record[field] = True
+    with pytest.raises(WireError, match=f"{field} must be int"):
+        knit_from_record(record)
+
+
+@pytest.mark.property
+@pytest.mark.parametrize("field", ["length", "fork"])
+def test_feed_head_from_record_rejects_bool_int_field(field):
+    from knitweb.p2p.wire import WireError, feed_head_from_record
+
+    record = _valid_feed_head_record()
+    record[field] = True
+    with pytest.raises(WireError, match=f"{field} must be int"):
+        feed_head_from_record(record)
+
+
+@pytest.mark.property
+@pytest.mark.parametrize("field", ["start", "count", "length"])
+def test_multiproof_from_record_rejects_bool_int_field(field):
+    from knitweb.p2p.wire import WireError, multiproof_from_record
+
+    record = _valid_multiproof_record()
+    record[field] = True
+    with pytest.raises(WireError, match=f"{field} must be int"):
+        multiproof_from_record(record)
+
+
+@pytest.mark.property
+@pytest.mark.parametrize("field", ["length", "fork"])
+def test_equivocation_report_from_record_rejects_bool_head_int_field(field):
+    # head_a is parsed via _require_head_fields, whose int fields are length/fork.
+    from knitweb.p2p.wire import WireError, equivocation_report_from_record
+
+    record = _valid_equivocation_record()
+    record["head_a"][field] = True
+    with pytest.raises(WireError, match=f"{field} must be int"):
+        equivocation_report_from_record(record)

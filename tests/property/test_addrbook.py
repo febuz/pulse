@@ -166,6 +166,21 @@ def test_test_before_evict_keeps_incumbent():
 
 
 @pytest.mark.property
+def test_test_before_evict_keeps_incumbent_in_tried_table():
+    # Same property as test_test_before_evict_keeps_incumbent, but on the TRIED table:
+    # a proven incumbent (mark_tried) is never displaced by an unproven same-slot
+    # claimant. With size-1 buckets, two distinct addresses in the same /16 group hash
+    # to the same tried (bucket, slot), so the second mark_tried hits the incumbent.
+    book = AddrBook(SECRET, new_buckets=1, tried_buckets=1, bucket_size=1)
+    first = _p("7.7.0.1")
+    second = _p("7.7.0.2")  # same /16 group -> same tried bucket; size 1 -> same slot
+    assert book.mark_tried(first) is True
+    assert book.mark_tried(second) is False  # incumbent kept, not evicted
+    assert book.tried_count() == 1
+    assert first in book and second not in book
+
+
+@pytest.mark.property
 def test_repeat_add_is_idempotent():
     book = AddrBook(SECRET)
     p = _p("3.3.3.3")

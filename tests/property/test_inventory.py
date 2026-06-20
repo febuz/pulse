@@ -516,6 +516,33 @@ def test_serve_budget_rejects_bad_construction_and_input():
         b.take("p", -1)
 
 
+def test_serve_budget_bounds_per_peer_state_under_distinct_peer_flood():
+    """A flood of DISTINCT peer keys cannot leak unbounded per-peer buckets.
+
+    Each ``take`` for a never-seen peer key would otherwise allocate one bucket,
+    so a node hammered by tens of thousands of forged source identities would
+    grow per-peer state without limit — a memory-exhaustion vector. The
+    ``max_peers`` integer LRU caps that: the bucket map is an ``OrderedDict``
+    bounded by ``max_peers`` via ``move_to_end`` + ``popitem(last=False)``, so it
+    never exceeds the cap and retains exactly the most-recently-active peers.
+
+    Deterministic: a single injected ``_VirtualClock(0)`` (one fixed window) and
+    integer-only debits, so the survivor set is fully replayable.
+    """
+    budget = ServeBudget(
+        bytes_per_window=1000,
+        window_seconds=10,
+        max_peers=4,
+        clock=_VirtualClock(0),
+    )
+    for i in range(100):
+        budget.take(f"peer-{i}", 10)
+    # The bound holds: never more than ``max_peers`` buckets, despite 100 keys.
+    assert len(budget._buckets) == 4
+    # LRU eviction kept exactly the 4 most-recently-active peer keys (newest).
+    assert list(budget._buckets) == ["peer-96", "peer-97", "peer-98", "peer-99"]
+
+
 def test_take_is_all_or_nothing_so_an_overlimit_request_never_starves_the_peer():
     """An over-limit ``take`` debits NOTHING and returns 0 — it must not burn the
     budget an honest peer needs for the affordable requests that follow it.

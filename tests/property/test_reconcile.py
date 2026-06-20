@@ -204,6 +204,60 @@ def test_probe_frame_rejects_bad_bounds_and_negatives():
         build_probe_frame("a", "z", 0, 1 << 300, 0)  # fp too wide
 
 
+def test_parse_probe_frame_rejects_bad_fp_width_and_type():
+    # A malicious peer can hand-roll a RECONCILE_PROBE frame straight via
+    # write_frame_bytes, bypassing build_probe_frame's outbound fp validation.
+    # parse_probe_frame is the inbound guard: it must reject any fp that is not
+    # exactly FINGERPRINT_BYTES bytes, regardless of width or type, and that
+    # guard fires before the bounds/count/depth values matter (here they are all
+    # valid so only the fp check can trip).
+    fp_int = cid_fingerprint(sorted(_cids(range(12))))
+    expected_fp = fp_int
+
+    # (a) wrong width: 16 bytes instead of 32.
+    too_short = wire.write_frame_bytes(
+        {
+            "kind": RECONCILE_PROBE,
+            "lo": FULL_LO,
+            "hi": FULL_HI,
+            "count": 12,
+            "fp": b"\x00" * 16,
+            "depth": 0,
+        }
+    )
+    with pytest.raises(ReconcileError, match="fp must be 32 bytes"):
+        parse_probe_frame(too_short)
+
+    # (b) wrong type: a non-bytes value (an int) for fp.
+    non_bytes = wire.write_frame_bytes(
+        {
+            "kind": RECONCILE_PROBE,
+            "lo": FULL_LO,
+            "hi": FULL_HI,
+            "count": 12,
+            "fp": 7,
+            "depth": 0,
+        }
+    )
+    with pytest.raises(ReconcileError, match="fp must be 32 bytes"):
+        parse_probe_frame(non_bytes)
+
+    # Round-trip sanity: a well-formed 32-byte fp parses back to the exact int.
+    good = wire.write_frame_bytes(
+        {
+            "kind": RECONCILE_PROBE,
+            "lo": FULL_LO,
+            "hi": FULL_HI,
+            "count": 12,
+            "fp": expected_fp.to_bytes(32, "big"),
+            "depth": 0,
+        }
+    )
+    lo, hi, count, fp, depth = parse_probe_frame(good)
+    assert (lo, hi, count, depth) == (FULL_LO, FULL_HI, 12, 0)
+    assert fp == expected_fp
+
+
 # ── 5. convergence: exact symmetric difference, all topologies ────────────────
 
 def _check_converge(a_spec, b_spec, **kw):

@@ -31,6 +31,7 @@ from knitweb.p2p.mesh import (
     GRAFT,
     IHAVE,
     IWANT,
+    MAX_IDS_PER_FRAME,
     PRUNE,
     Gossipsub,
     MeshError,
@@ -405,3 +406,44 @@ def test_mesh_params_require_ordering():
 def test_score_params_reject_positive_penalty():
     with pytest.raises(MeshError):
         ScoreParams(w_invalid=1)  # penalty must be <= 0
+
+
+# ── 8. seen/have are bounded LRU caches; eviction re-opens IWANT ──────────────
+
+def test_seen_cap_evicts_oldest_and_rewants_evicted_id():
+    """seen_cap bounds _seen and _have via real LRU (popitem(last=False)).
+
+    Recording more than seen_cap distinct deliveries keeps only the
+    seen_cap most-recent ids; the oldest is evicted, and on_ihave re-WANTs
+    that evicted id (it is no longer in _seen) while not re-wanting a
+    still-seen id.
+    """
+    gs = _gs(seen_cap=3)
+    # Five distinct deliveries m0..m4 (> seen_cap == 3).
+    for k in range(5):
+        gs.record_delivery("p0", TOPIC, f"m{k}")
+    # Oldest two (m0, m1) evicted; the 3 most-recent retained.
+    assert len(gs._seen) == 3
+    assert len(gs._have[TOPIC]) == 3
+    assert set(gs._seen) == {"m2", "m3", "m4"}
+    # The evicted id is re-wanted; the still-seen id is not.
+    reply = gs.on_ihave("p0", build_ihave_frame(TOPIC, ["m0", "m4"]))
+    assert parse_iwant_frame(reply) == ["m0"]
+
+
+def test_inbound_parse_rejects_oversized_id_list():
+    """parse_ihave_frame / parse_iwant_frame enforce MAX_IDS_PER_FRAME inbound.
+
+    Existing tests only exercise the build path; this pins the inbound guard
+    in _check_id_list against a frame constructed directly via the wire codec.
+    """
+    too_many = ["x"] * (MAX_IDS_PER_FRAME + 1)
+    ihave_bytes = wire.write_frame_bytes(
+        {"kind": IHAVE, "topic": TOPIC, "ids": too_many}
+    )
+    iwant_bytes = wire.write_frame_bytes({"kind": IWANT, "ids": too_many})
+    msg = "too many ids in one frame: 50001 > 50000"
+    with pytest.raises(MeshError, match=msg):
+        parse_ihave_frame(ihave_bytes)
+    with pytest.raises(MeshError, match=msg):
+        parse_iwant_frame(iwant_bytes)

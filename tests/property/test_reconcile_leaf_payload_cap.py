@@ -16,10 +16,13 @@ the *exact* symmetric difference, and no leaf frame ever exceeds the cap — whi
 the shortcut is still taken (no extra bisection) when both sides are genuinely
 small. Pure integer logic: no clock, no rand, no canonical/wire/CID byte changes.
 """
+import pytest
+
 from knitweb.p2p import reconcile as R
 from knitweb.p2p.reconcile import (
     MAX_LEAF_CIDS,
     RECONCILE_LEAF,
+    ReconcileError,
     Reconciler,
     parse_leaf_frame,
     reconcile_pair,
@@ -85,3 +88,42 @@ def test_shortcut_still_taken_when_both_sides_are_small():
     reply = b.on_frame(a.open()[0])
     assert len(reply) == 1
     assert wire.read_frame_bytes(reply[0]).get("kind") == RECONCILE_LEAF
+
+
+def _raw_leaf_frame(lo, hi, cids):
+    """Construct a RECONCILE_LEAF frame directly, mirroring build_leaf_frame's
+    exact field layout, but bypassing _check_leaf_cids — i.e. what a hostile peer
+    that ignored the cap would put on the wire. We only ever feed it to a parser.
+    """
+    return wire.write_frame_bytes(
+        {"kind": RECONCILE_LEAF, "lo": lo, "hi": hi, "cids": list(cids)}
+    )
+
+
+def test_parse_leaf_frame_rejects_over_cap_inbound_leaf():
+    # A hostile peer can hand-craft a leaf frame whose cid list exceeds the hard
+    # cap — build_leaf_frame would refuse to emit it, but the *parser* is the
+    # inbound trust boundary, so _check_leaf_cids must reject it on the way in.
+    # One past the cap: 100001 short cids -> ~1MB frame, well under MAX_FRAME_BYTES
+    # (8 MiB), so it is genuinely constructible and reaches parse_leaf_frame.
+    over = [f"c{i}" for i in range(MAX_LEAF_CIDS + 1)]
+    assert len(over) == 100_001
+    frame = _raw_leaf_frame("", "￿", over)
+    assert len(frame) < wire.MAX_FRAME_BYTES
+    with pytest.raises(
+        ReconcileError, match=r"too many cids in one leaf: 100001 > 100000"
+    ):
+        parse_leaf_frame(frame)
+
+
+def test_parse_leaf_frame_accepts_exactly_the_cap():
+    # Prove the bound is exact, not off-by-one: a frame carrying exactly
+    # MAX_LEAF_CIDS cids parses cleanly. (De-dup not required by the parser; the
+    # leaf codec only enforces str/non-empty/<= cap on the raw inbound list.)
+    at_cap = [f"c{i}" for i in range(MAX_LEAF_CIDS)]
+    assert len(at_cap) == MAX_LEAF_CIDS
+    frame = _raw_leaf_frame("", "￿", at_cap)
+    lo, hi, cids = parse_leaf_frame(frame)
+    assert lo == ""
+    assert hi == "￿"
+    assert cids == at_cap

@@ -43,6 +43,33 @@ def test_provable_offenses_are_one_shot_bans():
         assert r.is_banned(A)
 
 
+def test_offense_weights_are_positive_ints_with_graded_severity():
+    # 1. Every weight is a plain int (not bool) — penalize() reads offense.value
+    #    straight onto the integer score path with no _require_int guard.
+    for o in Offense:
+        assert type(o.value) is int
+        assert not isinstance(o.value, bool)
+    # 2. Every weight is strictly positive.
+    for o in Offense:
+        assert o.value > 0
+    # 3. The provable one-shot-ban offenses are anchored to the threshold constant.
+    assert (
+        Offense.EQUIVOCATION.value
+        == Offense.FEED_CONFLICT.value
+        == DEFAULT_BAN_THRESHOLD
+        == 100
+    )
+    # 4. Graded severity ordering by .value.
+    assert (
+        Offense.MALFORMED_FRAME.value
+        < Offense.OVERSIZED_FRAME.value
+        == Offense.UNSOLICITED_MESSAGE.value
+        < Offense.INVALID_SIGNATURE.value
+        == Offense.STALE_OR_FORGED_PROOF.value
+        < Offense.FEED_CONFLICT.value
+    )
+
+
 def test_explicit_integer_points():
     r = PeerReputation(ban_threshold=50)
     assert not r.penalize(A, 49)
