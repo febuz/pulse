@@ -453,6 +453,55 @@ def test_byte_budget_never_partial_serves_a_body_preserving_identity():
         assert fr == store.lookup(cid)
 
 
+def test_byte_budget_serves_whole_bodies_in_request_order_under_nonuniform_sizes():
+    """The serve budget is whole-body + request-order correct even when the stored
+    frames differ in length — the invariant the live throttle path relies on.
+
+    Every OTHER byte-budget test here uses EQUAL-length bodies, so none exercises
+    a sub-body remainder when frames vary in size. Real signed frames DO vary by a
+    couple of bytes (the signature/CID minimal-int encoding), which is exactly what
+    made the live ``test_live_byte_budget_throttles_a_hammering_peer`` flaky until
+    its budget was bounded by the smallest next body (see the interop suite). Pin
+    the underlying ``on_getdata`` contract directly with deliberately DIFFERENT-sized
+    bodies so a regression cannot reintroduce that class:
+
+      1. exactly the first two WHOLE bodies are served, in request order — the third
+         is deferred whole, never truncated (byte-identity preserved);
+      2. a same-window re-request whose remaining budget is a strict fraction of the
+         first body serves NOTHING (the bucket never partial-serves a leftover);
+      3. the next window refills and serves the first two again.
+    """
+    store = FrameStore()
+    # Strictly increasing body sizes via increasing payload lengths (deterministic,
+    # unsigned canonical frames — no crypto randomness): s[0] < s[1] < s[2] < s[3].
+    cids = [
+        store.put_record({"kind": "demo", "seq": i, "payload": "x" * (i + 1)})[0]
+        for i in range(4)
+    ]
+    s = [len(store.lookup(c)) for c in cids]
+    assert s[0] < s[1] < s[2], "bodies must be genuinely non-uniform for this guard"
+
+    clock = _VirtualClock(0)
+    # Room for the first two whole bodies + a sliver strictly below body #0, so the
+    # third cannot fit on request 1 and body #0 cannot fit on the same-window retry.
+    budget = ServeBudget(
+        bytes_per_window=s[0] + s[1] + (s[0] - 1), window_seconds=5, clock=clock
+    )
+    relay = InventoryRelay(store.lookup, budget=budget)
+    frame = build_getdata_frame(cids)
+
+    served = relay.on_getdata(frame, peer="p")
+    assert len(served) == 2  # exactly the first two, request order
+    assert served[0] == store.lookup(cids[0])  # whole body, byte-identical
+    assert served[1] == store.lookup(cids[1])
+
+    # Same window: remaining budget (s0-1) is a strict fraction of body #0 -> none.
+    assert relay.on_getdata(frame, peer="p") == []
+
+    clock.advance(5)  # next window refills the bucket
+    assert len(relay.on_getdata(frame, peer="p")) == 2
+
+
 def test_byte_budget_under_honest_moderate_diff_serves_the_whole_diff():
     """An honest moderate diff is served IN FULL under the generous prod budget.
 
