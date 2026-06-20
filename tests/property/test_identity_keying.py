@@ -609,6 +609,59 @@ def test_bound_proof_round_trips_and_verifies_under_its_binding():
 
 
 @pytest.mark.property
+def test_binding_length_prefix_defeats_a_binding_nonce_boundary_shift():
+    """The ``len(binding)`` prefix makes the signed message *injective* over the
+    ``(binding, nonce)`` split, so a captured signature cannot be reinterpreted as a
+    proof bound to a *different* body by shifting bytes across the binding/nonce seam.
+
+    ``_piggyback_message`` is ``TAG || ts(8) || len(binding)(4) || binding || nonce``.
+    Strip the explicit length prefix and ``binding || nonce`` becomes a bare
+    concatenation: ``(binding=B, nonce=N)`` and ``(binding=B[:-1], nonce=B[-1:]+N)``
+    would then sign *byte-identical* messages, letting an attacker re-present an
+    honest proof bound to body ``B`` as a proof bound to ``B[:-1]`` (a different
+    body's expected binding) under the **same** signature. ``verify_id_proof`` does
+    NO nonce-length check — it rebuilds the message from ``proof.nonce`` verbatim — so
+    the length prefix, not a fixed nonce width, is the sole thing that blocks the
+    shift. The empty-binding layout is pinned by ``test_injected_nonce_is_deterministic``;
+    this pins the *non-empty* layout and the boundary-shift rejection, so a regression
+    that drops the prefix or writes a constant ``0`` length (invisible to the
+    empty-binding test, whose real length is already 0) is caught here.
+    """
+    priv, pub = crypto.generate_keypair()
+    nonce = _NONCE
+    binding = crypto.sha256(canonical.encode({"kind": "fabric-sync-request"}))
+    proof = identity.make_id_proof(priv, nonce=nonce, timestamp=1000, binding=binding)
+
+    # Non-empty layout is exactly the documented framing, with the REAL length.
+    assert proof.message() == (
+        identity.PIGGYBACK_TAG
+        + (1000).to_bytes(8, "big")
+        + len(binding).to_bytes(4, "big")
+        + binding
+        + nonce
+    )
+    # Control: the honest proof verifies under its own binding.
+    assert identity.verify_id_proof(proof, now=1000, binding=binding) \
+        == identity.node_peer_id(pub)
+
+    # Boundary shift: move the last binding byte into the nonce, reusing the captured
+    # signature. The naive (prefix-free) concatenations are identical — that is the
+    # collision the length prefix must defeat.
+    shifted_binding = binding[:-1]
+    shifted_nonce = binding[-1:] + nonce
+    assert shifted_binding + shifted_nonce == binding + nonce
+    shifted = identity.PiggybackProof(
+        pubkey=proof.pubkey, nonce=shifted_nonce, timestamp=1000,
+        sig=proof.sig, binding=shifted_binding,
+    )
+    # ...but the length-prefixed signed messages differ (len is now len(binding)-1),
+    # so the captured signature does not authenticate the shifted tuple — the verifier
+    # refuses to credit the proof to the different binding it now claims.
+    assert shifted.message() != proof.message()
+    assert identity.verify_id_proof(shifted, now=1000, binding=shifted_binding) is None
+
+
+@pytest.mark.property
 def test_unbound_proof_record_omits_the_bind_field():
     """A legacy/unbound proof still encodes without a ``bind`` key, so its record is
     byte-identical to the pre-#90 shape."""
