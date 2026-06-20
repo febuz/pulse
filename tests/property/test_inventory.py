@@ -523,6 +523,47 @@ def test_byte_budget_under_honest_moderate_diff_serves_the_whole_diff():
     assert len(served) == n
 
 
+def test_serve_window_covers_the_largest_possible_body_so_no_fetch_can_starve():
+    """The per-window byte budget must exceed the largest serveable body — the
+    liveness-safety invariant the all-or-nothing serve (#189) silently relies on.
+
+    ``ServeBudget.take`` is all-or-nothing: a body that does not fit the REMAINING
+    budget is deferred WHOLE to a later window, never truncated. That is correct
+    *only* while every serveable body fits a FRESH (full) window bucket. A body
+    larger than ``bytes_per_window`` never fits in ANY window, so it is deferred
+    forever and the requesting peer can NEVER fetch it — a liveness failure, not
+    mere throttling. A stored frame is hard-bounded by ``wire.MAX_FRAME_BYTES``
+    (8 MiB), so the prod window budget (256 MiB) must cover at least that. This
+    invariant is otherwise undocumented and untested: bumping MAX_FRAME_BYTES past
+    the window, or shrinking the window below it, would silently starve large-record
+    fetches with no other test catching it. Pin the invariant AND the failure mode
+    it guards.
+    """
+    from knitweb.p2p.wire import MAX_FRAME_BYTES
+
+    # 1. The prod budget covers the largest possible single body (with headroom).
+    assert SERVE_BYTES_PER_WINDOW >= MAX_FRAME_BYTES
+
+    # 2. The failure mode is real: a body larger than the window is deferred in
+    #    EVERY window, never served — which is exactly why invariant (1) matters.
+    store = FrameStore()
+    cid, frame = store.put_record(_record(0))
+    body_len = len(frame)
+    clock = _VirtualClock(0)
+    too_small = ServeBudget(bytes_per_window=body_len - 1, window_seconds=5, clock=clock)
+    relay = InventoryRelay(store.lookup, budget=too_small)
+    want = build_getdata_frame([cid])
+    assert relay.on_getdata(want, peer="p") == []  # never fits -> deferred
+    clock.advance(5)
+    assert relay.on_getdata(want, peer="p") == []  # next window: STILL never fits
+
+    # 3. A window that covers the body serves it whole (invariant-satisfied case).
+    ok = ServeBudget(bytes_per_window=body_len, window_seconds=5, clock=_VirtualClock(0))
+    relay_ok = InventoryRelay(store.lookup, budget=ok)
+    served = relay_ok.on_getdata(want, peer="p")
+    assert len(served) == 1 and served[0] == frame  # whole + byte-identical
+
+
 def test_serve_budget_is_deterministic_across_replays():
     """Two budgets driven by identical virtual clocks debit identically.
 
