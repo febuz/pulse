@@ -324,3 +324,72 @@ def test_distill_query_fingerprint_handles_float_signal_inputs():
         max_iters=2,
     )
     assert len(selection.relations) == 1
+
+
+def _distill_linked_pair(web):
+    """Run the canonical link-emitting distillation used by the observability test."""
+    node_a = web.weave(
+        {"kind": "knowledge", "title": "A", "body": "open", "scope": "public", "author": "alice"}
+    )
+    node_b = web.weave(
+        {"kind": "knowledge", "title": "B", "body": "open", "scope": "public", "author": "alice"}
+    )
+    web.link(node_a, node_b, "supports")
+    return distill(
+        retrieve({"kind": "knowledge", "seed": node_a}, ("public",), web, depth=1),
+        {"subject": node_b, "predicate": "supports", "object": node_a},
+        web=web,
+        max_iters=3,
+    )
+
+
+@pytest.mark.property
+def test_dropped_distilled_from_edge_is_observable_and_distill_stays_deterministic(
+    monkeypatch, caplog
+):
+    """A forced ``web.link`` failure is logged AND distillation still returns.
+
+    Covers issue #135: the dropped ``distilled-from`` edge must be observable
+    (side-effect-only log) while the deterministic fallback keeps distillation
+    returning the same structure as the non-failing path.
+    """
+    import importlib
+    import logging
+
+    distill_mod = importlib.import_module("knitweb.interpret.distill")
+    logger_name = distill_mod._logger.name
+
+    # Baseline: the non-failing path, so we can prove deterministic equivalence.
+    baseline = _distill_linked_pair(Web())
+
+    # Force the link to fail deterministically with a narrow ValueError.
+    real_link = Web.link
+
+    def boom(self, src, dst, rel, weight=1, metadata=None):
+        if rel == "distilled-from":
+            raise ValueError("forced link failure")
+        return real_link(self, src, dst, rel, weight, metadata)
+
+    monkeypatch.setattr(Web, "link", boom)
+
+    caplog.set_level(logging.WARNING)
+    selection = _distill_linked_pair(Web())
+
+    # 1) The drop is observable: a warning naming the dropped edge was emitted.
+    drop_records = [
+        r
+        for r in caplog.records
+        if r.name == logger_name and "distilled-from" in r.getMessage()
+    ]
+    assert drop_records, "expected an observable warning for the dropped distilled-from edge"
+    msg = drop_records[0].getMessage()
+    assert "intermediate_cid=" in msg
+    assert "relation_cid=" in msg
+    assert "ValueError" in msg
+
+    # 2) Distillation still returns deterministically: no raise, same structure
+    #    and same CIDs as the non-failing path.
+    assert selection.intermediate_cids == baseline.intermediate_cids
+    assert selection.relations == baseline.relations
+    assert selection.relation_sources == baseline.relation_sources
+    assert selection.relation_count == baseline.relation_count

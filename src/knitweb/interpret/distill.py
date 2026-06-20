@@ -7,6 +7,7 @@ artifact candidate for downstream bytecode compilation.
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
 from typing import Iterable, Mapping
@@ -29,6 +30,8 @@ __all__ = [
 _DISTILL_RELATION_KIND = "distill-relation"
 _DISTILL_INTERMEDIATE_KIND = "distill-intermediate"
 _DISTILLED_FROM_REL = "distilled-from"
+
+_logger = logging.getLogger(__name__)
 
 
 def _require_int(name: str, value: int, minimum: int = 0) -> None:
@@ -275,11 +278,19 @@ def _emit_intermediate(
     web.weave(intermediate_record)
     try:
         web.link(intermediate_cid, relation_cid, _DISTILLED_FROM_REL, weight=1)
-    except (KeyError, ValueError):
+    except (KeyError, ValueError) as exc:
         # `web.link` can fail deterministically if node ordering changes or an
         # internal relation is stale; this keeps distillation moving and leaves
-        # a deterministic fallback for caller-facing outputs.
-        pass
+        # a deterministic fallback for caller-facing outputs. The drop is now
+        # observable (side-effect-only log, off the canonical byte path) so
+        # silent graph degradation is detectable.
+        _logger.warning(
+            "dropped %s edge: intermediate_cid=%s relation_cid=%s exc=%r",
+            _DISTILLED_FROM_REL,
+            intermediate_cid,
+            relation_cid,
+            exc,
+        )
     return relation_cid, intermediate_cid
 
 
