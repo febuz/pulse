@@ -107,6 +107,31 @@ def test_expired_and_future_dated_proofs_resolve_to_none():
 
 
 @pytest.mark.property
+def test_freshness_window_accepts_both_exact_edges_symmetrically():
+    """The freshness check is the *closed* interval ``|now - ts| <= window``.
+
+    ``verify_id_proof`` tolerates clock skew in BOTH directions equally: a proof is
+    accepted when the verifier's clock trails the proof timestamp by exactly
+    ``window`` (the prover's clock ran ahead — the lower edge ``now == ts - window``)
+    just as much as when it leads by exactly ``window`` (the upper edge
+    ``now == ts + window``). The ``+1`` rejects on either side are pinned by
+    :func:`test_expired_and_future_dated_proofs_resolve_to_none`; this pins the
+    accepting edges so a one-sided regression (e.g. swapping the symmetric ``abs``
+    for a half-open ``ts - now >= window`` future bound) cannot slip through with
+    the upper edge still green.
+    """
+    priv, pub = crypto.generate_keypair()
+    proof = identity.make_id_proof(priv, nonce=_NONCE, timestamp=1000)
+    window = identity.DEFAULT_PROOF_WINDOW_S
+    node_key = identity.node_peer_id(pub)
+    # Upper edge: verifier clock leads the timestamp by exactly `window`.
+    assert identity.verify_id_proof(proof, now=1000 + window) == node_key
+    # Lower edge: verifier clock trails the timestamp by exactly `window`
+    # (prover's clock ahead by the full skew budget) — still accepted.
+    assert identity.verify_id_proof(proof, now=1000 - window) == node_key
+
+
+@pytest.mark.property
 def test_timestamp_is_inside_the_signed_bytes():
     """A proof cannot be re-stamped with a different claimed time.
 
