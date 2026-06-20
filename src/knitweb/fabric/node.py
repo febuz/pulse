@@ -964,8 +964,20 @@ class FabricNode(BaseNode):
 
     # -- ingestion --------------------------------------------------------
 
-    def _ingest_signed(self, item) -> bool:
-        """Verify an author-signed record envelope and weave it. True if new."""
+    def _ingest_signed(self, item, *, is_edge: "bool | None" = None) -> bool:
+        """Verify an author-signed record envelope and weave it. True if new.
+
+        Routing (node vs edge) is decided by the ENVELOPE kind, never by the
+        author/attacker-controllable inner ``record['kind']`` field (#144). The
+        author emits a node via a ``fabric-record`` envelope (``weave``) and a
+        real edge via a ``fabric-edge`` envelope (``link``); the receiver must
+        honour that same envelope-level intent so one signed body cannot be a
+        NODE on the author and an EDGE on the receiver (a durable state-root
+        partition that anti-entropy can never heal). ``is_edge`` lets the routing
+        table (:meth:`_route`) pass the envelope kind it already matched; when
+        omitted (relay/sync ingest of a stored envelope) we read the SAME
+        authoritative signal off ``item['kind']`` on the envelope itself.
+        """
         if not isinstance(item, dict):
             raise FabricNodeError("record envelope must be a map")
         author = item.get("author")
@@ -977,6 +989,8 @@ class FabricNode(BaseNode):
             raise FabricNodeError("record must be a map")
         if not crypto.verify(author, _record_signable(record), sig):
             raise FabricNodeError("invalid author signature on fabric record")
+        if is_edge is None:
+            is_edge = item.get("kind") == "fabric-edge"
         # #92 ingest admission: a peer flooding (validly) own-key-signed junk is throttled
         # HERE — before the record lands in the web or the frame store, so a flood is
         # capped at ingest rather than merely evicted after it has consumed memory.
@@ -990,7 +1004,7 @@ class FabricNode(BaseNode):
                 return False
         before_nodes = len(self.web.nodes)
         before_edges = len(self.web._out.get(record.get("src"), []))
-        if record.get("kind") == "edge":
+        if is_edge:
             src = record.get("src")
             dst = record.get("dst")
             rel = record.get("rel")
@@ -1056,10 +1070,16 @@ class FabricNode(BaseNode):
         no node-specific ``_serve_connection`` override to keep in sync.
         """
         if kind == "fabric-record":
-            self._ingest_signed(msg)
+            # Envelope-authoritative routing (#144): a 'fabric-record' envelope is
+            # ALWAYS a node, regardless of an inner record['kind']=='edge' the
+            # author may have set — so the same signed body is a node on both
+            # author (weave) and receiver, never a divergent edge.
+            self._ingest_signed(msg, is_edge=False)
             return {"kind": "fabric-ack"}
         elif kind == "fabric-edge":
-            self._ingest_signed(msg)
+            # A genuine 'fabric-edge' envelope (Edge.to_record() shape, #108) is
+            # ALWAYS an edge — the legitimate edge path is preserved exactly.
+            self._ingest_signed(msg, is_edge=True)
             return {"kind": "fabric-ack"}
         elif kind == "fabric-sync-request":
             return self._serve_sync()
