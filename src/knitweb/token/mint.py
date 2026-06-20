@@ -26,6 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..core import canonical
+from ..core.pulse import Pulse
 from ..ledger import blob
 from ..ledger.fiber import Fiber
 from ..ledger.node import AccountNode
@@ -41,13 +42,20 @@ class EmissionPolicy:
     """Bounded, demand-gated emission schedule (integer-only).
 
     The reward for a verified job is ``escrow * rate_num // rate_den``, then clamped
-    so it never exceeds the escrow itself (mint ≤ proven demand) nor pushes cumulative
-    issuance past ``max_supply``. ``rate_num/rate_den`` defaults to a 1/2 work subsidy.
+    so it never exceeds the escrow itself (mint ≤ proven demand), nor pushes cumulative
+    issuance past ``max_supply``, nor exceeds the remaining ``epoch_cap`` for the Pulse
+    epoch the mint falls in. ``rate_num/rate_den`` defaults to a 1/2 work subsidy.
+
+    ``epoch_cap`` is the per-epoch supply ceiling (PLS-wei minted within one Pulse
+    epoch). ``None`` (default) means epoch issuance is unbounded — behaviour is then
+    identical to the pre-epoch policy. Binding a cap to the heartbeat is how the
+    Pulse governs the money supply: activity (Beats) gates issuance rate.
     """
 
     rate_num: int = 1
     rate_den: int = 2
     max_supply: int | None = None
+    epoch_cap: int | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -64,15 +72,30 @@ class EmissionPolicy:
                 raise TypeError("max_supply must be int")
             if self.max_supply < 0:
                 raise ValueError("max_supply must be non-negative")
+        if self.epoch_cap is not None:
+            if not isinstance(self.epoch_cap, int) or isinstance(self.epoch_cap, bool):
+                raise TypeError("epoch_cap must be int")
+            if self.epoch_cap < 0:
+                raise ValueError("epoch_cap must be non-negative")
 
-    def reward(self, escrow: int, already_minted: int) -> int:
-        """The bounded reward for a job whose consumer spent ``escrow`` pulses."""
+    def reward(
+        self, escrow: int, already_minted: int, epoch_remaining: int | None = None
+    ) -> int:
+        """The bounded reward for a job whose consumer spent ``escrow`` pulses.
+
+        ``epoch_remaining`` (when not ``None``) is the PLS-wei still mintable in the
+        current Pulse epoch; the reward is additionally clamped to it. ``None`` leaves
+        the result unchanged, so a treasury without epoch binding behaves exactly as
+        before (this method is a pure superset of the prior bound).
+        """
         if escrow <= 0:
             return 0
         r = (escrow * self.rate_num) // self.rate_den
         r = min(r, escrow)  # demand bound: never mint more than the escrow consumed
         if self.max_supply is not None:
             r = min(r, max(0, self.max_supply - already_minted))
+        if epoch_remaining is not None:
+            r = min(r, max(0, epoch_remaining))  # per-epoch supply ceiling (Pulse-gated)
         return r
 
 
@@ -85,6 +108,12 @@ class Issuance:
     escrow: int       # the escrow that gated this issuance
     job_digest: str   # digest of the verified work proof
     timestamp: int
+    # Pulse epoch this mint fell in (None when the treasury is not epoch-bound).
+    # Audit/accounting only — DELIBERATELY excluded from to_record()/cid so the
+    # issuance's canonical bytes (and thus the coinbase Fiber's knit CID) are
+    # byte-identical to the pre-epoch path. Adding it here would change every
+    # issuance hash; keeping it off the canonical record is the byte-identity guard.
+    epoch: int | None = None
 
     def to_record(self) -> dict:
         return {
@@ -108,11 +137,22 @@ class Treasury:
     to create native PLS is :meth:`reward_verified_work`, which proves the work first.
     """
 
-    def __init__(self, policy: EmissionPolicy | None = None) -> None:
+    def __init__(
+        self, policy: EmissionPolicy | None = None, pulse: Pulse | None = None
+    ) -> None:
         self.policy = policy or EmissionPolicy()
+        # The Pulse binds issuance to the heartbeat: the epoch a mint falls in is
+        # derived from its (injected) timestamp via ``pulse.epoch_at``. ``None``
+        # leaves the treasury epoch-unbound — identical to the pre-epoch behaviour.
+        self.pulse = pulse
         self.total_minted = 0
         self.issuances: list[Issuance] = []
         self._rewarded_digests: set[str] = set()  # work already rewarded (anti-replay)
+        self._epoch_minted: dict[int, int] = {}    # epoch -> PLS-wei minted that epoch
+
+    def epoch_minted(self, epoch: int) -> int:
+        """PLS-wei minted in ``epoch`` so far (0 if none / not epoch-bound)."""
+        return self._epoch_minted.get(epoch, 0)
 
     def reward_verified_work(
         self,
@@ -155,18 +195,27 @@ class Treasury:
         if escrow > 0:
             consumer.transfer_to(worker, NATIVE, escrow, timestamp)
 
-        # 4. bounded mint
-        amount = self.policy.reward(escrow, self.total_minted)
+        # 4. bounded mint — Pulse-gated. The epoch is derived from the injected
+        #    timestamp; when both a Pulse and an epoch_cap are set, the reward is
+        #    additionally clamped to the supply still mintable in this epoch.
+        epoch = self.pulse.epoch_at(timestamp) if self.pulse is not None else None
+        epoch_remaining = None
+        if epoch is not None and self.policy.epoch_cap is not None:
+            epoch_remaining = self.policy.epoch_cap - self._epoch_minted.get(epoch, 0)
+        amount = self.policy.reward(escrow, self.total_minted, epoch_remaining)
         issuance = Issuance(
             worker=worker.address,
             amount=amount,
             escrow=escrow,
             job_digest=proof.digest,
             timestamp=timestamp,
+            epoch=epoch,
         )
         if amount > 0:
             self._coinbase(worker, amount, issuance)
             self.total_minted += amount
+            if epoch is not None:
+                self._epoch_minted[epoch] = self._epoch_minted.get(epoch, 0) + amount
         self.issuances.append(issuance)
         self._rewarded_digests.add(proof.digest)
         return issuance
