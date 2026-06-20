@@ -502,12 +502,23 @@ class Reconciler:
         # ceiling — bounds the CID count any single frame carries.
         children = split_range(lo, hi, self._fanout)
         unsplittable = len(children) == 1 and children[0] == (lo, hi)
-        if (
-            len(my_cids) <= self._leaf_max
-            or their_count <= self._leaf_max
-            or depth >= self._max_depth
-            or unsplittable
-        ):
+        forced = depth >= self._max_depth or unsplittable
+        # The "small enough to stop bisecting" shortcut is keyed on LEAF_MAX, but a
+        # leaf is a *two-sided* exchange: our leaf carries ``my_cids`` and provokes a
+        # reply leaf carrying up to ``their_count`` of the peer's CIDs. Taking the
+        # shortcut while EITHER side exceeds ``MAX_LEAF_CIDS`` would build (or force
+        # the peer to build) a frame over the hard cap and raise ``ReconcileError``.
+        # The common bootstrap case triggers it: a fresh peer (``their_count`` tiny)
+        # meeting an established node holding a huge range — ``their_count <= leaf_max``
+        # would leaf the full keyspace and the big side must then dump its whole
+        # inventory in one frame. So only take the shortcut when both payloads fit;
+        # otherwise keep bisecting until each leaf is bounded. (``forced`` ranges are
+        # at the depth/keyspace floor where bisection can no longer shrink the count,
+        # so they leaf regardless — unreachable for real CIDs, which never pack
+        # MAX_LEAF_CIDS into one minimal sub-range.)
+        small_enough = len(my_cids) <= self._leaf_max or their_count <= self._leaf_max
+        both_fit = len(my_cids) <= MAX_LEAF_CIDS and their_count <= MAX_LEAF_CIDS
+        if forced or (small_enough and both_fit):
             # Send our raw CIDs for this range; the peer diffs and replies with
             # what we lack as its own leaf.
             return [build_leaf_frame(lo, hi, my_cids)]
