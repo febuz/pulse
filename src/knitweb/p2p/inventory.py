@@ -154,6 +154,14 @@ MAX_GETDATA_BATCH = 2_048
 # under the per-window allowance — while capping a hammering peer to a fixed
 # bytes/window ceiling that kills the GiB-scale amplification. Integer-only; the
 # clock is an injected monotonic integer (seconds), never a wall-clock.
+#
+# LIVENESS FLOOR — this MUST stay >= ``wire.MAX_FRAME_BYTES``. ``ServeBudget.take``
+# is all-or-nothing (#189): a single body larger than the WHOLE window budget is
+# deferred every window and never served — permanent fetch starvation, not mere
+# throttling. Safe only because the largest admissible frame (``wire.MAX_FRAME_BYTES``,
+# 8 MiB) fits inside one window (256 MiB). Shrinking this below MAX_FRAME_BYTES — or
+# raising MAX_FRAME_BYTES above it — silently starves large-record fetches. Pinned by
+# tests/property/test_inventory.py::test_serve_window_covers_the_largest_possible_body_so_no_fetch_can_starve (#195).
 SERVE_BYTES_PER_WINDOW = 256 * 1024 * 1024  # 256 MiB / window / peer
 SERVE_WINDOW_SECONDS = 10
 

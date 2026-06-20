@@ -33,6 +33,10 @@ __all__ = [
     "write_frame_bytes",
 ]
 
+# Hard per-frame byte ceiling for every wire envelope. LIVENESS COUPLING: this MUST
+# stay <= ``inventory.SERVE_BYTES_PER_WINDOW``. The all-or-nothing serve budget (#189)
+# defers any body larger than one serve window forever, so raising this above the
+# serve window would silently starve large-record fetches (see #195 / inventory.py).
 MAX_FRAME_BYTES = 8 * 1024 * 1024
 
 
