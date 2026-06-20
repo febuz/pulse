@@ -117,3 +117,71 @@ def test_compile_bundle_rejects_missing_asset_or_originator_metadata():
         bc.compile_bundle("", "Acme", rels)
     with pytest.raises(bc.BytecodeError):
         bc.compile_bundle("asset-id", "", rels)
+
+
+# ---------------------------------------------------------------------------
+# Regression lock (#131): the signed-bundle presence guard.
+#
+# The compiler must refuse to produce a bundle whose provenance fields are
+# missing or non-string. These tests pin that guard so a future refactor that
+# silently drops it is caught, and pin the canonical byte identity of a fixed
+# bundle so the content-addressed digest can never drift for a given record.
+# ---------------------------------------------------------------------------
+
+# Fixed byte-identity fixture: fixed asset_cid, fixed originator, and FIXED
+# INTEGER relation weights (independent of any quantize derivation), so the
+# canonical compiled bytes — and therefore the digest — are pinned forever.
+_PIN_ASSET_CID = "bcid"
+_PIN_ORIGINATOR = "Global Finance Corp"
+_PIN_RELATIONS = [
+    bc.Relation("asset:99482", "hasSource:IFRS_File", "https://ifrs.org", "IFRS_File", 3),
+    bc.Relation("asset:99482", "hasSource:YouTube_Video", "https://youtube.com/x", "YouTube_Video", 5),
+    bc.Relation("asset:99482", "hasSource:Youku_Video", "https://youku.com/y", "Youku_Video", 2),
+    bc.Relation("asset:99482", "hasSource:RuTube_Video", "https://rutube.ru/z", "RuTube_Video", 7),
+]
+_PIN_DIGEST = "bd18ba8776eee25b81a7446d99cc506f262aa62869f85eef05e1c85487f0357e"
+
+
+@pytest.mark.property
+def test_compile_bundle_rejects_empty_asset_cid():
+    with pytest.raises(bc.BytecodeError):
+        bc.compile_bundle("", _PIN_ORIGINATOR, _sample_relations())
+
+
+@pytest.mark.property
+def test_compile_bundle_rejects_none_asset_cid():
+    # None is "not isinstance(asset_cid, str)" -> guard raises BytecodeError,
+    # never an unguarded TypeError leaking out of the compiler.
+    with pytest.raises(bc.BytecodeError):
+        bc.compile_bundle(None, _PIN_ORIGINATOR, _sample_relations())
+
+
+@pytest.mark.property
+def test_compile_bundle_rejects_empty_originator():
+    with pytest.raises(bc.BytecodeError):
+        bc.compile_bundle(_PIN_ASSET_CID, "", _sample_relations())
+
+
+@pytest.mark.property
+def test_compile_bundle_rejects_none_originator():
+    with pytest.raises(bc.BytecodeError):
+        bc.compile_bundle(_PIN_ASSET_CID, None, _sample_relations())
+
+
+@pytest.mark.property
+def test_compile_bundle_byte_identity_pin():
+    # Byte identity: the canonical compiled bytes of this fixed record must
+    # never change. Compiling is order-independent, so even reversed input must
+    # yield the same content-addressed digest, and that digest is pinned.
+    data = bc.compile_bundle(_PIN_ASSET_CID, _PIN_ORIGINATOR, _PIN_RELATIONS)
+    data_rev = bc.compile_bundle(
+        _PIN_ASSET_CID, _PIN_ORIGINATOR, list(reversed(_PIN_RELATIONS))
+    )
+    assert data == data_rev
+    assert bc.bundle_digest(data) == _PIN_DIGEST
+
+    # A signature over those exact bytes verifies — the signed record commits
+    # to the pinned canonical bytes.
+    priv, pub = crypto.generate_keypair()
+    sig = bc.sign_bundle(priv, data)
+    assert bc.verify_bundle(pub, data, sig)
