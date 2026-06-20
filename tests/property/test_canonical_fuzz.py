@@ -138,3 +138,31 @@ def test_encode_decode_reject_excessive_nesting():
     over_deep_bytes = b"\x81" * (MAX_DEPTH + 50) + b"\x00"
     with pytest.raises(CanonicalError):
         decode(over_deep_bytes)
+
+
+def test_decode_rejects_excessive_object_count():
+    """#169: a shallow-but-huge buffer (one in-spec frame of millions of tiny leaves)
+    raises CanonicalError on the object-COUNT guard instead of inflating to ~8M Python
+    objects. MAX_DEPTH bounds nesting depth but not breadth; the decode path is
+    attacker-controlled, so the post-decode object explosion must be a typed reject."""
+    from knitweb.core.canonical import MAX_ITEMS, CanonicalError, decode, encode
+
+    # A normal record well under the cap still round-trips cleanly.
+    ok = {"kind": "knowledge", "items": list(range(1000)), "n": 7}
+    assert decode(encode(ok)) == ok
+
+    # A flat CBOR array declaring > MAX_ITEMS tiny leaves (each 0x00 = integer 0).
+    # Decoding counts 1 (array) + n (leaves); n = MAX_ITEMS pushes the total over the
+    # ceiling, so it rejects PART-WAY THROUGH — the millions of objects never allocate.
+    n = MAX_ITEMS
+    over = b"\x9a" + n.to_bytes(4, "big") + b"\x00" * n  # array(n) head + n leaves
+    with pytest.raises(CanonicalError):
+        decode(over)
+
+    # The guard spans the WHOLE buffer, not one container: many sibling arrays whose
+    # combined leaf count exceeds the cap are rejected even though no single one does.
+    half = MAX_ITEMS // 2
+    sibling = b"\x9a" + half.to_bytes(4, "big") + b"\x00" * half
+    outer = b"\x82" + sibling + sibling  # array of two half-sized arrays > MAX_ITEMS total
+    with pytest.raises(CanonicalError):
+        decode(outer)
