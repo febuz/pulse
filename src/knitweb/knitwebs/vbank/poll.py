@@ -28,7 +28,8 @@ from ...fabric.attest import Attestation, attest
 from ...fabric.web import Web
 from .tally import tally
 
-__all__ = ["POLL_KIND", "RESULT_KIND", "Poll", "VbankPoll", "verify_result", "audit_result"]
+__all__ = ["POLL_KIND", "RESULT_KIND", "Poll", "VbankPoll", "verify_result", "audit_result",
+           "collect_polls", "poll_status", "is_poll_open"]
 
 POLL_KIND = "vbank-poll"
 RESULT_KIND = "vbank-result"
@@ -211,3 +212,32 @@ def audit_result(result_att: Attestation, poll_record: dict, ballots: list[dict]
         result_att.verify(author_field="authority")
         and verify_result(result_att.record, poll_record, ballots, weights)
     )
+
+
+# ---------------------------------------------------------------------------
+# Discovery / status read-models (for clients and indexers)
+# ---------------------------------------------------------------------------
+
+def collect_polls(web: Web, scope: str | None = None) -> list[dict]:
+    """Read all ``vbank-poll`` definitions from a woven Web (optionally one scope), CID order."""
+    found = [
+        record
+        for record in web.nodes.values()
+        if record.get("kind") == POLL_KIND and (scope is None or record.get("scope") == scope)
+    ]
+    found.sort(key=canonical.cid)
+    return found
+
+
+def poll_status(poll_record: dict, now: int) -> str:
+    """Return ``"upcoming"`` / ``"open"`` / ``"closed"`` for ``poll_record`` at time ``now``."""
+    if now < poll_record["opens_at"]:
+        return "upcoming"
+    if now < poll_record["closes_at"]:
+        return "open"
+    return "closed"
+
+
+def is_poll_open(poll_record: dict, now: int) -> bool:
+    """True iff ``now`` is within the poll's voting window ``[opens_at, closes_at)``."""
+    return poll_record["opens_at"] <= now < poll_record["closes_at"]

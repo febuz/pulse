@@ -34,7 +34,17 @@ from .liquid import (
     resolve_liquid,
     verify_liquid_result,
 )
-from .poll import POLL_KIND, RESULT_KIND, Poll, VbankPoll, audit_result, verify_result
+from .poll import (
+    POLL_KIND,
+    RESULT_KIND,
+    Poll,
+    VbankPoll,
+    audit_result,
+    collect_polls,
+    is_poll_open,
+    poll_status,
+    verify_result,
+)
 from .ranked import (
     RANKED_BALLOT_KIND,
     RANKED_RESULT_KIND,
@@ -52,6 +62,7 @@ from .tally import BALLOT_KIND, TALLY_KIND, collect_ballots, tally
 __all__ = [
     "Ballot", "VbankKnitweb", "tally", "collect_ballots", "BALLOT_KIND", "TALLY_KIND",
     "Poll", "VbankPoll", "POLL_KIND", "RESULT_KIND", "verify_result", "audit_result",
+    "collect_polls", "poll_status", "is_poll_open",
     "Delegation", "emit_delegation", "collect_delegations", "delegation_map",
     "resolve_liquid", "liquid_result_record", "certify_liquid_result",
     "verify_liquid_result", "audit_liquid_result",

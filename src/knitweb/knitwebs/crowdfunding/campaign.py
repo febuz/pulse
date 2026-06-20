@@ -36,6 +36,9 @@ __all__ = [
     "audit_settlement",
     "settlement_entries",
     "collect_pledges",
+    "collect_campaigns",
+    "campaign_status",
+    "is_campaign_open",
 ]
 
 PLEDGE_KIND = "crowdfunding-pledge"
@@ -290,3 +293,28 @@ def collect_pledges(web: Web, scope: str) -> List[dict]:
     ]
     found.sort(key=canonical.cid)
     return found
+
+
+def collect_campaigns(web: Web, scope: str | None = None) -> List[dict]:
+    """Read all ``crowdfunding-campaign`` definitions from a woven Web (optionally one scope)."""
+    found = [
+        record
+        for record in web.nodes.values()
+        if record.get("kind") == CAMPAIGN_KIND and (scope is None or record.get("scope") == scope)
+    ]
+    found.sort(key=canonical.cid)
+    return found
+
+
+def campaign_status(campaign_record: dict, now: int) -> str:
+    """Return ``"upcoming"`` / ``"open"`` / ``"closed"`` for a campaign at time ``now``."""
+    if now < campaign_record["opens_at"]:
+        return "upcoming"
+    if now < campaign_record["closes_at"]:
+        return "open"
+    return "closed"
+
+
+def is_campaign_open(campaign_record: dict, now: int) -> bool:
+    """True iff ``now`` is within the campaign's pledging window ``[opens_at, closes_at)``."""
+    return campaign_record["opens_at"] <= now < campaign_record["closes_at"]
