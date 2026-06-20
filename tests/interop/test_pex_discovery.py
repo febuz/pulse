@@ -151,5 +151,11 @@ def test_pex_source_keys_by_advertiser_not_local():
     assert source_group(tcp_a) != source_group(None)         # NOT collapsed to b"local:"
     assert source_group(tcp_a) != source_group(tcp_b)        # distinct advertisers -> distinct groups
     assert source_group(AsyncioP2PNode._pex_source("relay:mbox-a")) != source_group(None)  # relay keys per mailbox
-    assert AsyncioP2PNode._pex_source("node:deadbeef") is None   # proven-key carrier has no network locator
+    # #161: a PROVEN ``node:<pubkey>`` keys on a STABLE per-identity group (not local,
+    # not the forgeable relay mailbox) so a relay sender rotating its self-asserted
+    # reply-to mailbox cannot mint unlimited source groups and spray new-table buckets.
+    node_src = AsyncioP2PNode._pex_source("node:deadbeef")
+    assert source_group(node_src) != source_group(None)        # proven key is NOT locally-heard
+    assert source_group(node_src) != source_group(AsyncioP2PNode._pex_source("relay:deadbeef"))  # distinct from a relay mailbox
+    assert source_group(node_src) == source_group(AsyncioP2PNode._pex_source("node:deadbeef"))   # stable per identity
     assert AsyncioP2PNode._pex_source(None) is None             # absent -> locally-heard

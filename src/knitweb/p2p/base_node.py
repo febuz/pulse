@@ -290,15 +290,27 @@ class BaseNode:
             msg.pop(ENVELOPE_ID_PROOF_KEY, None),
             body=msg,
         )
+        # Hand the SINGLE resolution to subclasses that key a per-peer budget on it
+        # (the fabric serve/ingest path), so they debit the IDENTICAL proven
+        # ``node:<pubkey>``/carrier key the ban gate judged WITHOUT re-verifying the
+        # proof (a second verification would trip the anti-replay seen-cache and
+        # downgrade this verdict). Default is a no-op.
+        self._note_serve_verdict(verdict)
         if verdict is not None and not verdict.accepted:
             self.metrics.incr("banned_refusals")
             if self._count_frames_out_on_banned:
                 self.metrics.incr("frames_out")
             return self._error("banned", "peer is banned")
         try:
-            # Thread the carrier id (tcp:<ip>/relay:<mailbox>) to the router so PEX can
-            # key learned addresses on the advertiser's source group (eclipse defence, #94).
-            out = self._route(msg.get("kind"), msg, carrier_id)
+            # Thread the RESOLVED reputation key to the router so PEX keys learned
+            # addresses on the advertiser's source group (eclipse defence, #94/#100):
+            # the proven ``node:<pubkey>`` when a valid+fresh+bound proof rode along,
+            # else the carrier id (``tcp:<ip>``/``relay:<mailbox>``). Using the proven
+            # key is what stops a relay sender from spraying every new-table bucket by
+            # rotating its self-asserted reply-to mailbox (#161): N rotated mailboxes
+            # from one proven identity collapse to ONE source group.
+            source_id = verdict.rep_key if verdict is not None else carrier_id
+            out = self._route(msg.get("kind"), msg, source_id)
         except self._dispatch_errors as exc:
             # A forged author signature surfaces here as a routing error mentioning
             # "signature"; with a positively-identified sender it is a graded
@@ -310,6 +322,17 @@ class BaseNode:
             out = self._error("bad-request", str(exc))
         self.metrics.incr("frames_out")
         return out
+
+    def _note_serve_verdict(self, verdict) -> None:
+        """Hook: receive the dispatch's already-resolved :class:`GateVerdict`.
+
+        Called once per dispatch, after the single identity-gate resolution and
+        before routing. The base keys no per-peer budget, so this is a no-op; a
+        subclass that does (the fabric serve/ingest path) overrides it to stash the
+        verdict's reputation key, guaranteeing the budget and the ban gate key on
+        the SAME resolved identity from ONE proof verification.
+        """
+        return None
 
     # -- proven node identity (step 2 of #58) -----------------------------
 

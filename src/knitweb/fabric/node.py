@@ -75,7 +75,6 @@ from ..p2p.inventory import (
 from ..p2p import identity
 from ..p2p import mesh
 from ..p2p.mesh import GRAFT, PRUNE, IHAVE, IWANT, Gossipsub
-from ..p2p.relay import ENVELOPE_PEER_KEY, ENVELOPE_ID_PROOF_KEY
 from ..p2p.reconcile import ReconcileSession
 from .items import web_state_root
 from .web import Web
@@ -322,36 +321,40 @@ class FabricNode(BaseNode):
         return web_state_root(self.web)
 
     async def _dispatch(self, msg: dict) -> dict:
-        """Resolve the per-peer serve key, then delegate to the shared dispatch.
+        """Delegate to the shared dispatch, capturing the per-peer serve key.
 
         The #91 anti-amplification byte budget is keyed PER PEER, but the shared
         :meth:`BaseNode._dispatch` pops the carrier identity (and any piggybacked
-        identity proof) BEFORE it calls :meth:`_route`, so the serve handlers
-        downstream would otherwise have no peer to debit. We therefore resolve the
-        reputation key here — through the SAME single identity-keying authority the
-        base uses (:meth:`_resolve_verdict`, reading the carrier id and the OPTIONAL
-        proof NON-destructively so the base still pops and judges them itself) —
-        and stash it for the serve path. The proven ``node:<pubkey>`` is used when a
-        valid+fresh proof rode along (so a peer cannot dodge its budget by hopping
-        carrier ids), else the carrier id, else ``None`` (unidentified sender: only
-        the per-request count cap applies). We never mutate ``msg`` and we delegate
-        verbatim, so the ban gate, the INVALID_SIGNATURE penalty, and every other
-        dispatch behaviour are byte-for-byte the base's.
+        identity proof) and resolves the reputation key BEFORE it calls
+        :meth:`_route`, so the serve handlers downstream would otherwise have no
+        peer to debit. Rather than re-resolve (which would re-verify the same proof
+        and trip the anti-replay seen-cache, downgrading the ban gate to carrier
+        fallback), we let the base do its SINGLE resolution and hand us the verdict
+        via :meth:`_note_serve_verdict`; the serve path then debits the IDENTICAL
+        key the ban gate judged — the proven ``node:<pubkey>`` when a valid+fresh
+        proof rode along (so a peer cannot dodge its budget by rotating carrier
+        ids), else the carrier id, else ``None``. We never mutate ``msg`` and
+        delegate verbatim, so every dispatch behaviour is byte-for-byte the base's.
         """
-        carrier_id = msg.get(ENVELOPE_PEER_KEY)
-        if not isinstance(carrier_id, str):
-            carrier_id = None
-        if carrier_id is None:
-            self._serve_peer_key = None
-        else:
-            self._serve_peer_key = self._resolve_peer_id(
-                carrier_id, msg.get(ENVELOPE_ID_PROOF_KEY)
-            )
         try:
             return await super()._dispatch(msg)
         finally:
             # Scope the key to this dispatch only; never let it leak to the next.
             self._serve_peer_key = None
+
+    def _note_serve_verdict(self, verdict) -> None:
+        """Capture the base's ALREADY-RESOLVED verdict for the serve/ingest path.
+
+        The base resolves the reputation key ONCE through the single identity gate
+        (binding the OPTIONAL proof to the business body, recording it in the
+        anti-replay seen-cache exactly once) and calls this hook before it routes,
+        so the per-peer byte budget keys on the IDENTICAL key the ban gate judged:
+        the proven ``node:<pubkey>`` when a valid+fresh+bound proof rode along, else
+        the carrier id, else ``None``. Resolving here independently would re-verify
+        the same proof and trip the seen-cache as a replay (downgrading the ban
+        gate to carrier fallback), so we MUST reuse the base's single resolution.
+        """
+        self._serve_peer_key = verdict.rep_key if verdict is not None else None
 
     # -- self-healing anti-entropy (issue #44) ----------------------------
 

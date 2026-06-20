@@ -572,17 +572,25 @@ def _proven_graft(victim, financial_priv, carrier_id, *, asserted_override=None)
     """A GRAFT carrying a REAL identity proof for ``financial_priv``'s identity key
     over ``carrier_id``. Returns the frame and the proven ``node:<pubkey>``.
 
-    The proof is bound to ``b""`` because the serve-path key resolution
-    (``_dispatch`` -> ``_resolve_peer_id``) judges the proof with an empty body
-    binding; this is the EXISTING seam the fix reuses, not new crypto. ``asserted``
-    defaults to the proven id (an honest GRAFT) but can be overridden to forge a
-    DIFFERENT id while presenting a valid proof (the impersonation case)."""
+    The proof is BOUND TO THE BUSINESS BODY (#90) exactly as a real dialer's
+    ``_stamp_id_proof`` binds it — over the graft map with ``_MESH_PEER_KEY`` set
+    but the ``_relay_*`` envelope keys excluded (the body the receiver reconstructs
+    after popping those keys). This keeps the serve-path key resolution and the ban
+    gate judging the proof under the IDENTICAL binding (the one identity-keying
+    authority), not a weaker empty binding. ``asserted`` defaults to the proven id
+    (an honest GRAFT) but can be overridden to forge a DIFFERENT id while presenting
+    a valid proof (the impersonation case)."""
     id_key = identity.network_signing_key(financial_priv)
     proven = identity.node_peer_id(crypto.public_from_private(id_key))
     msg = wire.read_frame_bytes(build_graft_frame(WEB_TOPIC))
     msg[_MESH_PEER_KEY] = proven if asserted_override is None else asserted_override
+    # Bind over the business body the receiver will reconstruct (the graft map with
+    # the peer key, before the _relay_* envelope keys are added).
+    binding = crypto.sha256(canonical.encode(msg))
     msg[ENVELOPE_PEER_KEY] = carrier_id
-    proof = identity.make_id_proof(id_key, timestamp=victim._id_proof_now(), binding=b"")
+    proof = identity.make_id_proof(
+        id_key, timestamp=victim._id_proof_now(), binding=binding
+    )
     msg[ENVELOPE_ID_PROOF_KEY] = identity.id_proof_to_record(proof)
     return msg, proven
 

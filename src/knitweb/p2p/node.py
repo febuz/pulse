@@ -426,13 +426,16 @@ class AsyncioP2PNode(BaseNode):
 
     @staticmethod
     def _pex_source(source_id: "str | None") -> "PeerAddress | None":
-        """The addrbook *source* for addresses advertised by carrier ``source_id``.
+        """The addrbook *source* for addresses advertised by reputation key ``source_id``.
 
         A ``tcp:<ip>`` sender keys on its remote IP (so its advertisements bucket by its
-        own /16 group); a ``relay:<mailbox>`` sender keys per mailbox. Anything else (a
-        proven ``node:<pubkey>`` with no network locator, or absent) stays ``None`` =
-        locally-heard. This is what makes the source-group eclipse defence actually
-        engage on the inbound path (#94).
+        own /16 group); a ``relay:<mailbox>`` sender keys per mailbox; a PROVEN
+        ``node:<pubkey>`` keys on a stable per-identity group so a relay sender that
+        rotates its self-asserted reply-to mailbox cannot mint unlimited distinct source
+        groups and spray every new-table bucket (#100/#161) — all of one identity's
+        rotated mailboxes collapse to the ONE ``name:node:;id=<pubkey>`` group. Absent /
+        unidentified stays ``None`` = locally-heard. This is what makes the source-group
+        eclipse defence actually engage on the inbound path (#94/#100).
         """
         if not isinstance(source_id, str):
             return None
@@ -442,6 +445,9 @@ class AsyncioP2PNode(BaseNode):
         if source_id.startswith("relay:"):
             mailbox = source_id[6:]
             return PeerAddress(transport="relay", params={"mailbox": mailbox}) if mailbox else None
+        if source_id.startswith("node:"):
+            pubkey = source_id[5:]
+            return PeerAddress(transport="node", params={"id": pubkey}) if pubkey else None
         return None
 
     def _handle_peer_exchange(self, msg: dict, source_id: "str | None" = None) -> dict:

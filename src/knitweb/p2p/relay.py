@@ -300,6 +300,10 @@ class RelayTransport:
             return
         rid = decoded.get("_relay_rid")
         reply_to = decoded.get("_relay_reply_to")
+        # Read the OPTIONAL piggybacked identity proof BEFORE _strip_envelope drops
+        # the whole ``_relay_*`` namespace, so we can re-stamp it onto the request
+        # the way the TCP carrier delivers it verbatim (see below).
+        id_proof = decoded.get(ENVELOPE_ID_PROOF_KEY)
         # A reply to one of our own dials?
         if "_relay_reply_to" not in decoded and isinstance(rid, int):
             waiter = self._waiters.get(rid)
@@ -318,14 +322,24 @@ class RelayTransport:
         request = _strip_envelope(decoded)
         if isinstance(reply_to, str):
             request[ENVELOPE_PEER_KEY] = relay_peer_id(reply_to)
-        # Proven node identity (step 2 of #58) is a TCP-carrier concern: the NAT
-        # collateral-ban it removes is specific to ``tcp:<ip>`` keying, where many
-        # honest peers can share one public IP. A relay mailbox is already a
-        # per-node-stable identity, so the relay carrier keeps keying on the
-        # reply-to mailbox and does NOT honour the piggybacked proof — the proof
-        # envelope key is therefore stripped here (it is a ``_relay_*`` key) and
-        # never reaches dispatch over the relay path. This keeps the pre-existing
-        # relay ban-gate behaviour byte-for-byte unchanged.
+        # Proven node identity (step 2 of #58): a relay reply-to mailbox is
+        # self-asserted and re-mintable per frame (``self.mailbox`` rotates with
+        # zero ownership proof), so keying ban/budget/source-group on it alone lets
+        # a sender mint a fresh reputation key every frame — evading bans, resetting
+        # byte budgets, and spraying addrman source groups (#160/#161). We therefore
+        # re-stamp the OPTIONAL piggybacked proof the sender stamped on its outbound
+        # dial (``_stamp_id_proof``) onto the request, exactly as the TCP carrier
+        # delivers it verbatim. The carrier-agnostic ``_dispatch`` then routes it
+        # through the SAME identity gate (``_resolve_verdict``/``_resolve_peer_id``):
+        # a VALID + FRESH + BOUND + first-seen proof upgrades the key to the proven
+        # ``node:<pubkey>`` so mailbox rotation no longer mints fresh keys; an
+        # absent/invalid/replayed/mis-bound proof falls back to ``relay:<mailbox>``
+        # unchanged, preserving pre-existing behaviour for proofless relay peers.
+        # The proof rides only in the stripped ``_relay_*`` envelope namespace and
+        # is popped before any signed/business logic, so it never enters
+        # canonical/hashed bytes — byte-identity is preserved.
+        if id_proof is not None:
+            request[ENVELOPE_ID_PROOF_KEY] = id_proof
         try:
             response = await self._handler(request)
         except Exception:  # noqa: BLE001 — never let one bad frame kill the loop

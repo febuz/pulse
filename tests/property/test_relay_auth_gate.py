@@ -170,11 +170,20 @@ def test_unbanned_relay_peer_is_served_by_fabric_node_dispatch():
 
 def test_banned_mailbox_cannot_weave_over_the_relay_carrier():
     async def scenario():
+        from knitweb.core import crypto
+        from knitweb.p2p import identity
+
         relay = InMemoryRelay()
         server = FabricNode(transport=relay_for("server-mb", relay))
         client = FabricNode(transport=relay_for("client-mb", relay))
-        # The server bans the client's reply mailbox identity up front.
-        server.reputation.penalize(relay_peer_id("client-mb"), Offense.EQUIVOCATION)
+        # The client dials with a #58 identity proof, so the relay carrier keys it on
+        # its PROVEN node id (not the forgeable reply mailbox) — see #160. The server
+        # bans that proven id up front; a mailbox-only ban would now be evaded by
+        # mailbox rotation, which is exactly the bug #160 closes.
+        proven = identity.node_peer_id(
+            crypto.public_from_private(identity.network_signing_key(client._priv))
+        )
+        server.reputation.penalize(proven, Offense.EQUIVOCATION)
         async with server, client:
             client.add_peer("server", peer_at("server-mb"))
             await client.weave(
