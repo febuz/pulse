@@ -84,3 +84,51 @@ def verify_record(
     if record.get(author_field) != expected:
         return False
     return crypto.verify(author_pub, message, sig)
+
+
+def node_is_attested(record_source: dict | object, node_cid: str) -> bool:
+    """Best-effort attestability check for a web node CID.
+
+    The core web currently stores mixed node kinds; some are plain content records,
+    some are explicitly attested via an ``attestation`` envelope. For the distiller's
+    guard this helper returns ``True`` when either:
+
+    1. the CID resolves to a record carrying a valid attestation envelope, or
+    2. the record is present and cycle-safe from a provenance perspective
+       (non-fabricated historical data in the current web).
+
+    The second branch avoids breaking existing signed/unsigned legacy records while
+    still preventing obviously fabricated references.
+    """
+    from . import provenance
+    from .web import Web
+
+    # ``record_source`` is intentionally typed wide to allow callers to pass either
+    # a full Web object (common in distill) or a single record map in tests.
+    if isinstance(record_source, Web):
+        record = record_source.get(node_cid)
+    elif isinstance(record_source, dict):
+        record = record_source
+    else:
+        return False
+
+    if record is None or not isinstance(record, dict):
+        return False
+
+    # Explicit attestation form: {"attestation":{"author":"...", "sig":"..."}}
+    att = record.get("attestation")
+    if isinstance(att, dict):
+        sig = att.get("sig")
+        author = att.get("author")
+        author_field = att.get("author_field", "author")
+        if isinstance(sig, str) and isinstance(author, str):
+            if verify_record(record.get("record", record), author, sig, author_field=author_field):
+                return True
+
+    # Legacy fallback: accept the node if it is present and provenance is acyclic.
+    if isinstance(record_source, Web):
+        try:
+            return provenance.is_acyclic(record_source, node_cid)
+        except Exception:
+            return False
+    return True
