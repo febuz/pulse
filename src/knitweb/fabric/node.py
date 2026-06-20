@@ -125,6 +125,36 @@ def _record_signable(record: dict) -> bytes:
     return _RECORD_TAG + canonical.encode(record)
 
 
+def _is_edge_record(record: dict) -> bool:
+    """True iff the SIGNED record is a fabric edge, read off signature-covered bytes.
+
+    #163: the relay/sync ingest paths (sync_from / _pull_cids / _serve_inv_data)
+    receive a stored envelope whose ``kind`` is OUTSIDE the author signature, so a
+    relayer can flip ``fabric-record`` <-> ``fabric-edge`` on a validly-signed body
+    and split the same CID across ``web.nodes`` and ``_out`` on different peers — a
+    permanent state-root partition. The discriminator must therefore be derived
+    from the SIGNED ``record`` itself.
+
+    An edge body is exactly ``Edge.to_record()`` — ``kind == "edge"`` carrying the
+    endpoint fields ``src``/``dst``/``rel`` (a ``weight`` int). ``kind`` is the
+    first key inside ``canonical.encode(record)`` (and so inside
+    :func:`_record_signable`), so a relayer cannot flip it without invalidating the
+    author signature that ingest has already verified. No node schema
+    (knowledge / resource / fabric-checkpoint / spatial-anchor / knitweb plugin
+    kinds / ...) uses ``kind == "edge"``, so this predicate is exact for all honest
+    traffic and tamper-evident for hostile relays. Pure-stdlib, integer-only, and
+    reads existing signed bytes only — it adds/renames/reorders no field, so a
+    record's canonical/signable bytes and CID are byte-identical.
+    """
+    if record.get("kind") != "edge":
+        return False
+    return (
+        isinstance(record.get("src"), str)
+        and isinstance(record.get("dst"), str)
+        and isinstance(record.get("rel"), str)
+    )
+
+
 class FabricNode(BaseNode):
     """A live p2p fabric peer: a fabric Web plus record gossip + convergence.
 
@@ -989,16 +1019,18 @@ class FabricNode(BaseNode):
     def _ingest_signed(self, item, *, is_edge: "bool | None" = None) -> bool:
         """Verify an author-signed record envelope and weave it. True if new.
 
-        Routing (node vs edge) is decided by the ENVELOPE kind, never by the
-        author/attacker-controllable inner ``record['kind']`` field (#144). The
-        author emits a node via a ``fabric-record`` envelope (``weave``) and a
-        real edge via a ``fabric-edge`` envelope (``link``); the receiver must
-        honour that same envelope-level intent so one signed body cannot be a
-        NODE on the author and an EDGE on the receiver (a durable state-root
-        partition that anti-entropy can never heal). ``is_edge`` lets the routing
-        table (:meth:`_route`) pass the envelope kind it already matched; when
-        omitted (relay/sync ingest of a stored envelope) we read the SAME
-        authoritative signal off ``item['kind']`` on the envelope itself.
+        Routing (node vs edge) must be decided by SIGNATURE-COVERED content so one
+        signed body cannot be a NODE on one peer and an EDGE on another — a durable
+        state-root partition anti-entropy can never heal. The gossip routing table
+        (:meth:`_route`) passes the envelope kind it matched via ``is_edge`` and
+        that explicit path is honoured unchanged (#144). When ``is_edge`` is
+        omitted (relay/sync ingest of a stored envelope: ``sync_from`` /
+        :meth:`_pull_cids` / :meth:`_serve_inv_data`) the envelope ``kind`` is
+        OUTSIDE the author signature, so a relayer can flip it; we therefore derive
+        the discriminator from the verified inner ``record`` itself via
+        :func:`_is_edge_record` (#163), which reads the signed ``kind``/endpoint
+        bytes a relayer cannot alter without breaking the signature already
+        verified above. No signed bytes are added or changed — CIDs are untouched.
         """
         if not isinstance(item, dict):
             raise FabricNodeError("record envelope must be a map")
@@ -1012,7 +1044,9 @@ class FabricNode(BaseNode):
         if not crypto.verify(author, _record_signable(record), sig):
             raise FabricNodeError("invalid author signature on fabric record")
         if is_edge is None:
-            is_edge = item.get("kind") == "fabric-edge"
+            # #163: route on the SIGNED record, never the relayer-controlled,
+            # UNSIGNED envelope item['kind'] — that flip re-opened the partition.
+            is_edge = _is_edge_record(record)
         # #92 ingest admission: a peer flooding (validly) own-key-signed junk is throttled
         # HERE — before the record lands in the web or the frame store, so a flood is
         # capped at ingest rather than merely evicted after it has consumed memory.
