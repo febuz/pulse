@@ -72,6 +72,7 @@ from ..p2p.inventory import (
     RECON_RESULT,
     InventoryRelay,
 )
+from ..p2p import identity
 from ..p2p import mesh
 from ..p2p.mesh import GRAFT, PRUNE, IHAVE, IWANT, Gossipsub
 from ..p2p.relay import ENVELOPE_PEER_KEY, ENVELOPE_ID_PROOF_KEY
@@ -817,7 +818,7 @@ class FabricNode(BaseNode):
         fringe = [n for n in self._gossip.topic_peers(WEB_TOPIC) if n not in mesh_members]
         book = self.peerbook.all()
         ihave = wire.read_frame_bytes(frame)
-        ihave[_MESH_PEER_KEY] = self.pub
+        ihave[_MESH_PEER_KEY] = self._mesh_self_id()
         for name in fringe:
             peer = book.get(name)
             if peer is None:
@@ -862,7 +863,7 @@ class FabricNode(BaseNode):
                 continue
             for fr in frames:
                 msg = wire.read_frame_bytes(fr)
-                msg[_MESH_PEER_KEY] = self.pub
+                msg[_MESH_PEER_KEY] = self._mesh_self_id()
                 try:
                     await self._send(peer, msg)
                 except (OSError, FabricNodeError, WireError):
@@ -1097,16 +1098,77 @@ class FabricNode(BaseNode):
 
     # -- gossipsub mesh control server side (issue #67) -------------------
 
+    def _mesh_peer_id(self, asserted) -> "str | None":
+        """Resolve the mesh candidate id for the request currently being served.
+
+        Fix for #143 (mesh peer-id auth: unbounded candidate growth + sybil
+        eclipse). The ``_MESH_PEER_KEY`` field an inbound mesh frame carries is a
+        plain, UNSIGNED, UNVERIFIED body field: it is not bound to the carrier and
+        not bound to any proven identity, so trusting it to key the mesh/score
+        state lets ONE carrier mint a fresh fabricated peer-id per request. Each
+        such id permanently grows both ``_scores`` and ``_topic_peers`` (neither is
+        capacity-bounded), and a fresh id starts at score 0, so 12 distinct
+        fabricated ids from one connection saturate the mesh and eclipse honest
+        GRAFTs. We therefore mirror the proven-vs-asserted identity pattern (#94 /
+        #100) and key the mesh candidate on the ALREADY-RESOLVED dispatch identity
+        (``_serve_peer_key``: the proven ``node:<pubkey>`` when a valid+fresh
+        identity proof rode along, else the carrier id) rather than the asserted
+        field:
+
+          * a proof rode along (a real verified ``node:<pubkey>``): REQUIRE the
+            asserted id to be that same proven identity, else IGNORE the frame —
+            a forged ``_MESH_PEER_KEY`` can never mint a candidate;
+          * no proof, but the carrier is identified: collapse to the carrier id, so
+            ALL fabricated ids from one connection map to ONE mesh candidate;
+          * neither (an unidentified stub carrier, e.g. in-process tests): fall
+            back to the asserted id — there is no connection to collapse on and the
+            asserted id is the only available stable handle.
+
+        No new crypto, no change to ``mesh.py``'s ``add_peer``/``on_graft``
+        signatures, and no signed-record/CID bytes touched: this is a serve-path
+        keying decision, local to the fabric serve handler.
+        """
+        proven = self._serve_peer_key
+        if proven is None:
+            return asserted
+        if proven.startswith(identity.NODE_PEER_PREFIX):
+            # A proof rode along: the proven node id is the authority. An honest
+            # GRAFT asserts that same proven id; anything else is a forgery -> drop.
+            return proven if asserted == proven else None
+        # Identified carrier, no proof: collapse every asserted id to the carrier.
+        return proven
+
+    def _mesh_self_id(self) -> str:
+        """This node's OWN authenticated mesh peer-id to stamp on outbound frames.
+
+        The companion to :meth:`_mesh_peer_id`. A FabricNode always dials with a
+        piggybacked identity proof (:meth:`_id_signing_key`), so a receiver over an
+        identified carrier resolves our ``_serve_peer_key`` to our proven
+        ``node:<pubkey>`` (#89, the unlinkable identity pubkey). We must therefore
+        ASSERT that very id in ``_MESH_PEER_KEY`` so the receiver's #143 binding
+        check (``asserted == proven``) admits our genuine GRAFT instead of dropping
+        it. A keyless node (no identity key) has no proof to ride, so it falls back
+        to its plain pubkey, which the receiver only consults when no carrier id
+        could identify the connection. Derives the SAME identity pubkey the proof
+        proves; no new key material and nothing reaches a signed/hashed record body.
+        """
+        proof_key = self._id_network_signing_key()
+        if proof_key is None:
+            return self.pub
+        return identity.node_peer_id(crypto.public_from_private(proof_key))
+
     def _serve_mesh(self, kind, msg: dict) -> dict:
         """Handle an inbound mesh control frame, delegating to the unchanged mesh.
 
         Mesh frames carried over the dict carrier ride an extra ``_MESH_PEER_KEY``
-        naming the SENDER's stable pubkey (its gossip peer-id). We register that id
-        as a topic candidate (so reciprocal GRAFT/PRUNE/score state keys on the
-        stable ``node:<pubkey>``, never an ephemeral carrier id — #58), strip the
-        key, and re-encode the ids-only frame bytes mesh.py expects. mesh.py is
-        reused UNEDITED; no record body ever rides a mesh frame, so byte-identity
-        is preserved trivially.
+        naming the SENDER's asserted gossip peer-id. We do NOT trust that field to
+        key state: it is unsigned and unbound, so :meth:`_mesh_peer_id` rebinds the
+        candidate to the proven dispatch identity (or the carrier id) per #143
+        before registering it as a topic candidate (so reciprocal GRAFT/PRUNE/score
+        state keys on the stable, authenticated id, never an ephemeral or forged
+        one — #58/#143). We then strip the key and re-encode the ids-only frame
+        bytes mesh.py expects. mesh.py is reused UNEDITED; no record body ever rides
+        a mesh frame, so byte-identity is preserved trivially.
 
           * GRAFT -> :meth:`Gossipsub.on_graft` (bounce a PRUNE or accept).
           * PRUNE -> :meth:`Gossipsub.on_prune`.
@@ -1116,18 +1178,22 @@ class FabricNode(BaseNode):
           * IWANT -> :meth:`Gossipsub.on_iwant`: return a GETDATA of the held ids
             so the body moves through the EXISTING inv getdata path verbatim.
         """
-        sender = msg.get(_MESH_PEER_KEY)
-        if not isinstance(sender, str) or not sender:
+        asserted = msg.get(_MESH_PEER_KEY)
+        if not isinstance(asserted, str) or not asserted:
             raise FabricNodeError("mesh control frame missing peer id")
+        sender = self._mesh_peer_id(asserted)
+        if sender is None:
+            # Forged peer-id over a proven carrier: refuse to mint a candidate.
+            return {"kind": "mesh-ack"}
         frame = wire.write_frame_bytes({k: v for k, v in msg.items() if k != _MESH_PEER_KEY})
-        # Make the sender a known candidate so on_graft/score state can key on it.
+        # Make the AUTHENTICATED candidate known so on_graft/score state keys on it.
         self._gossip.add_peer(WEB_TOPIC, sender)
         if kind == GRAFT:
             reply = self._gossip.on_graft(sender, frame)
             if reply is None:
                 return {"kind": "mesh-ack"}
             bounce = wire.read_frame_bytes(reply)
-            bounce[_MESH_PEER_KEY] = self.pub
+            bounce[_MESH_PEER_KEY] = self._mesh_self_id()
             return bounce
         if kind == PRUNE:
             self._gossip.on_prune(sender, frame)

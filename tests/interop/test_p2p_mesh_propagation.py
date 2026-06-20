@@ -30,12 +30,13 @@ import random
 
 import pytest
 
-from knitweb.core import canonical
+from knitweb.core import canonical, crypto
 from knitweb.fabric.items import web_state_root
 from knitweb.fabric.node import FabricNode, WEB_TOPIC, _MESH_PEER_KEY
-from knitweb.p2p import wire
+from knitweb.p2p import identity, wire
 from knitweb.p2p.inventory import INV
-from knitweb.p2p.mesh import Gossipsub, MeshParams
+from knitweb.p2p.mesh import Gossipsub, MeshParams, build_graft_frame
+from knitweb.p2p.relay import ENVELOPE_PEER_KEY, ENVELOPE_ID_PROOF_KEY
 from knitweb.p2p.transport import PeerAddress
 
 
@@ -242,8 +243,12 @@ def test_mesh_control_frames_carry_only_ids_no_record_body():
             assert set(m) <= {"kind", "topic", "ids", "cids", _MESH_PEER_KEY}
             # Never a record body.
             assert "author" not in m and "record" not in m and "sig" not in m
-            # The sender id is this node's stable pubkey (the #58 keying).
-            assert m[_MESH_PEER_KEY] == a.pub
+            # The sender id is this node's AUTHENTICATED mesh id: its proven
+            # ``node:<pubkey>`` (#143/#89), which the receiver's #143
+            # identity-binding check (``asserted == proven``) admits. A keyed node
+            # asserts exactly the id its piggybacked proof proves, so a forged
+            # ``_MESH_PEER_KEY`` over a proven carrier can never mint a candidate.
+            assert m[_MESH_PEER_KEY] == a._mesh_self_id()
 
     run(scenario())
 
@@ -526,5 +531,125 @@ def test_start_gossip_swallows_a_throwing_tick_and_keeps_looping():
 
         await a.stop_gossip()
         assert a._gossip_task is None
+
+    run(scenario())
+
+
+# ── #143: mesh peer-id auth (unbounded candidate growth + sybil eclipse) ──────
+#
+# Root cause: ``_serve_mesh`` trusted the unsigned ``_MESH_PEER_KEY`` body field
+# to key ``_scores``/``_topic_peers`` (neither is capacity-bounded) and the mesh.
+# One carrier could mint a fresh fabricated peer-id per request -> unbounded
+# growth (IMPACT #1); 12 fabricated ids from one connection start at score 0 and
+# saturate the d_high=12 mesh, PRUNE-bouncing honest GRAFTs -> eclipse (#2). The
+# fix binds the mesh candidate to the ALREADY-RESOLVED dispatch identity
+# (``_serve_peer_key``: proven ``node:<pubkey>`` when a proof rode along, else the
+# carrier id), so a forged id over a proven carrier mints nothing and ALL ids from
+# one carrier collapse to one candidate. These tests are load-bearing: reverting
+# the bind (keying ``add_peer`` on the raw asserted id) returns BOTH regressions.
+
+_MESH_VICTIM_PARAMS = MeshParams(d=6, d_low=4, d_high=12)
+
+
+def _victim_node() -> FabricNode:
+    """A receiver-only mesh node with a deterministic gossip RNG (#143 tests)."""
+    reg: dict = {}
+    return _mem_node(
+        reg, 1, gossip=Gossipsub(rng=random.Random(7), params=_MESH_VICTIM_PARAMS)
+    )
+
+
+def _spoofed_graft(asserted_id: str, carrier_id: str) -> dict:
+    """A GRAFT frame asserting ``asserted_id`` over an identified ``carrier_id``,
+    with NO identity proof (the unidentified-author case the attacker uses)."""
+    msg = wire.read_frame_bytes(build_graft_frame(WEB_TOPIC))
+    msg[_MESH_PEER_KEY] = asserted_id
+    msg[ENVELOPE_PEER_KEY] = carrier_id
+    return msg
+
+
+def _proven_graft(victim, financial_priv, carrier_id, *, asserted_override=None):
+    """A GRAFT carrying a REAL identity proof for ``financial_priv``'s identity key
+    over ``carrier_id``. Returns the frame and the proven ``node:<pubkey>``.
+
+    The proof is bound to ``b""`` because the serve-path key resolution
+    (``_dispatch`` -> ``_resolve_peer_id``) judges the proof with an empty body
+    binding; this is the EXISTING seam the fix reuses, not new crypto. ``asserted``
+    defaults to the proven id (an honest GRAFT) but can be overridden to forge a
+    DIFFERENT id while presenting a valid proof (the impersonation case)."""
+    id_key = identity.network_signing_key(financial_priv)
+    proven = identity.node_peer_id(crypto.public_from_private(id_key))
+    msg = wire.read_frame_bytes(build_graft_frame(WEB_TOPIC))
+    msg[_MESH_PEER_KEY] = proven if asserted_override is None else asserted_override
+    msg[ENVELOPE_PEER_KEY] = carrier_id
+    proof = identity.make_id_proof(id_key, timestamp=victim._id_proof_now(), binding=b"")
+    msg[ENVELOPE_ID_PROOF_KEY] = identity.id_proof_to_record(proof)
+    return msg, proven
+
+
+def _topic_peer_count(node) -> int:
+    return len(node._gossip._topic_peers.get(WEB_TOPIC, set()))
+
+
+def _score_count(node) -> int:
+    return len(node._gossip._scores)
+
+
+@pytest.mark.interop
+def test_143_spoofed_peer_ids_from_one_carrier_add_at_most_one_candidate():
+    """IMPACT #1 bounded: N fabricated ``_MESH_PEER_KEY`` strings over ONE carrier
+    add <=1 entry to BOTH ``_scores`` and ``_topic_peers`` (was ~N before the
+    fix), because the candidate is keyed on the carrier id, not the spoofed id."""
+    async def scenario():
+        n = _victim_node()
+        N = 200
+        assert _score_count(n) == 0 and _topic_peer_count(n) == 0
+        for i in range(N):
+            await n._dispatch(_spoofed_graft("fake_%064d" % i, "tcp:1.2.3.4:5555"))
+        assert _score_count(n) <= 1, _score_count(n)
+        assert _topic_peer_count(n) <= 1, _topic_peer_count(n)
+
+    run(scenario())
+
+
+@pytest.mark.interop
+def test_143_one_carrier_cannot_eclipse_mesh_and_honest_graft_admitted():
+    """IMPACT #2 prevented: 12 fabricated ids from ONE carrier occupy <=1 mesh
+    slot (not 12), and a DISTINCT honest carrier's GRAFT is still admitted — no
+    eclipse of the fast path."""
+    async def scenario():
+        n = _victim_node()
+        for i in range(12):
+            await n._dispatch(_spoofed_graft("sybil_%064d" % i, "tcp:9.9.9.9:6666"))
+        mesh = set(n._gossip.mesh_peers(WEB_TOPIC))
+        assert len(mesh) <= 1, mesh
+        resp = await n._dispatch(_spoofed_graft("honest_x", "tcp:8.8.8.8:7777"))
+        assert resp.get("kind") == "mesh-ack"
+        assert "tcp:8.8.8.8:7777" in set(n._gossip.mesh_peers(WEB_TOPIC))
+
+    run(scenario())
+
+
+@pytest.mark.interop
+def test_143_proven_node_graft_meshes_and_forged_id_mints_nothing():
+    """LEGIT mesh preserved + forgery blocked: a genuinely-proven ``node:<pubkey>``
+    GRAFT (asserted == proven) meshes normally; a valid proof presenting a
+    DIFFERENT asserted ``_MESH_PEER_KEY`` mints no candidate (the frame is
+    ignored), so a forged id can never ride a real proof into the mesh."""
+    async def scenario():
+        n = _victim_node()
+        graft, proven = _proven_graft(n, "33" * 32, "tcp:5.5.5.5:1111")
+        resp = await n._dispatch(graft)
+        assert resp.get("kind") == "mesh-ack"
+        assert proven in set(n._gossip.mesh_peers(WEB_TOPIC))
+        assert proven in n._gossip._topic_peers.get(WEB_TOPIC, set())
+        n2 = _victim_node()
+        before = _score_count(n2)
+        forged, _ = _proven_graft(
+            n2, "44" * 32, "tcp:6.6.6.6:2222", asserted_override="forged_" + "0" * 58
+        )
+        await n2._dispatch(forged)
+        assert _score_count(n2) == before
+        assert _topic_peer_count(n2) == 0
 
     run(scenario())
