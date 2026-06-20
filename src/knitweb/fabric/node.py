@@ -627,6 +627,28 @@ class FabricNode(BaseNode):
             return targets
         return self._gossip.topic_peers(WEB_TOPIC)
 
+    async def link(self, src: str, dst: str, rel: str, weight: int = 1) -> str:
+        """Create a signed link edge and announce it to peers for convergence.
+
+        ``src`` and ``dst`` must already exist in the local web, matching
+        :meth:`fabric.web.Web.link` semantics. Edges are treated as signed gossip
+        objects so peers can converge on the same edge set, not just nodes.
+        """
+        if not isinstance(src, str) or not isinstance(dst, str) or not isinstance(rel, str):
+            raise FabricNodeError("src/dst/rel must be strings")
+        if not isinstance(weight, int) or isinstance(weight, bool) or weight < 0:
+            raise FabricNodeError("weight must be a non-negative int")
+        before_edges = len(self.web._out.get(src, []))
+        edge = self.web.link(src, dst, rel, weight=weight)
+        # Re-sign and store under the edge CID so peers can fetch the exact body
+        # they can verify with the sender's key.
+        self._store_frame(edge.cid, self._signed_edge_msg(edge.to_record()))
+        # Announce only when the edge is truly new; duplicates are idempotent.
+        if len(self.web._out.get(src, [])) > before_edges:
+            await self._eager_announce(edge.cid)
+            self.metrics.incr("edges_linked")
+        return edge.cid
+
     async def _eager_announce(self, cid: str) -> None:
         """Announce ``cid`` to the MESH (not every peer); serve the bodies it lacks.
 
@@ -811,6 +833,15 @@ class FabricNode(BaseNode):
             "sig": sig,
         }
 
+    def _signed_edge_msg(self, record: dict) -> dict:
+        sig = crypto.sign(self._priv, _record_signable(record))
+        return {
+            "kind": "fabric-edge",
+            "author": self.pub,
+            "record": record,
+            "sig": sig,
+        }
+
     def _store_frame(self, cid: str, envelope: dict, *, authored: bool = False) -> None:
         """Store the verbatim signed-envelope frame bytes for ``cid``.
 
@@ -902,7 +933,6 @@ class FabricNode(BaseNode):
             raise FabricNodeError("record must be a map")
         if not crypto.verify(author, _record_signable(record), sig):
             raise FabricNodeError("invalid author signature on fabric record")
-        cid = canonical.cid(record)
         # #92 ingest admission: a peer flooding (validly) own-key-signed junk is throttled
         # HERE — before the record lands in the web or the frame store, so a flood is
         # capped at ingest rather than merely evicted after it has consumed memory.
@@ -914,8 +944,31 @@ class FabricNode(BaseNode):
             if self._ingest_budget.take(peer, size) < size:
                 self.metrics.incr("ingest_throttled")
                 return False
-        before = len(self.web.nodes)
-        self.web.weave(record)
+        before_nodes = len(self.web.nodes)
+        before_edges = len(self.web._out.get(record.get("src"), []))
+        if record.get("kind") == "edge":
+            src = record.get("src")
+            dst = record.get("dst")
+            rel = record.get("rel")
+            weight = record.get("weight", 1)
+            if not isinstance(src, str) or not isinstance(dst, str) or not isinstance(rel, str):
+                raise FabricNodeError("fabric edge envelope missing src/dst/rel")
+            if not isinstance(weight, int) or isinstance(weight, bool):
+                raise FabricNodeError("fabric edge weight must be an int")
+            if weight < 0:
+                raise FabricNodeError("fabric edge weight must be non-negative")
+            if src not in self.web.nodes or dst not in self.web.nodes:
+                cid = canonical.cid(record)
+                created = False
+            else:
+                edge = self.web.link(src, dst, rel, weight=weight)
+                cid = edge.cid
+                created = len(self.web._out.get(src, [])) > before_edges
+        else:
+            cid = canonical.cid(record)
+            self.web.weave(record)
+            created = len(self.web.nodes) > before_nodes
+
         # Store the verbatim envelope frame for this CID so a node that learned a
         # record by relay/sync can re-serve it byte-identically (the FrameLookup
         # backing store must be populated on ingest, not just on weave — else
@@ -925,7 +978,7 @@ class FabricNode(BaseNode):
         self._store_frame(cid, item)
         # Mark the CID seen in the relay so a later inv does not re-want it.
         self._inv.on_record(cid)
-        if len(self.web.nodes) > before:
+        if created:
             self.metrics.incr("records_woven")
             return True
         return False
@@ -937,6 +990,11 @@ class FabricNode(BaseNode):
         # verify provenance of the snapshot it pulls. (Records keep their own
         # CID identity regardless of who relays them.)
         records = [self._signed_record_msg(rec) for rec in self.web.nodes.values()]
+        edges = []
+        for src in sorted(self.web.nodes):
+            for edge in sorted(self.web._out.get(src, []), key=lambda e: (e.rel, e.dst, e.weight)):
+                edges.append(self._signed_edge_msg(edge.to_record()))
+        records.extend(edges)
         return {"kind": "fabric-sync-data", "records": records}
 
     def _route(self, kind, msg: dict, source_id: "str | None" = None) -> dict:
@@ -954,6 +1012,9 @@ class FabricNode(BaseNode):
         no node-specific ``_serve_connection`` override to keep in sync.
         """
         if kind == "fabric-record":
+            self._ingest_signed(msg)
+            return {"kind": "fabric-ack"}
+        elif kind == "fabric-edge":
             self._ingest_signed(msg)
             return {"kind": "fabric-ack"}
         elif kind == "fabric-sync-request":

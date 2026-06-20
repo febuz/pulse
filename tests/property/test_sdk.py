@@ -4,6 +4,7 @@ import pytest
 
 from knitweb import sdk
 from knitweb.core import crypto
+from knitweb.fabric.web import Web
 
 
 @pytest.mark.property
@@ -63,3 +64,36 @@ def test_tampered_bundle_fails_verification():
     tampered = bytearray(data)
     tampered[-1] ^= 0x01
     assert not sdk.verify_bundle(pub, bytes(tampered), sig)
+
+
+@pytest.mark.property
+def test_distill_bundle_compiles_and_verifies_gated_relations():
+    web = Web()
+    a = web.weave(
+        {
+            "kind": "knowledge",
+            "title": "A",
+            "body": "open",
+            "scope": "public",
+            "author": "alice",
+        }
+    )
+    b = web.weave(
+        {
+            "kind": "knowledge",
+            "title": "B",
+            "body": "open",
+            "scope": "public",
+            "author": "alice",
+        }
+    )
+    web.link(a, b, "supports")
+
+    priv, pub = crypto.generate_keypair()
+    data, sig = sdk.distill_bundle("A", ("public",), priv, web=web)
+    assert sdk.verify_bundle(pub, data, sig)
+
+    decoded = sdk.decode_bundle(data)
+    assert decoded["asset_cid"].startswith("distill:")
+    assert decoded["originator"] == crypto.address(crypto.public_from_private(priv))
+    assert len(decoded["relations"]) == 2

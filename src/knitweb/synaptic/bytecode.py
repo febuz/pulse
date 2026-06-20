@@ -132,6 +132,11 @@ def compile_bundle(
     the string dictionary is sorted lexicographically and relations are emitted in
     a canonical order, so the bundle is content-addressable.
     """
+    if not isinstance(asset_cid, str) or not asset_cid:
+        raise BytecodeError("asset_cid is required")
+    if not isinstance(originator, str) or not originator:
+        raise BytecodeError("originator is required")
+
     # Build a sorted, de-duplicated term dictionary for interning.
     terms: set[str] = set()
     for r in relations:

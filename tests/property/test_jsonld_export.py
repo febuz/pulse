@@ -7,6 +7,7 @@ is interoperable with the same DKG primitives the anchor backend uses.
 """
 
 import pytest
+import copy
 
 from knitweb.core import canonical
 from knitweb.fabric.jsonld import (
@@ -14,6 +15,7 @@ from knitweb.fabric.jsonld import (
     EDGE_TYPE,
     JSONLD_CONTEXT,
     NODE_TYPE,
+    validate_edge_metadata,
     edges_of,
     export_web,
     import_web,
@@ -30,6 +32,20 @@ def _sample_web() -> Web:
     web.link(a, b, "supports", weight=3)
     web.link(b, c, "supports")
     web.link(a, c, "cites", weight=2)
+    return web
+
+
+def _sample_web_with_metadata() -> Web:
+    web = Web()
+    src = web.weave({"kind": "knowledge", "title": "source", "scope": "public"})
+    dst = web.weave({"kind": "knowledge", "title": "target", "scope": "public"})
+    web.link(
+        src,
+        dst,
+        "supports",
+        weight=1,
+        metadata={"reputation": 9, "deploy-location": "edge-studio", "debug-score": 0.5},
+    )
     return web
 
 
@@ -140,6 +156,43 @@ def test_empty_web_round_trips():
     doc = export_web(Web())
     assert doc["@graph"] == []
     assert export_web(import_web(doc)) == doc
+
+
+@pytest.mark.property
+def test_export_and_import_preserve_edge_metadata_annotations():
+    web = _sample_web_with_metadata()
+    doc = export_web(web)
+
+    graph = doc["@graph"]
+    source_node = next(node for node in graph if node.get("edges"))
+    edge = source_node["edges"][0]
+    assert edge["metadata"]["reputation"] == 9
+    assert edge["metadata"]["deploy-location"] == "edge-studio"
+    assert edge["metadata"]["debug-score"] == 0.5
+
+    rebuilt = import_web(doc)
+    first_src = source_node["id"]
+    first_edge = rebuilt._out[first_src][0]
+    assert first_edge.dst == edge["dst"]
+    assert rebuilt.edge_metadata(first_edge) == {
+        "reputation": 9,
+        "deploy-location": "edge-studio",
+        "debug-score": 0.5,
+    }
+
+
+@pytest.mark.property
+def test_metadata_validation_rejects_identity_keys():
+    web = _sample_web_with_metadata()
+    doc = export_web(web)
+    bad_doc = copy.deepcopy(doc)
+    source_node = next(node for node in bad_doc["@graph"] if node["edges"])
+    source_node["edges"][0]["metadata"] = {"email": "alice@example.com"}
+    with pytest.raises(ValueError, match="not allowed"):
+        import_web(bad_doc)
+
+    with pytest.raises(ValueError, match="unsupported edge metadata key"):
+        validate_edge_metadata({"phone-number": "555"})
 
 
 def test_multilingual_labels_become_language_tagged_literals():

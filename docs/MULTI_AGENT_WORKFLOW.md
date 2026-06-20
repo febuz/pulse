@@ -62,3 +62,28 @@ rebase debt compounds. When in doubt, open the orthogonal PR rather than the sta
   on the latest `main` and don't duplicate an in-flight branch.
 - The local loop is re-armed via `/loop` (session cron, every 12 h); a cloud routine
   may also be building. Assume you are *not* alone on the repo.
+
+## 6. Use block hashes as the shared memory between agents
+
+Before parallel coding starts on a broad area, generate a code-pattern graph to
+anchor what each agent is improving:
+
+```bash
+python3 tools/pattern_graph.py --out docs/patterns/graph.json
+```
+
+Treat every ``class`` and ``def`` block as a LEGO block:
+
+- ``id`` = stable path + qualified name,
+- ``hash`` = SHA-256 of the exact block text (trimmed),
+- ``depends_on`` = direct inferred call dependencies.
+
+Workflow:
+
+- Each agent gets one lane and implements one candidate pattern.
+- Candidate PRs should include a brief note with changed block IDs from
+  ``docs/patterns/graph.json`` and what changed inside those blocks.
+- After CI + functional tests, select the candidate with the best measured outcome
+  for the sprint goal and merge only that pattern.
+- If a losing PR has reusable pieces, fold useful edits into a follow-up PR and
+  close the original with a clear note.

@@ -15,13 +15,26 @@ balance for **local/dev/testing only**, never for production issuance.
 
 from __future__ import annotations
 
-from ..core import crypto
+import hashlib
+
+from ..core import canonical, crypto
 from ..ledger.knit import Knit
 from ..ledger.node import AccountNode
+from ..fabric import items
+from ..fabric.web import Web
+from ..interpret import distill as _distill
+from ..interpret import retrieve as _retrieve
 from ..synaptic import bytecode as _bc
 from ..synaptic.origintrail import resolve_asset
 
-__all__ = ["Wallet", "compile_asset", "verify_bundle", "decode_bundle", "TOKEN"]
+__all__ = [
+    "Wallet",
+    "compile_asset",
+    "distill_bundle",
+    "verify_bundle",
+    "decode_bundle",
+    "TOKEN",
+]
 
 TOKEN = "PLS"
 
@@ -83,6 +96,53 @@ def compile_asset(asset: dict, originator_priv: str) -> tuple[bytes, str]:
     data = _bc.compile_bundle(asset_id, originator, relations)
     signature = _bc.sign_bundle(originator_priv, data)
     return data, signature
+
+
+def distill_bundle(
+    query: str | dict,
+    subscription: list[str] | tuple[str, ...] | None,
+    originator_priv: str,
+    *,
+    web: Web | None = None,
+    depth: int = 2,
+    max_iters: int = 8,
+    mode: str = "reflect",
+) -> tuple[bytes, str]:
+    """Run the read-path interpretation lobe and return a signed distill bundle.
+
+    The answer-space identifier is content-derived from the query, subscription and
+    query-bearing web state so identical reads compile to identical bundle ids.
+    """
+    web = web or Web()
+    # web_state_cid is part of the read-path manifest: identical query and web
+    # produce identical assets; stale reads cannot be replayed without that state.
+    web_state_cid = items.web_state_root(web)
+    candidate_set = _retrieve(query, subscription, web, depth=depth, web_state_cid=web_state_cid)
+    selection = _distill(
+        candidate_set,
+        query,
+        web=web,
+        max_iters=max_iters,
+        mode=mode,
+    )
+
+    # Deterministic content identifier for this question/context query.
+    manifest = {
+        "query": query,
+        "subscription": sorted(subscription) if subscription is not None else None,
+        "web_state_cid": web_state_cid,
+    }
+    asset_id = f"distill:{hashlib.sha256(canonical.encode(manifest)).hexdigest()}"
+
+    originator_pub = crypto.public_from_private(originator_priv)
+    originator = crypto.address(originator_pub)
+
+    data = _bc.compile_bundle(
+        asset_id,
+        originator,
+        list(selection.relations),
+    )
+    return data, _bc.sign_bundle(originator_priv, data)
 
 
 def verify_bundle(originator_pub: str, data: bytes, signature_hex: str) -> bool:

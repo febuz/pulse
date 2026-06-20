@@ -108,3 +108,12 @@ def test_origintrail_explicit_triples():
     assert asset_id == "ual:123"
     assert len(relations) == 2
     assert {r.predicate for r in relations} == {"reportedBy", "depicts"}
+
+
+@pytest.mark.property
+def test_compile_bundle_rejects_missing_asset_or_originator_metadata():
+    rels = _sample_relations()
+    with pytest.raises(bc.BytecodeError):
+        bc.compile_bundle("", "Acme", rels)
+    with pytest.raises(bc.BytecodeError):
+        bc.compile_bundle("asset-id", "", rels)
