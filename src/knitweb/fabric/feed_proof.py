@@ -99,18 +99,49 @@ def _reconstruct_root(leaf: bytes, path: List[Tuple[str, bool]]) -> bytes:
     return h
 
 
+def _expected_height(length: int) -> int:
+    """Path length (tree height) for a duplicate-last Merkle tree of ``length`` leaves."""
+    height = 0
+    n = length
+    while n > 1:
+        n += n % 2  # duplicate the last node on an odd level
+        n //= 2
+        height += 1
+    return height
+
+
+def _index_from_path(path: List[Tuple[str, bool]]) -> int:
+    """Recover the leaf position the sibling path commits to, from its direction bits.
+
+    At level ``i`` the prover is the *right* child (bit set) exactly when its sibling sits on
+    the *left* (``sib_is_right`` is False). Binding ``index`` to the path this way stops a
+    forged proof from claiming a position other than the one its path actually proves.
+    """
+    recovered = 0
+    for i, (_sibling_hex, sib_is_right) in enumerate(path):
+        if not sib_is_right:
+            recovered |= (1 << i)
+    return recovered
+
+
 def verify_inclusion(head: FeedHead, entry: dict, proof: InclusionProof) -> bool:
     """True iff ``entry`` is the committed entry at ``proof.index`` of the signed ``head``.
 
     Checks, in order: the head's signature; the proof's claimed length matches the head;
-    the index is in range; and the sibling path reconstructs exactly ``head.root``. Any
-    failure ⇒ reject (a peer never trusts an unverified or out-of-range entry).
+    the index is in range; the index is **bound to the path** (the path length equals the
+    tree height and the index recovered from the path's direction bits equals ``proof.index``,
+    so a proof cannot claim a position other than the one its path proves); and the sibling
+    path reconstructs exactly ``head.root``. Any failure ⇒ reject.
     """
     if not head.verify():
         return False
     if proof.length != head.length:
         return False
     if not 0 <= proof.index < head.length:
+        return False
+    if len(proof.path) != _expected_height(head.length):
+        return False
+    if _index_from_path(proof.path) != proof.index:
         return False
     return _reconstruct_root(_leaf(entry), proof.path).hex() == head.root
 

@@ -178,3 +178,25 @@ def test_single_entry_feed_has_empty_path():
     proof = prove_inclusion(f.entries, 0)
     assert proof.path == []                       # root == leaf, no siblings
     assert verify_inclusion(f.head(), f.entry(0), proof)
+
+
+# ── 6. Index is bound to the path (soundness: a proof cannot claim a wrong position) ──
+
+def test_inclusion_index_is_bound_to_path():
+    # A genuine proof for position 3 must NOT verify if its .index is relabelled — the index
+    # is recovered from the path's direction bits, so a mismatch is rejected.
+    f = _feed(8)
+    head = f.head()
+    proof = prove_inclusion(f.entries, 3)
+    assert verify_inclusion(head, f.entry(3), proof)
+    for wrong in (0, 1, 2, 4, 7):
+        forged = InclusionProof(index=wrong, length=proof.length, path=proof.path)
+        assert not verify_inclusion(head, f.entry(3), forged), f"relabelled index {wrong} accepted"
+
+
+def test_inclusion_rejects_wrong_path_length():
+    f = _feed(8)
+    head = f.head()
+    proof = prove_inclusion(f.entries, 3)
+    truncated = InclusionProof(index=proof.index, length=proof.length, path=proof.path[:-1])
+    assert not verify_inclusion(head, f.entry(3), truncated)

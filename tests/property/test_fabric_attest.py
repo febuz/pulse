@@ -55,6 +55,16 @@ def test_resource_item_provider_attestation():
 
 
 @pytest.mark.property
+def test_verify_record_returns_false_on_malformed_pubkey_or_record():
+    # must reject (not raise) so audit/boolean callers over wire envelopes get a clean False
+    priv, pub, item = _authored_knowledge()
+    att = attest(item.to_record(), priv, author_field="author")
+    assert verify_record(att.record, "not-hex!!", att.sig, "author") is False
+    assert verify_record(att.record, "abc", att.sig, "author") is False     # odd-length hex
+    assert verify_record([1, 2, 3], att.author_pub, att.sig, "author") is False  # non-dict
+
+
+@pytest.mark.property
 def test_web_state_root_leaves_are_fixed_width():
     web = Web()
     web.weave({"n": "only"})
