@@ -27,10 +27,18 @@ from typing import Dict, List, Union
 __all__ = [
     "Offense",
     "DEFAULT_BAN_THRESHOLD",
+    "DEFAULT_REPUTATION_DECAY_PER_ROUND",
     "PeerReputation",
 ]
 
 DEFAULT_BAN_THRESHOLD = 100
+
+#: Misbehavior points bled off every tracked peer once per maintenance epoch (one
+#: anti-entropy round). This is the *rehabilitation* rate the class docstring promises:
+#: a transiently-noisy honest peer heals over time, while a peer that offends faster than
+#: it decays still bans. Kept small so it can never outpace a real offense stream — a
+#: sustained attacker still crosses the threshold; ``0`` disables decay. Integer, no clock.
+DEFAULT_REPUTATION_DECAY_PER_ROUND = 1
 
 
 class Offense(Enum):

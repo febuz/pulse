@@ -37,7 +37,11 @@ from .anti_entropy import AntiEntropy, Backoff
 from .metrics import Metrics
 from .peer_identity_gate import PeerIdentityGate
 from .relay import ENVELOPE_ID_PROOF_KEY, ENVELOPE_PEER_KEY
-from .reputation import Offense, PeerReputation
+from .reputation import (
+    DEFAULT_REPUTATION_DECAY_PER_ROUND,
+    Offense,
+    PeerReputation,
+)
 from .transport import Dialer, PeerAddress, TcpTransport, Transport, tcp_peer_id
 from .wire import WireError, read_frame, write_frame
 
@@ -58,6 +62,11 @@ class BaseNode:
     # Subclass policy hooks (defaults documented per-subclass override).
     _dispatch_errors: tuple = (WireError, ValueError)
     _count_frames_out_on_banned: bool = True
+    # Misbehavior points bled off every tracked peer once per anti-entropy round, so a
+    # transiently-noisy honest peer rehabilitates (the decay the reputation ledger
+    # documents but, until now, nothing drove). ``0`` disables it; a subclass/operator
+    # may override the rate.
+    _reputation_decay_per_round: int = DEFAULT_REPUTATION_DECAY_PER_ROUND
 
     def __init__(
         self,
@@ -191,10 +200,16 @@ class BaseNode:
 
     async def _anti_entropy_run(self, driver: AntiEntropy) -> None:
         # Drive cycles forever (until cancelled). The driver already swallows a
-        # failed round, so a dropped peer only backs the schedule off.
+        # failed round, so a dropped peer only backs the schedule off. Each completed
+        # round is also the reputation epoch tick: bleed every peer's misbehavior score
+        # down by a fixed integer so a transiently-noisy honest peer rehabilitates (the
+        # decay the reputation ledger documents but nothing drove). Pure integer, no
+        # wall-clock — the ban verdict stays reproducible across nodes.
         try:
             while True:
                 await driver.run_cycle()
+                if self._reputation_decay_per_round:
+                    self.reputation.decay_all(self._reputation_decay_per_round)
         except asyncio.CancelledError:
             raise
 
