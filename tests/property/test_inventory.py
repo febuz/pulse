@@ -514,3 +514,112 @@ def test_serve_budget_rejects_bad_construction_and_input():
         b.take("", 10)
     with pytest.raises(ValueError):
         b.take("p", -1)
+
+
+# ── 8. per-LAYER isolation: each of the TWO dedup layers, alone (#76) ──────────
+#
+# Flood-reduction rides TWO independent dedup layers and the existing
+# end-to-end no-redundant-body proofs only fail when BOTH are defeated. #76 asks
+# for a test that pins EACH layer in isolation, so a single-layer regression is
+# caught:
+#
+#   * LAYER 1 — announce-side SeenSet (``InventoryRelay.announce``): a CID this
+#     node has ALREADY announced is not re-announced (``announce`` returns None),
+#     so no inv frame — and therefore no body — flies to a peer that would
+#     otherwise want it. Suppression happens on the ANNOUNCER, before any peer is
+#     consulted.
+#   * LAYER 2 — peer-side want-dedup (``InventoryRelay.on_inv``'s ``lookup is not
+#     None`` check): a peer does NOT issue a getdata/want for a CID it already
+#     HOLDS in its store, even when that CID is NOT yet in its SeenSet. Suppression
+#     happens on the RECEIVER, from the store alone.
+#
+# The two scenarios below are each constructed so that exactly ONE layer is the
+# thing suppressing the redundant traffic; the per-layer mutation proof in #76
+# shows defeating that one layer fails its own test while the other still passes.
+
+
+def test_layer1_announce_seenset_alone_suppresses_redundant_body():
+    """LAYER 1 in isolation: the announce-side SeenSet, and nothing else.
+
+    A weaver announces CID ``x`` and serves its body to a first peer. A SECOND,
+    pristine peer (store-empty AND SeenSet-empty) then appears. If the weaver
+    re-announces ``x``, only LAYER 1 can stop a redundant inv -> getdata -> body to
+    that fresh peer: the peer LACKS ``x`` (so its own want-dedup, LAYER 2, would
+    NOT suppress) and has never seen it (so its SeenSet would not either). The
+    announce-side SeenSet returning ``None`` is therefore the SOLE reason no
+    second body crosses.
+
+    Sensitivity: defeat LAYER 1 (announce always re-announces) and the re-announce
+    yields an inv; the pristine peer wants ``x`` and a redundant body is served ->
+    this test fails. Defeat LAYER 2 instead and this test is UNAFFECTED, because
+    the redundancy is suppressed before the peer is ever consulted.
+    """
+    weaver_store = FrameStore()
+    cid_x, frame_x = weaver_store.put_record(_record(1))
+    weaver = InventoryRelay(weaver_store.lookup)
+
+    # First peer pulls the body once over the normal inv -> getdata -> body path.
+    peer1 = InventoryRelay(FrameStore().lookup)
+    inv1 = weaver.announce([cid_x])
+    assert inv1 is not None
+    getdata1 = peer1.on_inv(inv1)
+    assert parse_getdata_frame(getdata1) == [cid_x]
+    assert weaver.on_getdata(getdata1) == [frame_x]  # body served exactly once
+
+    # A pristine second peer: it holds nothing and has seen nothing. The ONLY
+    # thing that can spare it a redundant body is the announce-side SeenSet.
+    peer2 = InventoryRelay(FrameStore().lookup)
+    assert cid_x not in peer2.seen  # pre-condition: LAYER 2/seen cannot help here
+
+    reannounce = weaver.announce([cid_x])
+    # LAYER 1: already-announced CID is not re-announced -> no inv frame flies.
+    assert reannounce is None
+
+    # Drive the consequence concretely: with no inv to forward, peer2 issues no
+    # getdata and the weaver serves no second body. (If LAYER 1 were defeated,
+    # ``reannounce`` would be a frame, peer2 would want cid_x, and a body would
+    # cross — exactly what the mutation proof observes.)
+    forwarded = reannounce or build_inv_frame([])  # nothing to forward
+    assert parse_inv_frame(forwarded) == []
+    assert peer2.on_inv(forwarded) is None
+    assert weaver.on_getdata(build_getdata_frame([])) == []
+
+
+def test_layer2_want_dedup_alone_suppresses_duplicate_getdata():
+    """LAYER 2 in isolation: the peer-side want-dedup, and nothing else.
+
+    A receiver ALREADY HOLDS CID ``x`` in its store but has NOT seen it in its
+    SeenSet (e.g. it ingested the record out of band without the relay touching
+    its SeenSet). An inv announcing ``x`` arrives. Only LAYER 2 — ``on_inv``'s
+    ``lookup is not None`` check — can stop a duplicate getdata: the SeenSet is
+    empty for ``x`` (so the seen-based dedup cannot suppress), and the announcer's
+    LAYER 1 is irrelevant because we feed a raw inv straight in.
+
+    Sensitivity: defeat LAYER 2 (always want, regardless of what we hold) and
+    ``on_inv`` returns a getdata for a CID we already hold -> a duplicate request
+    is issued -> this test fails. Defeat LAYER 1 instead and this test is
+    UNAFFECTED, because no ``announce`` call participates.
+    """
+    holder_store = FrameStore()
+    cid_x, _frame_x = holder_store.put_record(_record(7))
+    holder = InventoryRelay(holder_store.lookup)
+
+    # Pre-conditions that pin the isolation: the store HOLDS x, the SeenSet does
+    # NOT contain x. Thus the ONLY dedup able to act is the store-based want-check.
+    assert holder_store.lookup(cid_x) is not None
+    assert cid_x not in holder.seen
+
+    # An inv announcing a CID we already hold must yield NO want (no duplicate
+    # getdata) — LAYER 2 alone is responsible.
+    inv = build_inv_frame([cid_x])
+    assert holder.on_inv(inv) is None
+
+    # And it stays a no-op: still no duplicate request, and nothing was wanted, so
+    # no redundant body would ever be pulled for an already-held CID.
+    assert holder.on_inv(inv) is None
+
+    # Contrast pin (keeps the test honest, not over-fit): a CID we DON'T hold and
+    # haven't seen IS wanted, proving on_inv still drives convergence for true
+    # gaps — LAYER 2 suppresses only the already-held duplicate.
+    missing = "cid-we-lack"
+    assert parse_getdata_frame(holder.on_inv(build_inv_frame([missing]))) == [missing]

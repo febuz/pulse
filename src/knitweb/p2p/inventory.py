@@ -496,6 +496,21 @@ def parse_recon_frame(frame: bytes) -> Tuple[str, List[bytes]]:
 # ``None`` if this node does not hold it. Returning stored bytes — rather than
 # re-encoding a record — is what preserves signed-record byte-identity end to
 # end: the bytes a peer receives are the bytes that were signed.
+#
+# Per-hop byte-identity, scoped precisely (#76, #53): "byte-identical across a
+# hop" covers exactly (a) the embedded signed-record bytes and its CID — the
+# record travels verbatim, so ``record_cid(record) == canonical.cid(record)`` is
+# unchanged at every node and no body can be forged or re-encoded — and (b) the
+# stripped carried map (the business payload after transport-only keys are
+# removed). It does NOT cover the per-hop *transport envelope*: each relayer
+# re-signs the outer frame under its OWN key (author/sig differ per relayer) and
+# adds transport-only ``_relay_*`` keys, which are stripped before any
+# signed/business logic runs (#53). So "byte-identity" must not be misread as
+# preserving the outer envelope's signature across a hop — only the nested signed
+# record (whose author signature lives inside the preserved body) and the
+# stripped map are byte-stable. Record authenticity is intact precisely because
+# the author signature rides inside that preserved body, not the re-signed
+# envelope.
 FrameLookup = Callable[[str], "bytes | None"]
 
 
