@@ -45,6 +45,7 @@ __all__ = [
     "TcpTransport",
     "DEFAULT_MAX_INBOUND",
     "DEFAULT_READ_TIMEOUT_S",
+    "DEFAULT_ACCEPT_QUEUE_TIMEOUT_S",
     "TCP_PEER_PREFIX",
     "tcp_peer_id",
     "parse_peer_uri",
@@ -235,6 +236,19 @@ DEFAULT_MAX_INBOUND = 64
 #: policy timeout, not part of any deterministic/state path.
 DEFAULT_READ_TIMEOUT_S = 30
 
+#: Default deadline, in **integer** seconds, for a freshly-accepted inbound
+#: connection to obtain a serving slot. Each accepted socket spawns a coroutine
+#: that pins an open fd the instant it runs, *before* the ``max_inbound``
+#: semaphore. Without a deadline on that wait a peer can open many idle sockets
+#: that never send a frame and park one fd-holding coroutine per socket ahead of
+#: the cap, so concurrently-open inbound connections — and thus held fds — are
+#: unbounded by ``max_inbound``. A connection that cannot get a slot within this
+#: deadline is closed cleanly, bounding parked connections by
+#: (arrival_rate x timeout). Generous enough that an honest peer under normal
+#: load is never spuriously closed; like the caps above it is a deterministic
+#: integer carrier-policy knob that never touches a hashed/signed path.
+DEFAULT_ACCEPT_QUEUE_TIMEOUT_S = 10
+
 
 class TcpTransport:
     """Direct asyncio TCP transport — the original node behavior, extracted.
@@ -260,6 +274,15 @@ class TcpTransport:
         is closed at the deadline, freeing its slot, rather than holding it
         open indefinitely.
 
+      * ``accept_queue_timeout_s`` — the wait for a free slot is itself bounded.
+        An accepted connection pins an open fd the instant its coroutine runs,
+        *before* the semaphore; without this deadline a peer could open many
+        idle sockets that never send a frame and park one fd-holding coroutine
+        per socket ahead of the cap, leaving concurrently-open inbound
+        connections unbounded by ``max_inbound``. A connection that cannot get a
+        slot within the deadline is closed cleanly, bounding parked connections
+        (and thus held fds) by ``(arrival_rate x accept_queue_timeout_s)``.
+
     Exactly one request frame is read per connection (the original one-shot
     request/response shape), so a peer cannot pipeline a flood of frames down a
     single accepted socket to amortize past the connection cap. Both knobs are
@@ -276,15 +299,19 @@ class TcpTransport:
         port: int = 0,
         max_inbound: int = DEFAULT_MAX_INBOUND,
         read_timeout_s: int = DEFAULT_READ_TIMEOUT_S,
+        accept_queue_timeout_s: int = DEFAULT_ACCEPT_QUEUE_TIMEOUT_S,
     ) -> None:
         if max_inbound < 1:
             raise ValueError("max_inbound must be a positive integer")
         if read_timeout_s < 1:
             raise ValueError("read_timeout_s must be a positive integer")
+        if accept_queue_timeout_s < 1:
+            raise ValueError("accept_queue_timeout_s must be a positive integer")
         self.host = host
         self.port = port
         self.max_inbound = max_inbound
         self.read_timeout_s = read_timeout_s
+        self.accept_queue_timeout_s = accept_queue_timeout_s
         self._server: asyncio.AbstractServer | None = None
         # Bounds the number of inbound connections served concurrently. Created
         # lazily in ``listen`` so the semaphore binds to the running loop.
@@ -318,9 +345,26 @@ class TcpTransport:
         ) -> None:
             # Gate on a free serving slot before doing any per-connection work,
             # so a connection flood queues here instead of fanning out unbounded
-            # handler coroutines and buffers.
+            # handler coroutines and buffers. This coroutine pins the open fd the
+            # instant it runs, so the wait for a slot is itself bounded: a peer
+            # that opens many idle sockets and never sends a frame would
+            # otherwise park one fd-holding coroutine per socket ahead of the
+            # cap, leaving concurrently-open inbound connections unbounded by
+            # ``max_inbound``. A connection that cannot get a slot within the
+            # deadline is closed cleanly here, so parked connections are bounded
+            # by (arrival_rate x accept_queue_timeout_s) and no fd is leaked.
             assert self._inbound is not None
-            await self._inbound.acquire()
+            try:
+                await asyncio.wait_for(
+                    self._inbound.acquire(), timeout=self.accept_queue_timeout_s
+                )
+            except asyncio.TimeoutError:
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except OSError:
+                    pass
+                return
             # The remote IP is the stable reputation identity a raw socket exposes
             # (the port is ephemeral — see :func:`tcp_peer_id`). Stamped onto the
             # request so the carrier-agnostic dispatch applies the same ban gate +
