@@ -48,17 +48,31 @@ def quantize_weight(
     if not 0 <= max_weight <= 1024:
         raise ValueError("max_weight must be at most 1024")
 
-    # Normalize inputs, keep deterministic for all runtime edge cases.
-    reputation_signal = float(max(0, reputation))
-    recency_signal = max(0.0, min(1.0, float(recency)))
-    pouw_signal = max(0.0, float(pouw_score))
+    # Boundary normalization: collapse the (possibly float) signals to integer
+    # thousandths *once*, at the edge, so the blend itself is pure integer
+    # arithmetic.  ``int(x * 1000)`` truncates toward zero and is the only place a
+    # float value is touched; there is no float literal, no ``float()`` call, and
+    # no true division on the value path below.  Rationale: a float-free blend is
+    # cross-machine deterministic, which the signed bundle / Knit CID depend on.
+    reputation_units = max(0, reputation)  # already an integer score
+    recency_milli = int(recency * 1000)  # thousandths of the freshness signal
+    if recency_milli < 0:
+        recency_milli = 0
+    if recency_milli > 1000:
+        recency_milli = 1000
+    pouw_milli = int(pouw_score * 1000)  # thousandths of the work-quality signal
+    if pouw_milli < 0:
+        pouw_milli = 0
 
-    # Deterministic additive blend.  Keep relation weights in a small, byte-stable
-    # range for compact signatures and predictable ordering.
-    blended = (0.6 * reputation_signal) + (60.0 * recency_signal) + (0.7 * pouw_signal)
-    quantized = int(blended)
-    if quantized < 0:
+    # Deterministic additive blend in fixed point.  This is the integer-only
+    # equivalent of the historical ``0.6*rep + 60*recency + 0.7*pouw`` derivation.
+    # recency_milli and pouw_milli carry the *thousandths* of their signals, so the
+    # blend is ``(6000*rep + 600*recency_milli + 7*pouw_milli) // 10000``: each
+    # coefficient times its signal, over a common divisor of 10000, floored.  Keep
+    # relation weights in a small, byte-stable range for compact signatures.
+    blended = (6000 * reputation_units + 600 * recency_milli + 7 * pouw_milli) // 10000
+    if blended < 0:
         return 0
-    if quantized > max_weight:
+    if blended > max_weight:
         return max_weight
-    return quantized
+    return blended
