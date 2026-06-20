@@ -516,6 +516,42 @@ def test_serve_budget_rejects_bad_construction_and_input():
         b.take("p", -1)
 
 
+def test_take_is_all_or_nothing_so_an_overlimit_request_never_starves_the_peer():
+    """An over-limit ``take`` debits NOTHING and returns 0 — it must not burn the
+    budget an honest peer needs for the affordable requests that follow it.
+
+    This is the #185 over-debit invariant pinned on the primitive itself. Every
+    serve gate that guards work with ``take(peer, n) < n`` — ``on_getdata`` here and
+    the ingest / inv-probe / reconcile gates in ``fabric/node.py`` — rejects a
+    request *wholesale* when it can't be served, because you can't serve half a body,
+    half a probe reply, or half a reconcile frame. A partial debit zeroed the bucket
+    for that rejected request, so one over-sized ask denied the peer every smaller,
+    affordable ask for the rest of the window. All-or-nothing makes that impossible.
+    """
+    clock = _VirtualClock(0)
+    b = ServeBudget(bytes_per_window=100, window_seconds=5, clock=clock)
+
+    # A request that fits is granted whole and debited exactly.
+    assert b.take("p", 60) == 60
+    assert b.remaining("p") == 40
+
+    # A request larger than what's left is rejected (returns 0) and — the crux —
+    # debits NOTHING: the 40 an honest peer still has is left fully intact.
+    assert b.take("p", 41) == 0
+    assert b.remaining("p") == 40
+
+    # ...so a subsequent affordable request in the SAME window is still served.
+    assert b.take("p", 40) == 40
+    assert b.remaining("p") == 0
+
+    # Exact-fit is granted (boundary), and a fresh window refills to full.
+    clock.advance(5)
+    assert b.take("p", 100) == 100
+    assert b.remaining("p") == 0
+    assert b.take("p", 1) == 0          # exhausted: rejected, nothing to over-debit
+    assert b.remaining("p") == 0
+
+
 # ── 8. per-LAYER isolation: each of the TWO dedup layers, alone (#76) ──────────
 #
 # Flood-reduction rides TWO independent dedup layers and the existing

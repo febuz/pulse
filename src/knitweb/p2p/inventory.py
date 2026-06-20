@@ -358,12 +358,24 @@ class ServeBudget:
         return rec[1]
 
     def take(self, peer: str, want_bytes: int) -> int:
-        """Debit ``peer``'s bucket; return the bytes the budget PERMITS now.
+        """Debit ``peer``'s bucket *all-or-nothing*; return ``want_bytes`` if it
+        fit this window, else 0.
 
-        Refills the bucket to full on crossing into a new integer window. The
-        return value is ``min(want_bytes, remaining)`` and is what the caller is
-        allowed to serve; the caller drops/defers any excess. ``want_bytes`` of 0
+        Refills the bucket to full on crossing into a new integer window. A
+        request is granted whole or not at all: if ``want_bytes`` exceeds the
+        remaining budget, NOTHING is debited and 0 is returned — so an over-limit
+        request never burns the budget an honest peer needs for the smaller,
+        affordable requests that follow it in the same window. ``want_bytes`` of 0
         is a no-op that returns 0 (and still touches LRU recency for the peer).
+
+        No caller can act on a *partial* byte/frame/probe grant — you cannot serve
+        half a body, half a reconcile frame, or half a probe reply, so the work is
+        either done in full or deferred to the next window. A ``min(want, remaining)``
+        partial debit was therefore pure over-charge: it zeroed the bucket for a
+        request that was then rejected wholesale, starving the peer of subsequent
+        affordable service (the #185 over-debit class — also present in the
+        ``fabric/node.py`` ingest/probe/recon serve gates, which read this value as
+        an all-or-nothing ``take(n) < n`` test and are fixed transitively here).
         """
         if not isinstance(peer, str) or not peer:
             raise InventoryError("peer key must be a non-empty str")
@@ -377,7 +389,7 @@ class ServeBudget:
             remaining = self._bytes_per_window
         else:
             remaining = rec[1]
-        granted = want_bytes if want_bytes <= remaining else remaining
+        granted = want_bytes if want_bytes <= remaining else 0
         self._buckets[peer] = (win, remaining - granted)
         self._buckets.move_to_end(peer)
         if len(self._buckets) > self._max_peers:
