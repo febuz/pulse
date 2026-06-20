@@ -154,6 +154,7 @@ class FabricNode(BaseNode):
         gossip_seed: int | None = None,
         serve_budget: "inventory.ServeBudget | None" = None,
         ingest_budget: "inventory.ServeBudget | None" = None,
+        inv_probe_budget: "inventory.ServeBudget | None" = None,
         max_gossiped_frames: int = 50_000,
         diffuse_max_ms: int = 0,
         diffuse_seed: int | None = None,
@@ -211,6 +212,26 @@ class FabricNode(BaseNode):
         )
         self._inv = InventoryRelay(
             lambda cid: self._frames.get(cid), budget=self._serve_budget
+        )
+        # A SEPARATE per-peer budget gates the inv-announce REPLY path (#146). The
+        # reply ``_serve_inv`` returns is a deterministic function of our holdings
+        # (the announced CIDs we LACK come back as the want list), so a prober that
+        # floods candidate CIDs reads out our exact held/lacked partition for free —
+        # a holdings/membership oracle that the #91 getdata BYTE budget does not gate
+        # (no body travels on this reply). We reuse the same ServeBudget primitive
+        # but debit ONE token PER PROBED CID, capping CIDs-probed-per-peer-per-window:
+        # an honest normal-volume announce stays under the cap and is answered
+        # unchanged, while a mass-enumeration sweep exhausts the window and gets a
+        # non-discriminating inv-ack (its partition is withheld). Its own max_peers
+        # LRU bounds memory; a test injects a virtual clock for a deterministic
+        # window. Separate from ``_serve_budget`` so honest body-serve and probe
+        # accounting never starve each other.
+        self._inv_probe_budget = (
+            inv_probe_budget
+            if inv_probe_budget is not None
+            else inventory.ServeBudget(
+                bytes_per_window=inventory.INV_PROBE_CIDS_PER_WINDOW
+            )
         )
         # The per-peer serve key for the request currently being dispatched. Set by
         # the :meth:`_dispatch` override (from the carrier-stamped sender identity)
@@ -1222,10 +1243,37 @@ class FabricNode(BaseNode):
         travels (the O(diff) collapse). A malformed inv frame raises
         ``InventoryError`` (a ``ValueError`` subclass), which the shared
         ``_dispatch`` maps to a ``bad-request`` with no new error wiring.
+
+        Holdings-oracle defense (#146): the want list is a deterministic function
+        of our holdings (the announced CIDs we LACK come back; the rest we hold),
+        so an unbudgeted reply lets a prober enumerate our exact held/lacked
+        partition by announcing arbitrary candidate CIDs. We therefore debit ONE
+        token per probed CID from the per-peer :attr:`_inv_probe_budget` (the same
+        ServeBudget primitive as #91, here counting CIDs not bytes). While the peer
+        is within its CIDs-per-window budget the reply is computed and served as
+        before, so an honest normal-volume announce is unchanged. Once the peer
+        exhausts the window — a mass-enumeration sweep — we withhold the
+        discriminating answer and return a non-informative ``inv-ack`` (as if we
+        held everything): the prober learns nothing about the over-budget CIDs, so
+        it can no longer cheaply read out the full holdings set. ``_serve_peer_key``
+        of ``None`` (an unidentifiable carrier) shares one bucket, so anonymity
+        cannot bypass the cap. This is a serve-path budgeting decision only — no inv
+        wire frame, signed-record body, or canonical/CID byte is touched.
         """
         cids = msg.get("cids")
         if not isinstance(cids, list):
             raise FabricNodeError("inv-announce cids must be a list")
+        peer = self._serve_peer_key if self._serve_peer_key is not None else "_anon"
+        want = len(cids)
+        if want and self._inv_probe_budget.take(peer, want) < want:
+            # Probe budget exhausted this window: withhold the held/lacked partition
+            # for this (over-budget) announce. We still mark the announced CIDs seen
+            # via on_inv so dedup/recency state stays consistent, but reply with a
+            # non-discriminating inv-ack instead of the want list, so the prober
+            # cannot read our holdings out of the response.
+            self._inv.on_inv(inventory.build_inv_frame(cids))
+            self.metrics.incr("inv_probe_throttled")
+            return {"kind": "inv-ack"}
         want_frame = self._inv.on_inv(inventory.build_inv_frame(cids))
         if want_frame is None:
             return {"kind": "inv-ack"}

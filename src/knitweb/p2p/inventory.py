@@ -68,6 +68,7 @@ __all__ = [
     "MAX_GETDATA_BATCH",
     "SERVE_BYTES_PER_WINDOW",
     "SERVE_WINDOW_SECONDS",
+    "INV_PROBE_CIDS_PER_WINDOW",
     "record_cid",
     "build_inv_frame",
     "parse_inv_frame",
@@ -153,6 +154,23 @@ MAX_GETDATA_BATCH = 2_048
 # clock is an injected monotonic integer (seconds), never a wall-clock.
 SERVE_BYTES_PER_WINDOW = 256 * 1024 * 1024  # 256 MiB / window / peer
 SERVE_WINDOW_SECONDS = 10
+
+# (c) Per-PEER inv-announce PROBE budget over the same integer window (#146). The
+# inv-announce reply (``_serve_inv``) is a deterministic function of the node's
+# holdings: the CIDs it does NOT hold come back as the want list, so the announcer
+# learns the EXACT held/lacked partition of every CID it named — a holdings /
+# membership oracle. on_getdata's byte budget (#91) does not gate THIS reply (no
+# body travels), so a prober could enumerate the full holdings set for free by
+# announcing arbitrary candidate CIDs. We reuse the same ServeBudget token-bucket
+# primitive, but here the token unit is ONE PROBED CID (the discriminating unit
+# the oracle leaks), so the per-peer cap is on CIDs-probed-per-window rather than
+# bytes. An honest reconcile/announce names a normal batch well under this cap and
+# is served unchanged; a peer that floods candidate CIDs to read out the partition
+# is cut off once it exhausts the window (its reply is withheld — served as a
+# non-discriminating inv-ack — so beyond the budget it learns nothing). Sized to
+# admit honest batches (a full MAX_GETDATA_BATCH reconcile diff, with headroom)
+# while a mass-enumeration sweep of distinct candidate CIDs exhausts it fast.
+INV_PROBE_CIDS_PER_WINDOW = 4 * MAX_GETDATA_BATCH  # 8192 probed CIDs / window / peer
 
 
 class InventoryError(ValueError):
