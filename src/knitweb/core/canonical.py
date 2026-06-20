@@ -63,7 +63,18 @@ def _encode_head(major: int, length: int) -> bytes:
     raise CanonicalError("integer too large for CBOR (>64 bit)")
 
 
-def _encode(value: Any) -> bytes:
+# Maximum container-nesting depth for encode/decode. Real records are shallow; this is a
+# hard guard so a deeply-nested input — especially attacker-controlled *bytes* on the
+# decode path (every gossiped record, CID, and signature verify decodes untrusted input) —
+# raises CanonicalError instead of exhausting the Python stack (RecursionError / DoS). It is
+# well below CPython's default recursion limit, and changing it does NOT affect the bytes of
+# any value within the limit, so it is not hash-critical (#145).
+MAX_DEPTH = 64
+
+
+def _encode(value: Any, depth: int = 0) -> bytes:
+    if depth > MAX_DEPTH:
+        raise CanonicalError(f"value nests deeper than MAX_DEPTH={MAX_DEPTH}")
     # bool must be checked before int (bool is a subclass of int)
     if value is None:
         return bytes([0xF6])  # major 7, simple 22
@@ -83,7 +94,7 @@ def _encode(value: Any) -> bytes:
     if isinstance(value, (list, tuple)):
         out = _encode_head(4, len(value))
         for item in value:
-            out += _encode(item)
+            out += _encode(item, depth + 1)
         return out
     if isinstance(value, dict):
         # Deterministic map: keys encoded, then sorted bytewise by encoded key.
@@ -91,7 +102,7 @@ def _encode(value: Any) -> bytes:
         for k, v in value.items():
             if not isinstance(k, (str, int, bytes)) or isinstance(k, bool):
                 raise CanonicalError(f"unsupported map key type: {type(k).__name__}")
-            encoded_pairs.append((_encode(k), _encode(v)))
+            encoded_pairs.append((_encode(k, depth + 1), _encode(v, depth + 1)))
         encoded_pairs.sort(key=lambda pair: pair[0])
         out = _encode_head(5, len(encoded_pairs))
         for ek, ev in encoded_pairs:
@@ -113,7 +124,9 @@ def encode(value: Any) -> bytes:
 # Decoding (used for round-trip verification and reads)
 # ---------------------------------------------------------------------------
 
-def _decode(buf: bytes, pos: int) -> tuple[Any, int]:
+def _decode(buf: bytes, pos: int, depth: int = 0) -> tuple[Any, int]:
+    if depth > MAX_DEPTH:
+        raise CanonicalError(f"input nests deeper than MAX_DEPTH={MAX_DEPTH}")
     if pos >= len(buf):
         raise CanonicalError("unexpected end of input")
     initial = buf[pos]
@@ -165,7 +178,7 @@ def _decode(buf: bytes, pos: int) -> tuple[Any, int]:
         n, pos = read_len(minor, pos)
         items = []
         for _ in range(n):
-            item, pos = _decode(buf, pos)
+            item, pos = _decode(buf, pos, depth + 1)
             items.append(item)
         return items, pos
     if major == 5:
@@ -174,7 +187,7 @@ def _decode(buf: bytes, pos: int) -> tuple[Any, int]:
         prev_key_bytes: bytes | None = None
         for _ in range(n):
             key_start = pos
-            k, pos = _decode(buf, pos)
+            k, pos = _decode(buf, pos, depth + 1)
             key_bytes = buf[key_start:pos]
             # Keys MUST appear in strictly ascending encoded-key byte order
             # (the same order encode() emits). This rejects both unsorted maps
@@ -185,7 +198,7 @@ def _decode(buf: bytes, pos: int) -> tuple[Any, int]:
                     raise CanonicalError("duplicate map key in canonical CBOR")
                 raise CanonicalError("map keys not in canonical (ascending) order")
             prev_key_bytes = key_bytes
-            v, pos = _decode(buf, pos)
+            v, pos = _decode(buf, pos, depth + 1)
             out[k] = v
         return out, pos
     if major == 7:

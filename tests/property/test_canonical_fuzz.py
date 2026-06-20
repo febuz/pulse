@@ -108,3 +108,33 @@ def test_single_byte_flip_never_silently_aliases():
             continue                                   # rejected — fine
         # if it decoded, it must NOT be the same value with different bytes
         assert decoded != v or canonical.encode(decoded) == mutated
+
+
+def test_encode_decode_reject_excessive_nesting():
+    """#145: container nesting beyond MAX_DEPTH raises CanonicalError (a typed, handled
+    error) instead of exhausting the Python stack with RecursionError — the decode path
+    is attacker-controlled (every gossiped record / CID / verify decodes untrusted bytes),
+    so deep nesting must not be a DoS."""
+    from knitweb.core.canonical import MAX_DEPTH, CanonicalError, decode, encode
+
+    # At the limit: still encodes + round-trips cleanly.
+    ok = cur = []
+    for _ in range(MAX_DEPTH - 1):
+        nxt = []
+        cur.append(nxt)
+        cur = nxt
+    assert decode(encode(ok)) == ok
+
+    # Past the limit: a typed CanonicalError, never a RecursionError.
+    deep = cur = []
+    for _ in range(MAX_DEPTH + 50):
+        nxt = []
+        cur.append(nxt)
+        cur = nxt
+    with pytest.raises(CanonicalError):
+        encode(deep)
+
+    # And the decode side rejects an over-deep buffer too (CBOR array heads, byte 0x81 = [x]).
+    over_deep_bytes = b"\x81" * (MAX_DEPTH + 50) + b"\x00"
+    with pytest.raises(CanonicalError):
+        decode(over_deep_bytes)
