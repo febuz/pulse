@@ -55,9 +55,13 @@ outcome_cid, authority, mode (release|refund), total_amount, entry_count, settle
 - **All-or-nothing settlement** — a campaign declares a ``beneficiary``; ``settle()`` recomputes +
   matches the certified outcome, then signs a ``crowdfunding-settlement`` instructing **release**
   to the beneficiary if the goal was met or **refund** to each pledger if not (per-payee amounts
-  committed in a ``settlement_root``; ``verify_settlement``/``audit_settlement`` check it). It is
-  the deterministic instruction a payout layer executes — wiring it to actual ledger ``Knit``
-  transfers (pledge-time PLS escrow + a per-payee accept handshake) is a designed future step.
+  committed in a ``settlement_root``; ``verify_settlement``/``audit_settlement`` check it).
+- **Ledger-wired execution** — ``execute_settlement`` turns that instruction into real PLS
+  movement via two-party ``Knit`` transfers escrow→payee, audited first and idempotent
+  (``applied`` CID set) so it can't double-pay. ``validate_payout`` lets a payee independently
+  authorise a proposed payout, and ``SettlementSession`` drives a **resumable, payee-validated**
+  escrow-push (distributed Phase 1, in-process). Cross-node transport (Phase 2) and
+  forfeiture/fees (Phase 3) are designed in ``P2P_SETTLEMENT_DESIGN.md`` (pending owner decisions).
 - **Zero PII on the fabric** — enforced by the personhood layer.
 
 ## API surface (`knitweb.knitwebs.crowdfunding`)
@@ -70,6 +74,9 @@ outcome_cid, authority, mode (release|refund), total_amount, entry_count, settle
 - `verify_outcome(...)` / `audit_outcome(...)` — independent audit.
 - `CrowdfundingCampaign.settle(outcome_record, campaign_record, pledges)` — sign the all-or-nothing
   settlement; `verify_settlement(...)` / `audit_settlement(...)` — independent audit.
+- `execute_settlement(settlement_att, ..., escrow, payees, *, applied=None)` — move PLS escrow→payee
+  (idempotent via `applied`); `validate_payout(knit, settlement_att, ..., payee_pub)` — payee-side
+  authorisation; `SettlementSession(...)` — resumable, payee-validated escrow-push (`.step`/`.run`).
 
 ## Trust model
 
