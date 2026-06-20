@@ -154,6 +154,9 @@ class FabricNode(BaseNode):
         serve_budget: "inventory.ServeBudget | None" = None,
         ingest_budget: "inventory.ServeBudget | None" = None,
         max_gossiped_frames: int = 50_000,
+        diffuse_max_ms: int = 0,
+        diffuse_seed: int | None = None,
+        diffuse_sleep=None,
     ) -> None:
         super().__init__(
             host=host,
@@ -242,6 +245,22 @@ class FabricNode(BaseNode):
             self._gossip = gossip
         else:
             self._gossip = Gossipsub(rng=_random_mod.Random(gossip_seed))
+        # Source-privacy diffusion (#93). On the ORIGIN announce path only, each
+        # mesh peer's already-built inv frame is dispatched after an independent
+        # random integer-millisecond delay drawn uniformly over [0, diffuse_max_ms],
+        # so the author is no longer deterministically the first emitter of its own
+        # CID (the timing-correlation vector). The draw is INTEGER ms on a runtime
+        # RNG — never the canonical byte path — so a fresh Knit CID and the stored
+        # signed frame bytes are untouched at any setting. ``diffuse_max_ms == 0``
+        # is exact legacy behaviour (no draw, no sleep). The RNG is injected like
+        # the gossip RNG above so tests replay deterministically; the sleep clock
+        # is injected like start_anti_entropy so a test uses a virtual clock with no
+        # real wall-time. Default is 0 (mechanism present, opt-in): enabling it by
+        # default would add real first-hop latency to every weave; turning it on as
+        # a default is a follow-up once a privacy/latency knob is chosen.
+        self._diffuse_max_ms = max(0, int(diffuse_max_ms))
+        self._diffuse_rng = _random_mod.Random(diffuse_seed)
+        self._diffuse_sleep = diffuse_sleep if diffuse_sleep is not None else asyncio.sleep
 
     # -- server lifecycle -------------------------------------------------
 
@@ -670,7 +689,7 @@ class FabricNode(BaseNode):
         if not peers:
             return
         results = await asyncio.gather(
-            *(self._announce_to(peer, cids) for peer in peers),
+            *(self._diffused_announce_to(peer, cids) for peer in peers),
             return_exceptions=True,
         )
         # Swallow per-peer transport errors (offline peer); they are recoverable
@@ -682,6 +701,31 @@ class FabricNode(BaseNode):
                 self.metrics.incr("broadcasts_failed")
             else:
                 self.metrics.incr("broadcasts_sent")
+
+    async def _diffused_announce_to(self, peer: PeerAddress, cids: list[str]) -> None:
+        """Dispatch one peer's ORIGIN inv-announce after an independent diffusion delay.
+
+        Source-privacy diffusion (#93), applied ONLY on the origin path
+        (``weave``/``link`` -> :meth:`_eager_announce`). Each peer draws its OWN
+        integer-millisecond delay over ``[0, self._diffuse_max_ms]`` (per call, so
+        peers are independent), waits it out on the injected sleep clock, then runs
+        the UNCHANGED :meth:`_announce_to` inv exchange. Because the delays are
+        independent the author is the first announcer with probability ~``1/peers``
+        rather than ~``1``, decorrelating announce order from origin.
+
+        The drawn value stays an INTEGER millisecond count; the only division by
+        1000 happens at the :func:`asyncio.sleep` boundary (seconds), never on the
+        value path — so nothing float touches the canonical/byte path. When
+        ``diffuse_max_ms == 0`` we neither draw nor sleep: behaviour is byte- and
+        timing-identical to the legacy one-shot broadcast, which is what the
+        byte-identity / interop suites assert. Diffusion gates only WHEN the dial
+        starts; the #91/#102 ServeBudget still debits per-peer bytes inside
+        :meth:`_announce_to` in the same order and count as before.
+        """
+        if self._diffuse_max_ms:
+            delay_ms = self._diffuse_rng.randint(0, self._diffuse_max_ms)
+            await self._diffuse_sleep(delay_ms / 1000)
+        await self._announce_to(peer, cids)
 
     async def _announce_to(self, peer: PeerAddress, cids: list[str]) -> None:
         """Run the inv -> getdata -> inv-data exchange against one peer.
