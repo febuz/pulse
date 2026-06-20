@@ -517,13 +517,22 @@ def test_live_byte_budget_throttles_a_hammering_peer():
 
         cids = [await victim.weave(_knowledge(i, victim.pub)) for i in range(6)]
         # Size the budget to EXACTLY the first two served bodies (serve order is
-        # request order), so a window admits 2 whole bodies and no more — proving
-        # the bucket stops on a whole-body boundary, never truncating a frame.
+        # request order) plus a sub-body sliver of headroom, so a window admits 2
+        # whole bodies and no more — proving the bucket stops on a whole-body
+        # boundary, never truncating a frame even with room left over.
+        #
+        # The signed frames are NOT all the same length: the signature/CID
+        # minimal-int encoding makes each record's frame vary by a couple of bytes.
+        # So the sliver must stay below BOTH bodies the budget could next meet —
+        # body #2 (the 1st request stops there) and body #0 (the same-window
+        # re-request retries there). A fixed `third_body - 1` sliver can exceed
+        # body #0 when it is the smaller frame, letting the 2nd request serve a body
+        # (~1/3 flake); bounding by the min keeps it a strict fraction of the next
+        # body regardless of per-record size jitter.
         two_bodies = len(victim._frames[cids[0]]) + len(victim._frames[cids[1]])
-        third_body = len(victim._frames[cids[2]])
+        sliver = min(len(victim._frames[cids[0]]), len(victim._frames[cids[2]])) - 1
         victim._serve_budget = ServeBudget(
-            # Room for 2 whole bodies but NOT a 3rd (a fraction short of body #3).
-            bytes_per_window=two_bodies + third_body - 1,
+            bytes_per_window=two_bodies + sliver,
             window_seconds=5,
             clock=clock,
         )
