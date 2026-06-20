@@ -229,6 +229,20 @@ def split_range(lo: str, hi: str, fanout: int = FANOUT) -> List[Tuple[str, str]]
 _KEY_RADIX = 1 << 16
 _KEY_CHARS = 6
 
+# The UTF-16 surrogate code points U+D800..U+DFFF are NOT valid scalar values and
+# cannot be UTF-8/CBOR encoded, yet ``_int_key`` builds boundary strings from
+# arbitrary base-_KEY_RADIX digits — a digit landing in that band would make
+# ``chr(d)`` emit a lone surrogate, and the resulting boundary crashes
+# ``build_probe_frame``'s wire encode with UnicodeEncodeError. ``_int_key`` skips
+# the 2048-wide block by shifting any digit >= _SURROGATE_LO up past it, and
+# ``_key_int`` undoes the shift. The map stays strictly increasing, so range
+# tiling, the lexical bisect, and the exact ``_key_int(_int_key(v)) == v``
+# round-trip are all preserved; only the (previously crash-producing) boundaries
+# change — every encodable boundary keeps its exact bytes.
+_SURROGATE_LO = 0xD800
+_SURROGATE_HI = 0xE000  # exclusive: one past U+DFFF
+_SURROGATE_WIDTH = _SURROGATE_HI - _SURROGATE_LO  # 0x800 = 2048
+
 
 def _key_int(s: str) -> int:
     """Map a bound string to an integer key over its leading code points.
@@ -246,6 +260,9 @@ def _key_int(s: str) -> int:
         acc *= _KEY_RADIX
         if i < len(s):
             cp = ord(s[i])
+            if cp >= _SURROGATE_HI:
+                # Undo _int_key's surrogate-skip shift to recover the raw digit.
+                cp -= _SURROGATE_WIDTH
             acc += cp if cp < _KEY_RADIX else _KEY_RADIX - 1
     return acc
 
@@ -268,7 +285,9 @@ def _int_key(value: int) -> str:
     # Drop trailing zero code points so the boundary is a minimal prefix.
     while digits and digits[-1] == 0:
         digits.pop()
-    return "".join(chr(d) for d in digits)
+    # Skip the UTF-16 surrogate block so no boundary contains an unencodable
+    # lone surrogate (see _SURROGATE_LO); _key_int reverses this exactly.
+    return "".join(chr(d if d < _SURROGATE_LO else d + _SURROGATE_WIDTH) for d in digits)
 
 
 # ---------------------------------------------------------------------------
