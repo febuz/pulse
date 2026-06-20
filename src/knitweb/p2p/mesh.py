@@ -135,12 +135,16 @@ class ScoreParams:
     All fields are ``int``. The score is a weighted integer sum:
 
         score = w_time   * min(epochs_in_mesh, time_cap)
-              + w_first  * first_message_deliveries
+              + w_first  * min(first_message_deliveries, first_cap)
               + w_invalid * invalid_message_deliveries        (w_invalid <= 0)
 
     Defaults mirror the *sign and intent* of gossipsub's P1 (time in mesh, small
-    positive, capped), P2 (first deliveries, positive) and P4 (invalid messages,
-    negative quadratic-ish penalty — here a linear integer penalty). We keep the
+    positive, capped), P2 (first deliveries, positive, **capped** — gossipsub's
+    FirstMessageDeliveriesCap) and P4 (invalid messages, negative quadratic-ish
+    penalty — here a linear integer penalty). BOTH positive terms are capped so the
+    weighted sum is bounded: without ``first_cap`` a peer that is merely first to
+    deliver many message-ids accrues unbounded positive score and could offset any
+    amount of invalid-message penalty, never losing mesh standing. We keep the
     magnitudes small integers so the weighted sum never overflows any practical
     bound and stays trivially deterministic.
     """
@@ -148,12 +152,14 @@ class ScoreParams:
     w_time: int = 1
     time_cap: int = 100
     w_first: int = 2
+    first_cap: int = 100
     w_invalid: int = -50
 
     def __post_init__(self) -> None:
         _check_int(self.w_time, "w_time")
         _check_int(self.time_cap, "time_cap", min_value=0)
         _check_int(self.w_first, "w_first")
+        _check_int(self.first_cap, "first_cap", min_value=0)
         _check_int(self.w_invalid, "w_invalid")
         if self.w_invalid > 0:
             raise MeshError("w_invalid must be <= 0 (it is a penalty)")
@@ -169,7 +175,10 @@ class PeerScore:
         the mesh (gossipsub's "time in mesh"); contributes only up to
         ``time_cap`` so a long-lived honest peer cannot accrue unbounded score.
       * :attr:`first_message_deliveries` — incremented when this peer is the
-        *first* to deliver a message-id we had not seen (rewards useful peers).
+        *first* to deliver a message-id we had not seen (rewards useful peers);
+        contributes only up to ``first_cap`` so a peer cannot mine unbounded
+        positive score from first-deliveries and outweigh its invalid-message
+        penalty (gossipsub's FirstMessageDeliveriesCap).
       * :attr:`invalid_message_deliveries` — incremented when this peer delivers
         a message the caller rejected as invalid (the dominant negative term;
         enough invalids drive the score negative and bar (re-)grafting).
@@ -184,9 +193,12 @@ class PeerScore:
         capped_time = self.epochs_in_mesh
         if capped_time > params.time_cap:
             capped_time = params.time_cap
+        capped_first = self.first_message_deliveries
+        if capped_first > params.first_cap:
+            capped_first = params.first_cap
         return (
             params.w_time * capped_time
-            + params.w_first * self.first_message_deliveries
+            + params.w_first * capped_first
             + params.w_invalid * self.invalid_message_deliveries
         )
 
