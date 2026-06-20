@@ -571,8 +571,16 @@ class Gossipsub:
         so two IHAVEs from different peers both surface a still-missing id, but
         the inventory getdata dedup prevents a double body fetch. Returns
         ``None`` when we already hold everything advertised.
+
+        A **negative-scored peer is refused lazy gossip** just as :meth:`on_graft`
+        refuses it the mesh — we ignore its IHAVE and emit no IWANT, so a peer we
+        have already penalised cannot keep inducing IWANT/body-fetch work
+        (gossipsub's gossip-threshold gate). Unknown/fresh peers score ``0`` and
+        are served normally.
         """
         _check_str(peer, "peer")
+        if self.score_of(peer) < 0:
+            return None
         _topic, ids = parse_ihave_frame(frame)
         want: List[str] = []
         local: set = set()
@@ -592,8 +600,15 @@ class Gossipsub:
         feeds these into :meth:`knitweb.p2p.inventory.InventoryRelay.on_getdata`
         (or builds a getdata frame) — the body transfer is *that* module's job,
         never this one's, so no record bytes are duplicated or re-encoded here.
+
+        Mirrors :meth:`on_graft` / :meth:`on_ihave`: a **negative-scored peer is
+        not served** — we return an empty list so a penalised peer cannot keep
+        pulling ids (and the bodies they resolve to) out of us. Unknown/fresh
+        peers score ``0`` and are served normally.
         """
         _check_str(peer, "peer")
+        if self.score_of(peer) < 0:
+            return []
         wanted = parse_iwant_frame(frame)
         held: set = set()
         for have in self._have.values():
