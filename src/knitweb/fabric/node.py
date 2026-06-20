@@ -1146,17 +1146,24 @@ class FabricNode(BaseNode):
         lands uniformly on the live TCP path and the relay path alike (#52), with
         no node-specific ``_serve_connection`` override to keep in sync.
         """
-        if kind == "fabric-record":
-            # Envelope-authoritative routing (#144): a 'fabric-record' envelope is
-            # ALWAYS a node, regardless of an inner record['kind']=='edge' the
-            # author may have set — so the same signed body is a node on both
-            # author (weave) and receiver, never a divergent edge.
-            self._ingest_signed(msg, is_edge=False)
-            return {"kind": "fabric-ack"}
-        elif kind == "fabric-edge":
-            # A genuine 'fabric-edge' envelope (Edge.to_record() shape, #108) is
-            # ALWAYS an edge — the legitimate edge path is preserved exactly.
-            self._ingest_signed(msg, is_edge=True)
+        if kind in ("fabric-record", "fabric-edge"):
+            # Content-authoritative routing (#167): the SIGNED record shape is the
+            # single authority on EVERY carrier. The gossip envelope ``kind``
+            # (``fabric-record`` / ``fabric-edge``) is OUTSIDE the author
+            # signature, so a relayer — or a self-signing remote — can deliver the
+            # identical signed body under either envelope. Routing on the envelope
+            # here (the #144 ``is_edge=False`` branch) filed an edge-shaped body as
+            # a NODE, while the relay/sync seam (``_serve_inv_data`` / ``_pull_cids``
+            # / ``sync_from``) files it as an EDGE by content — so two honest peers
+            # held a permanently divergent ``web_state_root`` for one CID. Passing
+            # ``is_edge=None`` lets :func:`_is_edge_record` read the signature-
+            # covered ``kind``/endpoint bytes, exactly as the relay/sync seam does,
+            # so the same body files the same way on every path and every receiver
+            # agrees with the author (who files by content via weave/link). A
+            # legit node record never carries ``kind=='edge'`` and a legit edge
+            # body is exactly ``Edge.to_record()``, so no honest record is
+            # misfiled. No signed bytes change — the CID is untouched.
+            self._ingest_signed(msg)
             return {"kind": "fabric-ack"}
         elif kind == "fabric-sync-request":
             return self._serve_sync()
