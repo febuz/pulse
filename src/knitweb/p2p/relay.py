@@ -46,7 +46,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import itertools
 import json
 import secrets
 import urllib.request
@@ -200,7 +199,6 @@ class RelayTransport:
         self._poll_task: asyncio.Task | None = None
         # Pending dials waiting on a correlated reply, keyed by request id.
         self._waiters: dict[int, asyncio.Future] = {}
-        self._rid = itertools.count(1)
 
     # -- relay endpoints --------------------------------------------------
 
@@ -232,6 +230,23 @@ class RelayTransport:
 
     # -- dial (request → correlated reply) --------------------------------
 
+    def _new_rid(self) -> int:
+        # SECURITY: the request id is the ONLY thing correlating a relay reply to
+        # a pending dial — a relay reply frame carries no authenticated sender, so
+        # `_dispatch` resolves a waiter purely by matching `_relay_rid`. A
+        # sequential id (the old ``itertools.count(1)``) is trivially guessable, so
+        # anyone able to write to this mailbox could deposit a frame with a guessed
+        # in-flight rid and no ``_relay_reply_to`` to resolve a pending dial with
+        # attacker-chosen content (response spoofing / DoS). An unguessable 63-bit
+        # id makes the rid an unforgeable capability the legitimate responder only
+        # learns because we mailed it to the dialed peer. 63 bits stays a positive
+        # value that fits signed-64-bit wire encodings; collisions are negligible
+        # but rejected anyway so two concurrent dials never share a waiter.
+        while True:
+            rid = secrets.randbits(63)
+            if rid not in self._waiters:
+                return rid
+
     async def dial(self, peer: PeerAddress, request: dict) -> dict:
         target = peer.params.get("mailbox")
         if not target:
@@ -239,7 +254,7 @@ class RelayTransport:
         # We must be polling our own mailbox to receive the reply.
         if self._poll_task is None:
             self._start_polling()
-        rid = next(self._rid)
+        rid = self._new_rid()
         loop = asyncio.get_running_loop()
         waiter: asyncio.Future = loop.create_future()
         self._waiters[rid] = waiter
