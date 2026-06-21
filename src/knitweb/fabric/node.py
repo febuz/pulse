@@ -4,7 +4,7 @@ A :class:`FabricNode` is the smallest useful "live web" peer: it owns a fabric
 :class:`~knitweb.fabric.web.Web`, accepts local weaves, and **gossips every woven
 record over the p2p transport** so that connected peers ingest the same records
 into their own Web. Once a record has propagated, two nodes hold the *same set of
-node CIDs* and therefore the same :func:`~knitweb.fabric.items.web_state_root` —
+node CIDs and edges* and therefore the same :func:`~knitweb.fabric.items.web_state_root` —
 they have **converged**.
 
 This is the first increment of issue #9 (a live p2p fabric node). It deliberately
@@ -162,7 +162,7 @@ class FabricNode(BaseNode):
     the node's :class:`StaticPeerBook`; peers verify the author signature and
     weave the record into their own Web. Because :class:`Web.weave` is
     content-addressed and idempotent, gossip converges to an identical node set
-    regardless of arrival order or duplicate delivery.
+    and edge set regardless of arrival order or duplicate delivery.
     """
 
     # The fabric _dispatch catches the fabric error family (plus wire/value).
