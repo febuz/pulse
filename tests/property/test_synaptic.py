@@ -185,3 +185,44 @@ def test_compile_bundle_byte_identity_pin():
     priv, pub = crypto.generate_keypair()
     sig = bc.sign_bundle(priv, data)
     assert bc.verify_bundle(pub, data, sig)
+
+
+@pytest.mark.property
+def test_truncated_bundle_raises_typed_bytecode_error():
+    # decode_bundle parses untrusted, network-sourced bytes (edge devices fetch
+    # bundles over BLE / 5G / Wi-Fi / satellite). EVERY malformed input must
+    # raise the module's own BytecodeError — never leak IndexError or
+    # UnicodeDecodeError past an `except BytecodeError` handler.
+    valid = bc.compile_bundle("bcid", "Global Finance Corp", _sample_relations())
+    assert bc.decode_bundle(valid)["asset_cid"] == "bcid"   # sanity: valid decodes
+
+    # Exact magic with no version byte (the raw data[pos] version read).
+    with pytest.raises(bc.BytecodeError):
+        bc.decode_bundle(bc.MAGIC)
+
+    # Every truncation prefix of a valid bundle is malformed; each must raise
+    # BytecodeError, not a leaked IndexError/UnicodeDecodeError (this also covers
+    # the truncated-string and missing-source-type-byte paths).
+    for cut in range(len(valid)):
+        with pytest.raises(bc.BytecodeError):
+            bc.decode_bundle(valid[:cut])
+
+
+@pytest.mark.property
+def test_out_of_range_term_index_raises_bytecode_error():
+    # A relation that interns a term index past the dictionary size must be
+    # rejected with BytecodeError (was a leaked IndexError on terms[si]).
+    buf = bytearray(bc.MAGIC)
+    buf.append(bc.VERSION)
+    bc._put_str(buf, "cid")
+    bc._put_str(buf, "orig")
+    bc._put_varint(buf, 1)          # one interned term (index 0 only)
+    bc._put_str(buf, "a")
+    bc._put_varint(buf, 1)          # one relation
+    bc._put_varint(buf, 9)          # subject index 9 -> out of range
+    bc._put_varint(buf, 0)
+    bc._put_varint(buf, 0)
+    buf.append(0x00)                # source-type byte
+    bc._put_varint(buf, 1)          # weight
+    with pytest.raises(bc.BytecodeError):
+        bc.decode_bundle(bytes(buf))

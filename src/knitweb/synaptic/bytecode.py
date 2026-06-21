@@ -114,7 +114,13 @@ def _put_str(buf: bytearray, text: str) -> None:
 
 def _get_str(data: bytes, pos: int) -> tuple[str, int]:
     n, pos = _get_varint(data, pos)
-    return data[pos:pos + n].decode("utf-8"), pos + n
+    end = pos + n
+    if end > len(data):
+        raise BytecodeError("truncated string")
+    try:
+        return data[pos:end].decode("utf-8"), end
+    except UnicodeDecodeError as exc:
+        raise BytecodeError("invalid utf-8 in interned string") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +190,8 @@ def decode_bundle(data: bytes) -> dict:
     if data[:4] != MAGIC:
         raise BytecodeError("bad magic; not Fiber synaptic bytecode")
     pos = 4
+    if pos >= len(data):
+        raise BytecodeError("truncated; missing version byte")
     version = data[pos]
     pos += 1
     if version != VERSION:
@@ -203,6 +211,10 @@ def decode_bundle(data: bytes) -> dict:
         si, pos = _get_varint(data, pos)
         pi, pos = _get_varint(data, pos)
         oi, pos = _get_varint(data, pos)
+        if si >= len(terms) or pi >= len(terms) or oi >= len(terms):
+            raise BytecodeError("relation references out-of-range term index")
+        if pos >= len(data):
+            raise BytecodeError("truncated; missing source-type byte")
         st_byte = data[pos]
         pos += 1
         weight, pos = _get_varint(data, pos)
