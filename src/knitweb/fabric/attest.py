@@ -21,7 +21,14 @@ from dataclasses import dataclass
 
 from ..core import canonical, crypto
 
-__all__ = ["Attestation", "attest", "verify_record", "node_is_attested"]
+__all__ = [
+    "Attestation",
+    "attest",
+    "verify_record",
+    "RecordCheck",
+    "check_record",
+    "node_is_attested",
+]
 
 
 @dataclass(frozen=True)
@@ -84,6 +91,78 @@ def verify_record(
     if record.get(author_field) != expected:
         return False
     return crypto.verify(author_pub, message, sig)
+
+
+@dataclass(frozen=True)
+class RecordCheck:
+    """Structured verdict from :func:`check_record` — a Lens-facing record audit.
+
+    ``ok`` is the verdict; ``reason`` names the first gate that failed (or
+    ``"ok"``), so an external interpret/retrieval tool can tell *why* a record was
+    rejected — a tampered CID vs. a wrong author key vs. a bad signature vs. a
+    non-canonical/float field — instead of getting an opaque boolean. ``RecordCheck``
+    is falsy when ``ok`` is False, so ``if check_record(...):`` reads naturally.
+    """
+
+    ok: bool
+    reason: str
+
+    def __bool__(self) -> bool:
+        return self.ok
+
+
+def check_record(
+    record: dict,
+    expected_cid: str,
+    author_pub: str,
+    sig: str,
+    *,
+    author_field: str = "author",
+) -> RecordCheck:
+    """Full read-only audit of one signed, content-addressed record, for external
+    (Lens / interpret / retrieval) tools.
+
+    A consumer reading a record off the wire needs four independent guarantees;
+    this composes them in order, each with a distinct failure ``reason``:
+
+      1. ``record-not-a-dict``    — the record is not a CBOR map.
+      2. ``non-canonical-record`` — it does not float-free canonically encode (a
+         float or otherwise unencodable value ⇒ its bytes, CID and signature are
+         undefined, so nothing downstream can be trusted).
+      3. ``cid-mismatch``         — ``expected_cid`` ≠ the CIDv1 recomputed from
+         the record (tamper-evidence: the bytes are not what the CID addresses).
+      4. ``bad-author-pub`` / ``author-mismatch`` — ``author_pub`` is malformed,
+         or the record's ``author_field`` address is not the one it derives.
+      5. ``bad-signature``        — ``sig`` is not a valid ECDSA signature over the
+         record's canonical bytes by ``author_pub``.
+
+    Never raises on hostile input — a malformed record, key, CID or signature is
+    reported as ``RecordCheck(False, reason)``, mirroring :func:`verify_record`.
+    Together with the L0 ``canonical`` and ``crypto`` primitives this is the stable
+    boundary Lens should depend on; Lens must not reach into Pulse internals
+    (knitweb/pulse#153, #154).
+    """
+    if not isinstance(record, dict):
+        return RecordCheck(False, "record-not-a-dict")
+    # (2) float-free canonical encoding — also yields the exact bytes we hash/verify over.
+    try:
+        message = canonical.encode(record)
+    except canonical.CanonicalError:
+        return RecordCheck(False, "non-canonical-record")
+    # (3) CID recomputation: the record must hash to the CID it is addressed by.
+    if canonical.cid(record) != expected_cid:
+        return RecordCheck(False, "cid-mismatch")
+    # (4) the author/provider field must bind to the presented key.
+    try:
+        expected = crypto.address(author_pub)
+    except (ValueError, TypeError):
+        return RecordCheck(False, "bad-author-pub")
+    if record.get(author_field) != expected:
+        return RecordCheck(False, "author-mismatch")
+    # (5) the signature must verify over the canonical bytes.
+    if not crypto.verify(author_pub, message, sig):
+        return RecordCheck(False, "bad-signature")
+    return RecordCheck(True, "ok")
 
 
 def node_is_attested(record_source: dict | object, node_cid: str) -> bool:
