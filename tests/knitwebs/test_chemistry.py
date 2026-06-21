@@ -169,6 +169,24 @@ def test_kinetics_metadata_is_integer_and_optional():
 
 
 @pytest.mark.knitweb
+def test_composition_order_is_normalised_for_cid_stability():
+    """CID stability (#210): a Species is a multiset of (element, count) pairs, so building
+    it with composition in any order must converge on one canonical form — and therefore
+    one record CID. Without this, a raw-constructed (or cross-language) species could emit a
+    divergent CID for the same logical molecule, forking the content-addressed Web."""
+    canonical_form = (("H", 2), ("O", 1))
+    via_make = Species.make("H2O", {"O": 1, "H": 2})   # make() sorts its dict input
+    via_raw = Species("H2O", (("O", 1), ("H", 2)))     # raw constructor, unsorted on input
+    assert via_make.composition == canonical_form
+    assert via_raw.composition == canonical_form       # normalised at construction
+
+    def frag(s: Species) -> dict:
+        return {"species": s.formula, "coeff": 1,
+                "composition": [list(p) for p in s.composition], "charge": s.charge}
+    assert canonical.cid(frag(via_make)) == canonical.cid(frag(via_raw))
+
+
+@pytest.mark.knitweb
 def test_duplicate_elements_are_rejected():
     with pytest.raises(ValueError, match="duplicate"):
         Species("bad", (("H", 1), ("H", 2)))

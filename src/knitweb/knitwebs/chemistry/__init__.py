@@ -42,7 +42,7 @@ class Species:
     """A chemical species: a formula, its element composition, and net charge."""
 
     formula: str
-    composition: tuple[tuple[str, int], ...]  # sorted (element, count) pairs
+    composition: tuple[tuple[str, int], ...]  # (element, count) pairs; normalised to sorted order
     charge: int = 0
 
     def __post_init__(self) -> None:
@@ -57,6 +57,16 @@ class Species:
                 raise TypeError(f"{self.formula}: element {element} count must be int")
             if count <= 0:
                 raise ValueError(f"{self.formula}: element {element} count must be > 0")
+        # CID stability (#210): composition is a multiset, so element order carries no
+        # meaning — but it is emitted verbatim into the content-addressed record
+        # (to_record -> term_rec), so an unsorted composition would hash to a *different*
+        # CID for the same logical species. make() already pre-sorts; enforce the same
+        # canonical order at the raw-constructor boundary too, so EVERY Species — however
+        # built (make(), the bare constructor, or a cross-language port mirroring this
+        # type) — yields one CID per logical species. Frozen dataclass → object.__setattr__.
+        canonical_composition = tuple(sorted(self.composition))
+        if canonical_composition != self.composition:
+            object.__setattr__(self, "composition", canonical_composition)
 
     @classmethod
     def make(cls, formula: str, composition: dict[str, int], charge: int = 0) -> "Species":
