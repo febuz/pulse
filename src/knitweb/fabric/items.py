@@ -26,6 +26,7 @@ from .web import Web
 __all__ = [
     "KnowledgeItem",
     "ResourceItem",
+    "AttentionRecord",
     "FabricCheckpoint",
     "web_state_root",
     "checkpoint",
@@ -112,6 +113,73 @@ class ResourceItem:
 
     def weave(self, web: Web) -> str:
         """Weave this item into *web*; return its CID."""
+        return web.weave(self.to_record())
+
+
+# ---------------------------------------------------------------------------
+# AttentionRecord
+# ---------------------------------------------------------------------------
+
+_ATTENTION_METRICS = (
+    "confidence",
+    "usefulness",
+    "deploy_debug",
+    "source_priority",
+    "relation_weight",
+)
+
+
+@dataclass(frozen=True)
+class AttentionRecord:
+    """Integer attention metadata linked to a target node CID (a Lens ranking signal).
+
+    A Lens ranks and filters the Web by *attention* — how much, and in what way, a
+    node matters. Each metric is an OPTIONAL non-negative integer (``None`` ⇒ the
+    signal is simply absent from the record): ``confidence``, ``usefulness``,
+    ``deploy_debug`` (a deploy/debug score), ``source_priority``, and
+    ``relation_weight``. Values are integer-only — bools and floats are rejected —
+    so the record is canonical-CBOR safe and the same signals hash identically on
+    every peer. The annotated node's CID is preserved verbatim as ``target``, so the
+    metadata is content-addressable and binds to exactly the node it scores. Only the
+    metrics actually provided appear in :meth:`to_record`, so the CID reflects exactly
+    the signals asserted — an absent metric is NOT the same as a zero metric.
+    """
+
+    target: str   # CID of the node this metadata annotates
+    author: str   # PLS address of the annotating spider
+    confidence: int | None = None
+    usefulness: int | None = None
+    deploy_debug: int | None = None
+    source_priority: int | None = None
+    relation_weight: int | None = None
+
+    def __post_init__(self) -> None:
+        for name in _ATTENTION_METRICS:
+            value = getattr(self, name)
+            if value is None:
+                continue
+            _require_int(name, value)   # rejects bool and float
+            if value < 0:
+                raise ValueError(f"{name} must be non-negative")
+
+    def to_record(self) -> dict:
+        record = {
+            "kind": "attention",
+            "target": self.target,
+            "author": self.author,
+        }
+        for name in _ATTENTION_METRICS:
+            value = getattr(self, name)
+            if value is not None:
+                record[name] = value
+        return record
+
+    @property
+    def cid(self) -> str:
+        return canonical.cid(self.to_record())
+
+    def weave(self, web: Web) -> str:
+        """Weave this attention record into *web*; return its CID."""
         return web.weave(self.to_record())
 
 
