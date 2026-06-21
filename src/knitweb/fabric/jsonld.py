@@ -42,6 +42,7 @@ __all__ = [
     "validate_edge_metadata",
     "export_web",
     "import_web",
+    "edges_of",
 ]
 
 # Shared with the OriginTrail anchor backend (anchor/origintrail.py): a Web node, like a
