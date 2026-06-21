@@ -145,6 +145,24 @@ MAX_RECON_FRAMES = 50_000
 # O(remaining-diff)), so it paginates across requests rather than deadlocking.
 MAX_GETDATA_BATCH = 2_048
 
+# (a-frame) Per-RESPONSE aggregate-frame cap. ``on_getdata`` returns verbatim
+# stored frames; the serve callers (``fabric/node.py``) DECODE each
+# (``wire.read_frame_bytes``) and re-wrap them as ONE ``{kind:"inv-data",
+# records:[...]}`` frame that must ITSELF encode under ``wire.MAX_FRAME_BYTES``
+# (8 MiB). Neither the count cap above nor the per-peer byte budget below bounds
+# THIS: up to MAX_GETDATA_BATCH bodies — or a handful of ~MiB bodies — can sum
+# past 8 MiB while each body is individually well under every per-body cap. The
+# oversized wrapped frame then raises ``WireError`` at ``write_frame`` and the
+# transport silently DROPS the connection (no response), permanently starving
+# fetches of any held group summing > 8 MiB. Bound the aggregate of served-body
+# bytes under MAX_FRAME_BYTES with headroom for the inv-data envelope + array /
+# frame headers (~tens of bytes). Each decoded record re-embeds SMALLER than its
+# stored frame (the inner frame header is stripped), so the sum of stored-frame
+# lengths OVER-bounds the wrapped payload — 64 KiB of headroom is generous. The
+# remainder paginates to the next reconcile round exactly like the count cap, so
+# a large held group still converges across rounds rather than deadlocking.
+MAX_SERVE_AGGREGATE_BYTES = wire.MAX_FRAME_BYTES - 64 * 1024  # 8 MiB - 64 KiB
+
 # (b) Per-PEER byte budget over an integer time window: a token/byte bucket. A
 # peer may be served at most ``SERVE_BYTES_PER_WINDOW`` body bytes per rolling
 # ``SERVE_WINDOW_SECONDS`` window; a request that would exceed the remaining
@@ -670,7 +688,7 @@ class InventoryRelay:
         a relay hop. CIDs we do not hold are silently skipped (the peer may want
         an item we never received); we never fabricate a body.
 
-        Anti-amplification (#91): the serve is bounded on TWO axes so a single
+        Anti-amplification (#91): the serve is bounded on THREE axes so a single
         request can never reflect an unbounded body multiple back at the requester.
 
           * **per-request count** — at most :data:`MAX_GETDATA_BATCH` bodies are
@@ -679,6 +697,13 @@ class InventoryRelay:
             remaining diff on its next reconcile round (the SeenSet keeps that
             O(remaining-diff)), so a legitimately large diff paginates across
             requests rather than amplifying or deadlocking.
+          * **per-response aggregate frame** — the bodies are wrapped by the serve
+            callers into ONE ``inv-data`` frame bounded by ``wire.MAX_FRAME_BYTES``.
+            Serving is stopped before a body would push the cumulative served bytes
+            past :data:`MAX_SERVE_AGGREGATE_BYTES` (< MAX_FRAME_BYTES), so the
+            wrapped frame always encodes — but at least one body is always served
+            (a single held CID can never be permanently deferred). The rest
+            paginates to the next round like the count cap.
           * **per-peer bytes/window** — when ``peer`` is supplied, each body's
             bytes are debited from that peer's :class:`ServeBudget` bucket; once
             the peer's window budget is exhausted, no further bodies are served
@@ -693,6 +718,7 @@ class InventoryRelay:
         """
         wanted = parse_getdata_frame(frame)
         out: List[bytes] = []
+        aggregate = 0  # cumulative served-body bytes (for the inv-data frame cap)
         for cid in wanted:
             if len(out) >= MAX_GETDATA_BATCH:
                 # Per-request count cap reached: stop serving. Remaining CIDs are
@@ -704,6 +730,14 @@ class InventoryRelay:
             if not isinstance(stored, (bytes, bytearray)):
                 raise InventoryError("frame lookup must return bytes or None")
             body = bytes(stored)
+            # Per-response aggregate-frame cap: the caller wraps these bodies into
+            # ONE inv-data frame bounded by wire.MAX_FRAME_BYTES. Stop before a body
+            # would push the aggregate past MAX_SERVE_AGGREGATE_BYTES (deferring the
+            # rest to the next round) — but always serve at least one body so a
+            # single held CID is never permanently starved. Checked BEFORE the byte
+            # budget so a deferred body does not burn the peer's window budget.
+            if out and aggregate + len(body) > MAX_SERVE_AGGREGATE_BYTES:
+                break
             if peer is not None:
                 # Debit the per-peer byte bucket. ``take`` returns how many bytes
                 # the budget permits right now; if it cannot cover this whole
@@ -713,6 +747,7 @@ class InventoryRelay:
                 if self.budget.take(peer, len(body)) < len(body):
                     break
             out.append(body)
+            aggregate += len(body)
         return out
 
     # -- inbound record ---------------------------------------------------

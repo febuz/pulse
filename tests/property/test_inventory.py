@@ -564,6 +564,60 @@ def test_serve_window_covers_the_largest_possible_body_so_no_fetch_can_starve():
     assert len(served) == 1 and served[0] == frame  # whole + byte-identical
 
 
+def test_on_getdata_aggregate_serve_fits_one_inv_data_frame_and_paginates():
+    """A multi-body serve must fit ONE inv-data frame; the remainder paginates.
+
+    ``on_getdata`` returns verbatim stored frames; the serve callers
+    (``fabric/node.py``) DECODE each and re-wrap them into a single
+    ``{kind:"inv-data", records:[...]}`` frame that must encode under
+    ``wire.MAX_FRAME_BYTES`` (8 MiB). The per-request count cap (2048) and the
+    per-peer byte budget (256 MiB/window) do NOT bound this: a handful of ~MiB
+    bodies — each individually well under every per-body cap — sum past 8 MiB, so
+    the wrapped frame raises ``WireError`` at ``write_frame`` and the transport
+    silently drops the connection ⇒ permanent fetch starvation for any held group
+    summing > 8 MiB. The aggregate-frame cap stops before the wrapped frame would
+    overflow, always serving a non-empty prefix and deferring the rest to the next
+    round, so a large held group still fully converges across rounds.
+    """
+    body_len = 1024 * 1024  # ~1 MiB each
+    n = 9                    # 9 MiB total > MAX_FRAME_BYTES (8 MiB)
+    frames = {}
+    cids = []
+    for i in range(n):
+        cid = "bafyrei-agg-%02d" % i
+        frames[cid] = wire.write_frame_bytes(
+            {"kind": "fabric-record", "i": i, "blob": b"\x00" * body_len}
+        )
+        cids.append(cid)
+
+    # Each stored body is individually legal (< the frame cap), yet together they
+    # exceed it — exactly the seam the existing per-body caps miss.
+    assert all(len(frames[c]) < wire.MAX_FRAME_BYTES for c in cids)
+    assert sum(len(frames[c]) for c in cids) > wire.MAX_FRAME_BYTES
+
+    relay = InventoryRelay(lambda cid: frames.get(cid))
+    served = relay.on_getdata(build_getdata_frame(cids))
+
+    # (1) A non-empty prefix is served (forward progress; not all, not none).
+    assert 0 < len(served) < n
+    # (2) Cumulative served bytes stay within the frame-safe bound.
+    assert sum(len(b) for b in served) <= inventory_mod.MAX_SERVE_AGGREGATE_BYTES
+    # (3) The ACTUAL frame the serve callers build (decode each body, re-wrap,
+    #     write_frame) encodes under the hard frame cap. Pre-fix the full serve
+    #     overflows here, but assertion (1) already fails first — a CLEAN kill.
+    records = [wire.read_frame_bytes(b) for b in served]
+    wrapped = wire.write_frame_bytes({"kind": "inv-data", "records": records})
+    assert len(wrapped) <= wire.MAX_FRAME_BYTES
+    # (4) The deferred remainder is served on the next round: a held group summing
+    #     > MAX_FRAME_BYTES still fully converges across rounds, never starves.
+    served_bodies = set(served)
+    remaining = [c for c in cids if frames[c] not in served_bodies]
+    assert len(remaining) == n - len(served)
+    rest = relay.on_getdata(build_getdata_frame(remaining))
+    assert len(rest) == len(remaining)
+    assert served_bodies | set(rest) == set(frames.values())  # all served in 2 rounds
+
+
 def test_serve_budget_is_deterministic_across_replays():
     """Two budgets driven by identical virtual clocks debit identically.
 
