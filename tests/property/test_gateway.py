@@ -1,5 +1,6 @@
 """knitweb.gateway.App — the turnkey app layer (identity, economy, persistent web, provenance)."""
 import http.client
+import json
 import socket
 import threading
 from contextlib import closing, contextmanager
@@ -111,6 +112,30 @@ def test_serve_open_when_no_token():
     with _running(app) as port:
         status, _ = _get(port, "/balance?id=alice")
         assert status == 200
+
+
+def test_web_get_returns_the_graph_read_contract(tmp_path):
+    # The /web and /provenance GET routes are the only HTTP surface a read-only
+    # client (e.g. knitweb-monitor) can poll for the woven graph + anchor. Pin
+    # the exact JSON contract so the gateway's read surface cannot drift silently.
+    app = App("molgang", store=str(tmp_path / "web.json"))
+    app.attest("u1", {"kind": "reaction", "formula": "H2O"})
+    app.link("V2O5", "vanadium pentoxide", "is", weight=3)
+    with _running(app) as port:
+        status, body = _get(port, "/web")
+        assert status == 200
+        web = json.loads(body)
+        assert set(web) >= {"nodes", "edges", "state_root", "records"}
+        assert isinstance(web["nodes"], int) and isinstance(web["edges"], int)
+        assert web["nodes"] >= 3 and web["edges"] >= 1
+        assert isinstance(web["records"], list)
+        assert isinstance(web["state_root"], str) and web["state_root"]
+
+        status, body = _get(port, "/provenance")
+        assert status == 200
+        prov = json.loads(body)
+        assert set(prov) >= {"ual", "state_root", "verified"}
+        assert isinstance(prov["verified"], bool)
 
 
 def test_serve_token_required_and_accepted():
