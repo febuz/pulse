@@ -233,3 +233,58 @@ def test_float_kinetics_metadata_is_rejected():
             products=(Term(h2o, 2),),
             kinetics=(("pre_exponential_milli", 5000.5),),  # type: ignore[arg-type]
         )
+
+
+# ---------------------------------------------------------------------------
+# Cross-implementation CID byte-vector (#210 sign-off reference)
+# ---------------------------------------------------------------------------
+# A fixed (test-only) author key makes the whole reaction record deterministic, so
+# the canonical-CBOR bytes and CIDv1 below are a FROZEN known-answer vector: any
+# other implementation of this schema (e.g. molgang's PHP/Python reaction emitter)
+# must reproduce these EXACT bytes and this EXACT CID for "2 H2 + O2 -> 2 H2O"
+# signed by this author, or the content-addressed Web would fork. One vector pins
+# the entire cross-impl surface at once — canonical bytewise key ordering, minimal
+# integer encoding, array framing, and the dag-cbor/sha2-256/multibase-base32 CID.
+_VECTOR_AUTHOR_PRIV = "11" * 32  # TEST KEY ONLY — never a real signing key
+_VECTOR_AUTHOR_ADDR = "pls1acgjmtdc45sccnrjuokpyucp6edu5yidvm"
+_VECTOR_RECORD = {
+    "kind": "reaction-knowledge",
+    "equation": "2 H2 + O2 -> 2 H2O",
+    "reactants": [
+        {"species": "H2", "coeff": 2, "composition": [["H", 2]], "charge": 0},
+        {"species": "O2", "coeff": 1, "composition": [["O", 2]], "charge": 0},
+    ],
+    "products": [
+        {"species": "H2O", "coeff": 2, "composition": [["H", 2], ["O", 1]], "charge": 0},
+    ],
+    "author": _VECTOR_AUTHOR_ADDR,
+    "balanced": True,
+}
+_VECTOR_ENCODE_HEX = (
+    "a6646b696e64727265616374696f6e2d6b6e6f776c6564676566617574686f72782"
+    "6706c73316163676a6d74646334357363636e726a756f6b70797563703665647535"
+    "796964766d6862616c616e636564f5686571756174696f6e72322048322"
+    "02b204f32202d3e20322048324f6870726f647563747381a465636f65666602666"
+    "368617267650067737065636965736348324f6b636f6d706f736974696f6e82826"
+    "1480282614f01697265616374616e747382a465636f65666602666368617267650"
+    "067737065636965736248326b636f6d706f736974696f6e8182614802a465636f6"
+    "566660166636861726765006773706563696573624f326b636f6d706f736974696"
+    "f6e8182614f02"
+)
+_VECTOR_CID = "bafyreifkpbmrhaypnp7dr6qeytxzdbjp3zork6fi346b33ceysq5e7totu"
+
+
+@pytest.mark.knitweb
+def test_cross_impl_cid_byte_vector_is_stable():
+    """Frozen known-answer vector for the #210 cross-implementation CID sign-off."""
+    # 1. The fixed author key is deterministic (no RNG on the signed path).
+    assert crypto.address(crypto.public_from_private(_VECTOR_AUTHOR_PRIV)) == _VECTOR_AUTHOR_ADDR
+    # 2. The reference impl emits EXACTLY the golden record shape...
+    record = ChemistryKnitweb(_VECTOR_AUTHOR_PRIV).to_record(_water_synthesis())
+    assert record == _VECTOR_RECORD
+    # 3. ...which canonical-encodes to the EXACT golden bytes...
+    assert canonical.encode(record).hex() == _VECTOR_ENCODE_HEX
+    # 4. ...and content-addresses to the EXACT golden CIDv1.
+    assert canonical.cid(record) == _VECTOR_CID
+    # 5. The golden bytes are truly canonical — they re-decode to the same record.
+    assert canonical.decode(bytes.fromhex(_VECTOR_ENCODE_HEX)) == _VECTOR_RECORD
