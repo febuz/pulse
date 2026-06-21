@@ -571,8 +571,11 @@ def iterative_lookup(
         network — so the lookup never touches a socket and cannot stall.
       k / alpha: replication width and per-round concurrency.
       tie_break: injected deterministic tie-break comparator (default: id hex).
-      max_rounds: hard cap on rounds (defaults to a safe bound of the number of
-        distinct candidates, which alone guarantees termination).
+      max_rounds: hard cap on rounds. When ``None`` (the default) a concrete,
+        adversary-independent safe bound of ``(alpha + 1) * ID_BITS`` is applied
+        so a misbehaving responder that keeps minting fresh strictly-closer
+        contacts cannot force unbounded rounds. An honest lookup converges in
+        ~log2(N) rounds, far below this cap.
 
     Returns the terminal :class:`LookupState`; ``state.result()`` is the ``k``
     closest contacts found.
@@ -593,7 +596,21 @@ def iterative_lookup(
     # Absolute safety bound: a lookup can never run more rounds than there are
     # distinct ids it could possibly query. Recomputed lazily below, but also
     # honoured as an explicit cap so a misbehaving responder cannot loop forever.
-    hard_cap = max_rounds
+    #
+    # The `state.rounds >= len(state.known)` check below is NOT sufficient on its
+    # own: an adversarial responder that returns exactly one fresh, strictly
+    # closer contact per query keeps len(known) == rounds + |seeds| + 1 forever,
+    # so that bound never trips and `improved` stays True every round. A single
+    # malicious peer would then drive unbounded FIND_NODE rounds (and unbounded
+    # `known` growth) on the looking-up node. When the caller does not pass an
+    # explicit `max_rounds`, materialise the documented safe default: an
+    # O(log N)-scale, integer-only, adversary-independent cap. ID_BITS rounds
+    # already suffices for any honest lookup (which converges in ~log2(N) << 256
+    # rounds); the alpha factor leaves slack for the per-round concurrency.
+    if max_rounds is None:
+        hard_cap = (alpha + 1) * ID_BITS
+    else:
+        hard_cap = max_rounds
 
     while True:
         best_before = state.closest_seen()

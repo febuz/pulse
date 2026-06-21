@@ -295,6 +295,55 @@ def test_lookup_terminates_with_no_seeds():
 
 
 @pytest.mark.property
+def test_lookup_terminates_against_adversarial_monotone_closer_responder():
+    """A single malicious FIND_NODE responder must not force unbounded rounds.
+
+    Without an explicit ``max_rounds`` the loop relies on its convergence break
+    (no strictly-closer candidate this round) and on the implicit
+    ``rounds >= len(known)`` bound. An adversary defeats BOTH by returning, for
+    every query, exactly one fresh contact one unit closer to the target than the
+    best seen so far: ``improved`` stays True every round (so the convergence
+    break never fires) and ``len(known) == rounds + |seeds| + 1`` stays one ahead
+    of ``rounds`` forever (so that bound never trips). The only thing that stops
+    the loop is the materialised safe default ``hard_cap = (alpha + 1) * ID_BITS``.
+
+    The responder self-limits after ``_MAX_REPLIES`` calls (well above the cap):
+    that way this test *also terminates on the pre-fix code* — where it stops by
+    exhausting the responder at ``rounds == _MAX_REPLIES`` and the assertions fail
+    cleanly — instead of hanging forever. So the test is a clean mutation kill,
+    never a CI timeout.
+    """
+    target = _id(0)
+    alpha = 3
+    hard_cap = (alpha + 1) * ID_BITS
+    # A bound far above the cap. The fixed lookup stops at hard_cap rounds and
+    # never reaches this; the buggy (uncapped) lookup runs until it does.
+    _MAX_REPLIES = 4 * hard_cap
+
+    # Best distance starts enormous, so termination can only come from the round
+    # cap — never from running the distance down to zero (that would take ~2**80
+    # steps) and never from a negative id (``_id`` cannot encode one).
+    best = [1 << 80]
+    calls = [0]
+    seed = Contact(node_id=_id(best[0]), address=PeerAddress("10.0.0.1", 9000))
+
+    def adversarial_responder(contact, lookup_target):
+        if calls[0] >= _MAX_REPLIES:
+            return []  # self-limit: keep the test finite even with no round cap
+        calls[0] += 1
+        best[0] -= 1  # one unit strictly closer to target=0 on every query
+        return [Contact(node_id=_id(best[0]), address=PeerAddress("10.0.0.2", 9001))]
+
+    state = iterative_lookup(target, [seed], adversarial_responder, k=8, alpha=alpha)
+
+    # Terminated within the documented concrete bound (not the >2**80 rounds the
+    # adversary could otherwise drive), and it was the cap — not responder
+    # exhaustion — that stopped it (calls never reached the self-limit).
+    assert state.rounds == hard_cap
+    assert calls[0] < _MAX_REPLIES
+
+
+@pytest.mark.property
 def test_lookup_each_queried_at_most_once_and_alpha_bounded():
     ids, contacts, responder = _build_network(25)
     seen_queries = []
