@@ -2,6 +2,7 @@
 
 import pytest
 
+from knitweb.core import canonical
 from knitweb.core.pulse import Beat, Pulse
 from knitweb.fabric.web import Web
 
@@ -65,6 +66,65 @@ def test_beat_rejects_bool_epoch_and_non_string_roots():
         Beat(epoch=0, timestamp=0, state_root=123, prev_beat=None)  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="prev_beat"):
         Beat(epoch=0, timestamp=0, state_root="root", prev_beat=123)  # type: ignore[arg-type]
+
+
+# --- Beat per-epoch mint cap (R1 follow-up: heartbeat-anchored supply governor) ---
+
+@pytest.mark.property
+def test_capless_beat_is_byte_identical_to_pre_cap_encoding():
+    """A Beat with no cap must encode (and hash) byte-identically to the 4-field Beat.
+
+    This is the byte-identity guard: ``epoch_mint_cap`` is conditionally OMITTED from
+    to_record() when None, so adding the field cannot change any existing Beat's CID.
+    """
+    beat = Beat(epoch=3, timestamp=42, state_root="abcd", prev_beat=None)
+    assert "epoch_mint_cap" not in beat.to_record()
+    # Golden vector: the canonical CID of the literal pre-cap 4-field record.
+    golden = canonical.cid(
+        {
+            "kind": "pulse-beat",
+            "epoch": 3,
+            "timestamp": 42,
+            "state_root": "abcd",
+            "prev_beat": None,
+        }
+    )
+    assert beat.cid == golden
+    # An explicit epoch_mint_cap=None is identical to omitting it entirely.
+    assert Beat(3, 42, "abcd", None, epoch_mint_cap=None).cid == golden
+
+
+@pytest.mark.property
+def test_capped_beat_carries_cap_in_record_and_changes_cid():
+    capless = Beat(epoch=0, timestamp=0, state_root="root", prev_beat=None)
+    capped = Beat(epoch=0, timestamp=0, state_root="root", prev_beat=None, epoch_mint_cap=100)
+    assert capped.to_record()["epoch_mint_cap"] == 100
+    assert capped.cid != capless.cid           # the cap is consensus-visible in the CID
+    # Determinism: same content -> same CID across instances.
+    assert capped.cid == Beat(0, 0, "root", None, epoch_mint_cap=100).cid
+
+
+@pytest.mark.property
+def test_beat_rejects_bad_epoch_mint_cap():
+    with pytest.raises(TypeError, match="epoch_mint_cap"):
+        Beat(epoch=0, timestamp=0, state_root="root", prev_beat=None, epoch_mint_cap=True)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="epoch_mint_cap"):
+        Beat(epoch=0, timestamp=0, state_root="root", prev_beat=None, epoch_mint_cap=1.5)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="epoch_mint_cap"):
+        Beat(epoch=0, timestamp=0, state_root="root", prev_beat=None, epoch_mint_cap=-1)
+
+
+@pytest.mark.property
+def test_pulse_beat_propagates_cap_and_cap_for_epoch_reads_it():
+    pulse = Pulse(interval_s=10, genesis_ts=0)
+    b0 = pulse.beat(0, state_root="00", epoch_mint_cap=7)
+    b1 = pulse.beat(10, state_root="11")                  # epoch 1, no cap
+    assert b0.epoch_mint_cap == 7
+    assert b1.epoch_mint_cap is None
+    assert pulse.cap_for_epoch(0) == 7
+    assert pulse.cap_for_epoch(1) is None                 # Beat present but capless
+    assert pulse.cap_for_epoch(99) is None                # no Beat for the epoch
+    assert pulse.verify_chain()                           # capped Beat still chains
 
 
 # --- Web ------------------------------------------------------------------

@@ -200,8 +200,15 @@ class Treasury:
         #    additionally clamped to the supply still mintable in this epoch.
         epoch = self.pulse.epoch_at(timestamp) if self.pulse is not None else None
         epoch_remaining = None
-        if epoch is not None and self.policy.epoch_cap is not None:
-            epoch_remaining = self.policy.epoch_cap - self._epoch_minted.get(epoch, 0)
+        if epoch is not None:
+            # The signed Beat is the consensus-visible monetary governor: prefer the
+            # per-epoch cap it carries over the runtime policy default. Capless epochs
+            # (no Beat cap) fall back to the policy, preserving the prior behaviour.
+            epoch_cap = self.pulse.cap_for_epoch(epoch)
+            if epoch_cap is None:
+                epoch_cap = self.policy.epoch_cap
+            if epoch_cap is not None:
+                epoch_remaining = epoch_cap - self._epoch_minted.get(epoch, 0)
         amount = self.policy.reward(escrow, self.total_minted, epoch_remaining)
         issuance = Issuance(
             worker=worker.address,

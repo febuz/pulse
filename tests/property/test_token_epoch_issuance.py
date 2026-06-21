@@ -18,7 +18,7 @@ import pytest
 from knitweb.core import crypto
 from knitweb.core.pulse import Pulse
 from knitweb.ledger.node import AccountNode
-from knitweb.pouw.job import SynapticCompileJob, WorkProof, execute
+from knitweb.pouw.job import SynapticCompileJob, execute
 from knitweb.token.mint import NATIVE, EmissionPolicy, Issuance, Treasury
 
 
@@ -123,6 +123,58 @@ def test_epoch_cap_validation():
         EmissionPolicy(epoch_cap=True)
     with pytest.raises(ValueError):
         EmissionPolicy(epoch_cap=-1)
+
+
+# --- Beat-anchored cap (R1 follow-up #209) --------------------------------- #
+
+
+def test_beat_carried_cap_is_preferred_over_policy_default():
+    """When the recorded Beat for an epoch carries a cap, minting honours IT, not the
+    (more permissive) runtime policy default — the heartbeat is the supply governor."""
+    pulse = Pulse(interval_s=100, genesis_ts=0)
+    # Record a Beat for epoch 0 binding a tight cap of 6 PLS-wei.
+    pulse.beat(0, state_root="e0", epoch_mint_cap=6)
+    # Policy default is far more permissive (cap 100); the Beat cap must win.
+    t = Treasury(EmissionPolicy(rate_num=1, rate_den=1, epoch_cap=100), pulse=pulse)
+    consumer = AccountNode(genesis_balances={"PLS": 100})
+
+    j1, p1 = _verified_job("b1")
+    i1 = t.reward_verified_work(consumer, AccountNode(), 5, j1, p1, timestamp=10)
+    j2, p2 = _verified_job("b2")
+    i2 = t.reward_verified_work(consumer, AccountNode(), 5, j2, p2, timestamp=20)
+
+    assert i1.amount == 5            # first fits under the Beat cap of 6
+    assert i2.amount == 1            # second clamped to remaining 6-5 = 1 (Beat cap, not 100)
+    assert t.epoch_minted(0) == 6    # per-epoch issuance never exceeds the Beat cap
+    assert t.total_minted == 6
+
+
+def test_beat_cap_falls_back_to_policy_when_epoch_has_no_beat_cap():
+    """Epochs whose Beat carries no cap fall back to the policy default (prior behaviour)."""
+    pulse = Pulse(interval_s=100, genesis_ts=0)
+    pulse.beat(0, state_root="e0")            # epoch 0 Beat, but capless
+    t = Treasury(EmissionPolicy(rate_num=1, rate_den=1, epoch_cap=4), pulse=pulse)
+    consumer = AccountNode(genesis_balances={"PLS": 100})
+    j, p = _verified_job("fb")
+    iss = t.reward_verified_work(consumer, AccountNode(), 10, j, p, timestamp=10)
+    assert iss.amount == 4                     # clamped by the policy default, as before
+    assert t.epoch_minted(0) == 4
+
+
+def test_beat_cap_zero_blocks_mint_yet_settles():
+    """A Beat cap of 0 mints nothing for that epoch but escrow still settles."""
+    pulse = Pulse(interval_s=100, genesis_ts=0)
+    pulse.beat(0, state_root="e0", epoch_mint_cap=0)
+    t = Treasury(EmissionPolicy(rate_num=1, rate_den=1), pulse=pulse)  # no policy cap
+    consumer = AccountNode(genesis_balances={"PLS": 100})
+    worker = AccountNode()
+    before = consumer.balance(NATIVE) + worker.balance(NATIVE)
+    j, p = _verified_job("z0")
+    iss = t.reward_verified_work(consumer, worker, 10, j, p, timestamp=10)
+    assert iss.amount == 0
+    assert t.total_minted == 0
+    assert worker.balance(NATIVE) == 10                                  # escrow settled
+    assert consumer.balance(NATIVE) + worker.balance(NATIVE) == before   # conserved
 
 
 # --- byte-identity guard --------------------------------------------------- #
