@@ -314,6 +314,41 @@ def test_converge_with_tighter_params():
     _check_converge(a, b, fanout=2, leaf_max=2, max_depth=80)
 
 
+def test_bootstrap_huge_side_keeps_bisecting_instead_of_overflowing_a_leaf(monkeypatch):
+    """A fresh peer must not force an established node to dump its whole inventory.
+
+    The leaf shortcut fires when EITHER side's range population is small
+    (``their_count <= leaf_max``). At bootstrap a fresh peer's count is ~0, so the
+    shortcut alone would leaf the ENTIRE keyspace and force the established node to
+    pack its whole inventory into one ``reconcile-leaf`` frame. The ``both_fit``
+    guard is the only thing stopping that: it takes the shortcut only when BOTH
+    payloads are ``<= MAX_LEAF_CIDS``, else it keeps bisecting until each leaf is
+    bounded. Drop the guard and ``build_leaf_frame`` raises ``ReconcileError`` on
+    the oversized leaf — a fresh peer DoSes every established node it dials.
+
+    The hard cap is shrunk so a small, fast inventory drives the identical guard;
+    ``leaf_max`` is set above the inventory so ``small_enough`` is always True and
+    ``both_fit`` is the sole gate under test.
+    """
+    monkeypatch.setattr("knitweb.p2p.reconcile.MAX_LEAF_CIDS", 8)
+    established = _cids(range(40))   # 40 CIDs: a "huge" side vs the shrunk cap of 8
+    fresh = _cids(range(1))         # one shared CID -> a real, tiny diff to exchange
+    HI = dict(fanout=2, leaf_max=64, max_depth=80)
+
+    # Unit view: probed with the fresh peer's tiny root summary, the established
+    # node must BISECT (>=2 child probes), never answer one whole-inventory leaf.
+    est = Reconciler(established, **HI)
+    root = build_probe_frame(FULL_LO, FULL_HI, len(fresh), cid_fingerprint(fresh), 0)
+    reply = est.on_frame(root)
+    kinds = [wire.read_frame_bytes(f)["kind"] for f in reply]
+    assert kinds == [RECONCILE_PROBE, RECONCILE_PROBE]  # fanout=2 bisection, not a leaf
+
+    # Integration view: the full exchange converges to the exact difference and
+    # never raises -- every leaf actually emitted stayed within the cap.
+    res = _check_converge(established, fresh, **HI)
+    assert len(set(res["b_missing"])) == len(set(established) - set(fresh)) == 39
+
+
 # ── 6. O(diff): frame cost grows with diff, not inventory ─────────────────────
 
 def test_frames_scale_with_diff_not_inventory():
