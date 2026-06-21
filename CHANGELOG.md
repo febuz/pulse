@@ -23,6 +23,12 @@ The crypto is built and operable end to end. Highlights:
   tokens; OriginTrail anchor backend + checkpoint anchoring.
 - **App** — `knitweb` CLI (wallet/node/pay/compile/verify-bundle/edge-load) with durable,
   restart-safe persistence and daemon auto-persist.
+- **Gateway `/interpret`** — a strictly read-only delegation hook that forwards a query, a
+  deep-copied `web_snapshot`, and the caller's `params` to a host-registered external Lens
+  (`App.set_lens`), with no write path and **no** LLM/vector/graph-DB dependency added to Pulse.
+  Answers `501` deterministically when no Lens is installed, and **contains any Lens exception**
+  into a deterministic `502` `interpreter-error` contract (no leaked detail) — so the gateway
+  keeps serving regardless of host-interpreter faults (see `docs/LENS_INTERPRET_ENDPOINT.md`).
 - **USP** — the OriginTrail read↔write symbiosis proven end to end.
 
 273 property/interop/knitweb proofs green.

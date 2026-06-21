@@ -38,17 +38,24 @@ import asyncio
 import json
 import os
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 from .anchor import Notary
 from .anchor.origintrail import OriginTrailAnchorBackend
 from .core.pulse import Pulse
 from .fabric.items import checkpoint, web_state_root
 from .fabric.node import FabricNode
+from .fabric.snapshot import web_snapshot
 from .fabric.web import Web
 from .ledger.node import AccountNode
 from .p2p.node import PeerAddress
 from .pouw import quorum
+
+# A *Lens* is any host-supplied callable that interprets a query against a read-only
+# Web snapshot. It is injected from outside Pulse (see ``App.set_lens``) so that an LLM /
+# vector / graph-DB interpreter can live in a separate service or package — Pulse itself
+# never imports one and adds no dependency for it. The hook is a pure delegation seam.
+Lens = Callable[[str, Mapping, Mapping], object]
 
 _NOTARY_PRIV = "0" * 63 + "1"  # fixed dev notary → reproducible UAL per web state
 
@@ -133,6 +140,7 @@ class App:
         self._term_cid: dict[str, str] = {}
         self._clock = 0
         self._beat = 0
+        self._lens: Lens | None = None   # external, read-only interpreter (host-injected)
         if self._fabric is not None:
             self._fabric_runtime = _FabricRuntime(self._fabric)
             for name_, peer in (peers or {}).items():
@@ -319,6 +327,60 @@ class App:
         return {"nodes": n, "edges": e, "state_root": web_state_root(self.web),
                 "records": self._records[-limit:][::-1]}
 
+    # -- interpretation (external, read-only Lens delegation) --------------
+    def set_lens(self, lens: Lens | None) -> None:
+        """Register (or clear, with ``None``) an external Lens interpreter.
+
+        A *Lens* is a host-supplied callable ``lens(query, snapshot, params) -> result``
+        that reads the Web through a snapshot and returns an interpretation. It lives outside
+        Pulse — an LLM / vector / graph-DB interpreter belongs in a separate service or
+        package — so Pulse adds **no** dependency for it; this is a pure delegation seam.
+        The Lens is only ever handed a *read-only, deep-copied* snapshot (see
+        :func:`~knitweb.fabric.snapshot.web_snapshot`), never the live Web, so it cannot
+        mutate fabric state regardless of what it does (knitweb/pulse#157). ``params`` is a
+        (possibly empty) caller-supplied mapping forwarded verbatim to scope the query.
+        Because the Lens is untrusted host code, any exception it raises is contained and
+        turned into a deterministic ``interpreter-error`` contract — Pulse keeps serving.
+        """
+        self._lens = lens
+
+    @property
+    def has_lens(self) -> bool:
+        """True when an external Lens interpreter is registered."""
+        return self._lens is not None
+
+    def interpret(self, query: str, params: Mapping | None = None) -> dict:
+        """Delegate read-only interpretation of *query* to the registered Lens.
+
+        This is **strictly read-only**: it weaves/links/mints nothing and only ever
+        passes a deterministic deep-copied :func:`~knitweb.fabric.snapshot.web_snapshot`
+        to the Lens — there is no write path here whatsoever.
+
+        With **no Lens registered** it returns a deterministic, safe contract response
+        ``{"ok": False, "lens": False, "reason": "no-interpreter-installed", ...}`` so
+        Pulse keeps serving without any interpreter installed. With a Lens registered it
+        returns ``{"ok": True, "lens": True, "query": …, "result": <lens output>}``; if the
+        Lens itself raises (the normal failure mode of an LLM / vector / graph-DB backend)
+        the error is contained and a deterministic ``{"ok": False, "lens": True,
+        "reason": "interpreter-error", ...}`` contract is returned instead — the gateway
+        never crashes on host-interpreter faults.
+        """
+        q = str(query)
+        if self._lens is None:
+            n, e = self.web.size
+            return {"ok": False, "lens": False, "reason": "no-interpreter-installed",
+                    "query": q, "nodes": n, "edges": e}
+        # Hand the Lens an isolated, read-only snapshot — never the live Web — plus a copy
+        # of any caller params. The Lens is untrusted host code: contain ANY exception it
+        # raises and return a deterministic error contract rather than dropping the request.
+        # The Lens's exception text is deliberately NOT leaked into the response.
+        snapshot = web_snapshot(self.web)
+        try:
+            result = self._lens(q, snapshot, dict(params or {}))
+        except Exception:
+            return {"ok": False, "lens": True, "reason": "interpreter-error", "query": q}
+        return {"ok": True, "lens": True, "query": q, "result": result}
+
     # -- persistence (replay records, restore balances) --------------------
     def save(self) -> None:
         self._refresh_from_web()
@@ -367,6 +429,17 @@ def serve(app: App, port: int = 8080, host: str = "127.0.0.1", *, token: str | N
         POST /validate   {verdicts:[...]}       → quorum outcome
         GET  /web                               → web state
         GET  /provenance                        → OriginTrail UAL
+        POST /interpret  {query,params?}        → external Lens result (read-only; see below)
+
+    Interpretation (``/interpret``)
+    -------------------------------
+    ``/interpret`` is a **strictly read-only** delegation hook: it forwards the request to
+    an external Lens registered with :meth:`App.set_lens` and returns its result. It never
+    weaves, links, mints, transfers, or otherwise writes — and Pulse adds **no** LLM /
+    vector / graph-DB dependency for it. With no Lens registered it answers ``501`` with a
+    deterministic ``{"ok": False, "lens": False, "reason": "no-interpreter-installed", …}``
+    body, so Pulse keeps serving and every other endpoint works without a Lens installed.
+    See ``docs/LENS_INTERPRET_ENDPOINT.md`` for the full contract.
 
     Security
     --------
@@ -431,6 +504,18 @@ def serve(app: App, port: int = 8080, host: str = "127.0.0.1", *, token: str | N
                                                  d.get("relation", "links"), int(d.get("weight", 1))))
                 if self.path == "/validate":
                     return self._s(200, app.validate(d["verdicts"]))
+                if self.path == "/interpret":
+                    # Strictly read-only: delegate to an external Lens. 501 if none is
+                    # installed; 502 if the Lens itself errored (upstream interpreter
+                    # fault); 200 on success — always a deterministic JSON contract.
+                    out = app.interpret(d["query"], d.get("params"))
+                    if not out["lens"]:
+                        status = 501
+                    elif out["ok"]:
+                        status = 200
+                    else:
+                        status = 502
+                    return self._s(status, out)
                 return self._s(404, {"error": "not found"})
             except (KeyError, ValueError, TypeError) as e:
                 return self._s(400, {"error": str(e)})
