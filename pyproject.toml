@@ -16,7 +16,7 @@ keywords = ["p2p", "peer-to-peer", "knowledge-graph", "provenance", "origintrail
 # `cryptography` provides secp256k1 ECDSA + SHA-256; canonical CBOR is hand-rolled
 # (see knitweb.core.canonical) so the hash-critical path has zero external surface.
 dependencies = [
-    "cryptography>=42",
+    "cryptography>=48.0.1",
 ]
 
 [project.urls]
@@ -32,9 +32,9 @@ pulse = "knitweb.app.cli:main"
 # Heavier layers, installed per role. The base ledger never needs these.
 p2p = ["py-libp2p"]
 compute = ["wgpu", "juliacall"]
-data = ["polars", "pyarrow"]
-experiments = ["mlflow"]
-dev = ["pytest>=8"]
+data = ["polars", "pyarrow>=23.0.1"]
+experiments = ["mlflow>=3.14.0"]
+dev = ["pytest>=9.0.3"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/knitweb"]
