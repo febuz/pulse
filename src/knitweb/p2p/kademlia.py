@@ -184,6 +184,12 @@ class Contact:
 
     node_id: bytes
     address: PeerAddress
+    # Optional eclipse-defence metadata (#235): who advertised this contact (the
+    # responder/source address). Used ONLY for the k-bucket source-diversity cap;
+    # it is never hashed into ``node_id`` and never serialised by
+    # ``contacts_to_records`` (the wire shape is unchanged). Default None →
+    # ``addrbook.source_group(None)`` (locally-heard).
+    source: "PeerAddress | None" = None
 
     @property
     def id_hex(self) -> str:
@@ -201,10 +207,15 @@ class KBucket:
     re-offers after a confirmed failure (:meth:`evict_then_add`).
     """
 
-    def __init__(self, k: int = DEFAULT_K) -> None:
+    def __init__(self, k: int = DEFAULT_K, *, source_cap: "int | None" = None) -> None:
         if not isinstance(k, int) or isinstance(k, bool) or k < 1:
             raise ValueError("k must be a positive int")
+        if source_cap is not None and (
+            not isinstance(source_cap, int) or isinstance(source_cap, bool) or source_cap < 1
+        ):
+            raise ValueError("source_cap must be a positive int or None")
         self.k = k
+        self.source_cap = source_cap
         self._entries: list[Contact] = []
 
     def __len__(self) -> int:
@@ -226,6 +237,13 @@ class KBucket:
                 return i
         return -1
 
+    def _source_count(self, contact: Contact) -> int:
+        """How many current entries share ``contact``'s addrbook source group."""
+        from .addrbook import source_group  # local import avoids any import cycle
+
+        g = source_group(contact.source)
+        return sum(1 for c in self._entries if source_group(c.source) == g)
+
     def offer(self, contact: Contact) -> "Contact | None":
         """Admit/refresh ``contact``. Returns ``None`` on success, else the stale
         head to probe.
@@ -243,6 +261,13 @@ class KBucket:
             # Known: refresh address (it may have moved) and bump to tail.
             self._entries.pop(i)
             self._entries.append(contact)
+            return None
+        # New contact: enforce the per-source-group diversity cap (#235) BEFORE
+        # admitting — even when the bucket has room — so one operator/source group
+        # can never occupy more than ``source_cap`` of the k slots. A capped
+        # newcomer is silently dropped (no probe): returning the stale head would
+        # invite a needless ping, and the whole point is that the grinder loses.
+        if self.source_cap is not None and self._source_count(contact) >= self.source_cap:
             return None
         if len(self._entries) < self.k:
             self._entries.append(contact)
@@ -295,15 +320,22 @@ class RoutingTable:
     the node's pubkey hex); all distances are measured from it.
     """
 
-    def __init__(self, self_id: "bytes | str", *, k: int = DEFAULT_K) -> None:
+    def __init__(
+        self, self_id: "bytes | str", *, k: int = DEFAULT_K, source_cap: "int | None" = None
+    ) -> None:
         self.self_id = _as_id_bytes(self_id)
         self.k = k
-        self._buckets: list[KBucket] = [KBucket(k) for _ in range(ID_BITS)]
+        self.source_cap = source_cap
+        self._buckets: list[KBucket] = [
+            KBucket(k, source_cap=source_cap) for _ in range(ID_BITS)
+        ]
 
     @classmethod
-    def from_pubkey(cls, pubkey_hex: str, *, k: int = DEFAULT_K) -> "RoutingTable":
+    def from_pubkey(
+        cls, pubkey_hex: str, *, k: int = DEFAULT_K, source_cap: "int | None" = None
+    ) -> "RoutingTable":
         """Build a table for the node owning ``pubkey_hex`` (id = sha256(pubkey))."""
-        return cls(node_id(pubkey_hex), k=k)
+        return cls(node_id(pubkey_hex), k=k, source_cap=source_cap)
 
     def bucket_for(self, nid: "bytes | str") -> "KBucket | None":
         i = bucket_index(self.self_id, nid)
@@ -340,10 +372,14 @@ class RoutingTable:
         """Convenience admit ignoring the test-before-evict probe (tests/bootstrap).
 
         Admits when there is room or the peer is known; if the bucket is full it
-        does *not* evict (returns ``False``), preserving the live-peer-sticky
-        policy. Production wiring uses :meth:`offer` + a real ping instead.
+        does *not* evict, and if the per-source diversity cap (#235) is reached it
+        refuses the newcomer — both preserve the eclipse-resistant policy. Returns
+        whether the contact is in the table afterwards. Production wiring uses
+        :meth:`offer` + a real ping instead.
         """
-        return self.offer(contact) is None
+        self.offer(contact)
+        b = self.bucket_for(contact.node_id)
+        return b is not None and contact.node_id in b
 
     def remove(self, nid: bytes) -> bool:
         b = self.bucket_for(nid)
