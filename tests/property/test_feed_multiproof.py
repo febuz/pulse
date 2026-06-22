@@ -13,7 +13,6 @@ import pytest
 from knitweb.core import crypto
 from knitweb.fabric.feed import Feed
 from knitweb.fabric.feed_multiproof import (
-    RangeMultiProof,
     prove_range,
     verify_range_multiproof,
 )

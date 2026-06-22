@@ -7,7 +7,6 @@ caught when sampled; forged reveals are rejected. The verdict list is what dispu
 
 from fractions import Fraction
 
-import pytest
 
 from knitweb.pouw import challenge, verify
 from knitweb.pouw.quorum import Outcome, Verdict, tally

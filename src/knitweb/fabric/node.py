@@ -73,13 +73,11 @@ from ..p2p.inventory import (
     InventoryRelay,
 )
 from ..p2p import identity
-from ..p2p import mesh
 from ..p2p.mesh import GRAFT, PRUNE, IHAVE, IWANT, Gossipsub
 from ..p2p.reconcile import ReconcileSession
 from .items import web_state_root
 from .web import Web
 from ..p2p.node import PeerAddress, StaticPeerBook
-from ..p2p.reputation import Offense
 from ..p2p.transport import Transport
 from ..p2p import wire
 from ..p2p.wire import WireError

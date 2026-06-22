@@ -34,7 +34,6 @@ from fractions import Fraction
 from typing import List
 
 from ..ledger.node import AccountNode
-from ..synaptic.bytecode import Relation
 from ..token.mint import NATIVE, EmissionPolicy, Issuance, Treasury
 from . import challenge, verify
 from .collateral import Margin, required_collateral

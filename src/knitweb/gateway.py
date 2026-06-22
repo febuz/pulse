@@ -473,7 +473,7 @@ def serve(app: App, port: int = 8080, host: str = "127.0.0.1", *, token: str | N
             self._s(401, {"error": "unauthorized"})
             return False
 
-        def do_GET(self):  # noqa: N802
+        def do_GET(self):
             if not self._authed():
                 return None
             p = urlparse(self.path); q = parse_qs(p.query)
@@ -487,7 +487,7 @@ def serve(app: App, port: int = 8080, host: str = "127.0.0.1", *, token: str | N
                 return self._s(200, app.anchor())
             return self._s(404, {"error": "not found"})
 
-        def do_POST(self):  # noqa: N802
+        def do_POST(self):
             if not self._authed():
                 return None
             n = int(self.headers.get("Content-Length", 0) or 0)

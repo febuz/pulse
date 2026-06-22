@@ -10,7 +10,7 @@ import pytest
 
 from knitweb.core import crypto
 from knitweb.fabric.items import web_state_root
-from knitweb.fabric.node import FabricNode, FabricNodeError
+from knitweb.fabric.node import FabricNode
 
 
 def run(coro):

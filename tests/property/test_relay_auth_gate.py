@@ -20,7 +20,6 @@ These tests pin three invariants:
 
 import asyncio
 
-import pytest
 
 from knitweb.core import canonical
 from knitweb.fabric.items import web_state_root
@@ -33,7 +32,7 @@ from knitweb.p2p.relay import (
     _strip_envelope,
     relay_peer_id,
 )
-from knitweb.p2p.reputation import DEFAULT_BAN_THRESHOLD, Offense
+from knitweb.p2p.reputation import Offense
 from knitweb.p2p.transport import PeerAddress
 
 

@@ -44,7 +44,6 @@ from knitweb.p2p.inventory import (
     MAX_GETDATA_BATCH,
     RECON_REQ,
     RECON_RANGE,
-    RECON_RESULT,
     ServeBudget,
 )
 from knitweb.p2p.relay import ENVELOPE_PEER_KEY

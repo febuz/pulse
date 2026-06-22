@@ -102,8 +102,7 @@ async def _first_announcer_rank(node: FabricNode, peer_names, cids):
     for p in peers:
         await node._diffused_announce_to(p, cids)
 
-    ordered = sorted(peers, key=lambda p: drawn[p])
-    return ordered
+    return sorted(peers, key=lambda p: drawn[p])
 
 
 async def _run_trials(diffuse_max_ms, n_peers, trials):

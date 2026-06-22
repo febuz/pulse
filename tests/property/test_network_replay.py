@@ -10,7 +10,7 @@ both proven here:
 import pytest
 
 from knitweb.ledger import knitweb as kw
-from knitweb.ledger.knit import MAINNET, build, sign_from, sign_to
+from knitweb.ledger.knit import MAINNET, sign_to
 from knitweb.ledger.node import AccountNode
 
 TESTNET = 2

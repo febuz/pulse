@@ -10,7 +10,6 @@ import random
 import pytest
 
 from knitweb.ledger import knitweb as kw
-from knitweb.ledger.fiber import genesis_fiber
 from knitweb.ledger.knit import build, sign_from, sign_to
 from knitweb.ledger.node import AccountNode
 

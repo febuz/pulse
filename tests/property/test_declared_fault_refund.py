@@ -5,7 +5,6 @@ quorum produces three verdicts: DETECTED_FAULT (slash), CONFIRMED (release), and
 refund_declared_fault closes the gap: consumer made whole, worker's stake returned unslashed.
 """
 
-import pytest
 
 from knitweb.pouw.dispute import DisputeWindowLedger
 from knitweb.pouw.quorum import Verdict

@@ -357,7 +357,8 @@ class RelayTransport:
             request[ENVELOPE_ID_PROOF_KEY] = id_proof
         try:
             response = await self._handler(request)
-        except Exception:  # noqa: BLE001 — never let one bad frame kill the loop
+        except Exception:
+            # One bad relay frame must not kill the polling loop.
             return
         if isinstance(rid, int) and isinstance(reply_to, str):
             out = dict(response)
@@ -371,7 +372,8 @@ class RelayTransport:
             self._poll_task.cancel()
             try:
                 await self._poll_task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            except (asyncio.CancelledError, Exception):
+                # Shutdown is best effort; remaining waiters are completed below.
                 pass
             self._poll_task = None
         for waiter in self._waiters.values():

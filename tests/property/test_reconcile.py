@@ -33,7 +33,6 @@ from knitweb.p2p.reconcile import (
     FANOUT,
     FULL_HI,
     FULL_LO,
-    LEAF_MAX,
     RECONCILE_LEAF,
     RECONCILE_PROBE,
     Reconciler,

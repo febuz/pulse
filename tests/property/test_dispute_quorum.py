@@ -5,7 +5,6 @@ committee's verdicts and slashes only on a genuine DETECTED_FAULT (a mismatch qu
 dispute window's timing + slashing. CONFIRMED / INCONCLUSIVE / DECLARED_FAULT never slash.
 """
 
-import pytest
 
 from knitweb.pouw.dispute import DisputeWindowLedger
 from knitweb.pouw.quorum import Verdict

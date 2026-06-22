@@ -7,7 +7,6 @@ honest author (including a legitimate fork-bumped rewrite) can never be falsely 
 
 from dataclasses import replace
 
-import pytest
 
 from knitweb.core import canonical, crypto
 from knitweb.fabric.equivocation import (

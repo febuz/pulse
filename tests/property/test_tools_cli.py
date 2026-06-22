@@ -7,7 +7,6 @@ plain functions, so these run without spawning a subprocess.
 """
 
 import json
-import sys
 import tomllib
 from pathlib import Path
 

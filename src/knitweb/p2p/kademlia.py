@@ -369,7 +369,8 @@ class RoutingTable:
         if count is None:
             count = self.k
         if tie_break is None:
-            tie_break = lambda c: c.id_hex  # noqa: E731 - deterministic total order
+            # Stable tie-breaker keeps nearest-contact ordering deterministic.
+            tie_break = lambda c: c.id_hex
         ranked = sorted(
             self.contacts(),
             key=lambda c: (xor_distance(c.node_id, tgt), tie_break(c)),

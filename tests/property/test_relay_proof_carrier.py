@@ -35,7 +35,6 @@ from knitweb.p2p.node import AsyncioP2PNode
 from knitweb.p2p.relay import (
     ENVELOPE_ID_PROOF_KEY,
     ENVELOPE_PEER_KEY,
-    HttpPoster,
     RelayTransport,
     _strip_envelope,
     relay_peer_id,

@@ -18,7 +18,6 @@ small. Pure integer logic: no clock, no rand, no canonical/wire/CID byte changes
 """
 import pytest
 
-from knitweb.p2p import reconcile as R
 from knitweb.p2p.reconcile import (
     MAX_LEAF_CIDS,
     RECONCILE_LEAF,

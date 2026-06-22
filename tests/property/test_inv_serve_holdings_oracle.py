@@ -24,7 +24,6 @@ randomness), so the window boundary is fully replayable.
 
 import asyncio
 
-import pytest
 
 from knitweb.core import canonical
 from knitweb.fabric.node import FabricNode

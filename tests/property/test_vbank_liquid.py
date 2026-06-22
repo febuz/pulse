@@ -12,7 +12,6 @@ from knitweb.knitwebs.vbank import (
     VbankPoll,
     audit_liquid_result,
     certify_liquid_result,
-    collect_delegations,
     delegation_map,
     emit_delegation,
     resolve_liquid,

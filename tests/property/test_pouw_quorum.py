@@ -11,7 +11,6 @@ import pytest
 
 from knitweb.pouw.quorum import (
     Outcome,
-    QuorumResult,
     Verdict,
     default_threshold,
     max_faulty,

@@ -27,7 +27,6 @@ from knitweb.p2p.inventory import (
     INV,
     MAX_GETDATA_BATCH,
     SERVE_BYTES_PER_WINDOW,
-    SERVE_WINDOW_SECONDS,
     InventoryError,
     InventoryRelay,
     SeenSet,

@@ -41,8 +41,7 @@ async def _saturate_served_slots(host, port, max_inbound, hold_gate):
         except Exception:
             pass
 
-    tasks = [asyncio.create_task(occupy()) for _ in range(max_inbound)]
-    return tasks
+    return [asyncio.create_task(occupy()) for _ in range(max_inbound)]
 
 
 @pytest.mark.property

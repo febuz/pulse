@@ -115,8 +115,7 @@ def history(db_path: Path | str = _DEFAULT_DB) -> list[tuple]:
     db_path = Path(db_path)
     init(db_path)
     with _LOCK, _connect(db_path) as conn:
-        rows = conn.execute(
+        return conn.execute(
             "SELECT id, ts, phase, git_sha, status, detail, duration_ms "
             "FROM experiment_runs ORDER BY id DESC"
         ).fetchall()
-    return rows

@@ -13,7 +13,7 @@ import asyncio
 
 import pytest
 
-from knitweb.core import canonical, crypto
+from knitweb.core import canonical
 from knitweb.fabric.items import web_state_root
 from knitweb.fabric.node import FabricNode
 from knitweb.fabric.web import Web

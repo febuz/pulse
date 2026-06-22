@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import List, Optional
+from typing import List
 
 from . import challenge
 from .committee import select_committee

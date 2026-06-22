@@ -50,9 +50,9 @@ preserving signed-record byte-identity because no record is ever re-encoded here
 from __future__ import annotations
 
 import random as _random_mod
-from collections import OrderedDict, deque
-from dataclasses import dataclass, field
-from typing import Deque, Dict, Iterable, List, Mapping, Optional, Tuple
+from collections import OrderedDict
+from dataclasses import dataclass
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from . import wire
 

@@ -10,7 +10,7 @@ from pathlib import Path
 # the demo lives in examples/, not the package
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "examples"))
 
-import pouw_demo  # noqa: E402
+import pouw_demo
 
 
 def test_demo_runs_all_three_settlement_paths():

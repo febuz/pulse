@@ -28,11 +28,9 @@ from knitweb.ledger import knit as knit_mod
 from knitweb.p2p import wire
 from knitweb.p2p.inventory import InventoryRelay, build_getdata_frame
 from knitweb.p2p.mesh import (
-    GRAFT,
     IHAVE,
     IWANT,
     MAX_IDS_PER_FRAME,
-    PRUNE,
     Gossipsub,
     MeshError,
     MeshParams,

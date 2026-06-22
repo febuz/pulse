@@ -3,7 +3,7 @@
 import pytest
 
 from knitweb.core import canonical, crypto
-from knitweb.fabric.attest import attest, verify_record
+from knitweb.fabric.attest import attest
 from knitweb.fabric.web import Web
 from knitweb.knitwebs.vbank import (
     BALLOT_KIND,
@@ -247,7 +247,6 @@ def test_audit_fails_if_result_authority_not_poll_authority():
 def _result_for(authority: VbankPoll, poll_record: dict, ballots: list) -> object:
     # build a signed result whose 'authority' is this (non-defining) authority, bypassing the
     # defining-authority guard, to prove verify_result still rejects the authority mismatch
-    from knitweb.fabric.attest import attest
     from knitweb.knitwebs.vbank.poll import _result_record
     record = _result_record(poll_record, ballots, authority.authority)
     return attest(record, authority._priv, author_field="authority")

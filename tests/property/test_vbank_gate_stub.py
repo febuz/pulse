@@ -4,7 +4,6 @@ ballot never carries identity (mirrors roadmap line 53)."""
 import pytest
 
 from knitweb.core import canonical, crypto
-from knitweb.fabric.attest import verify_record
 from knitweb.fabric.web import Web
 from knitweb.knitwebs.vbank import Ballot, VbankKnitweb
 from knitweb.personhood.gate import AnchorIndex, enroll, require_personhood

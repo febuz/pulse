@@ -49,8 +49,7 @@ so two peers replaying the same announce/want sequence evolve identical state.
 from __future__ import annotations
 
 from collections import OrderedDict
-from dataclasses import dataclass
-from typing import Callable, Dict, Iterable, List, Mapping, Tuple
+from typing import Callable, Iterable, List, Mapping, Tuple
 
 from ..core import canonical
 from . import wire

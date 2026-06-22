@@ -5,7 +5,6 @@ synthetic dicts) and that revocation blocks a voter before they can cast."""
 import pytest
 
 from knitweb.core import crypto
-from knitweb.fabric.web import Web
 from knitweb.knitwebs.vbank import Ballot, Poll, VbankKnitweb, VbankPoll
 from knitweb.personhood.errors import RevokedError
 from knitweb.personhood.gate import AnchorIndex, enroll, require_personhood
