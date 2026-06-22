@@ -26,7 +26,7 @@ import inspect
 
 import pytest
 
-from knitweb.fabric.node import FabricNode
+from knitweb.fabric.node import DEFAULT_DIFFUSE_MAX_MS, FabricNode
 
 
 # ---------------------------------------------------------------------------
@@ -331,7 +331,7 @@ def test_diffused_weave_calls_inv_announce_once():
 
 
 # ---------------------------------------------------------------------------
-# no_flaky_real_sleep + shipped default
+# no_flaky_real_sleep + privacy-by-default
 # ---------------------------------------------------------------------------
 @pytest.mark.interop
 def test_diffused_weave_uses_injected_clock_no_wall_time():
@@ -370,13 +370,24 @@ def test_diffused_weave_uses_injected_clock_no_wall_time():
 
 
 @pytest.mark.interop
-def test_shipped_default_is_opt_in_zero():
-    """The shipped production default is diffuse_max_ms == 0 (mechanism present,
-    opt-in). Enabling it by default would add real first-hop latency to every
-    weave; turning it on is a documented follow-up."""
+def test_shipped_default_enables_source_privacy():
+    """The shipped production default enables source-privacy diffusion.
+
+    ``diffuse_max_ms=0`` remains available for explicit legacy/byte-identity tests,
+    but a normal ``FabricNode()`` must not silently keep the author-first leak.
+    """
     node = FabricNode()
-    assert node._diffuse_max_ms == 0
+    assert DEFAULT_DIFFUSE_MAX_MS > 0
+    assert DEFAULT_DIFFUSE_MAX_MS <= 10
+    assert node._diffuse_max_ms == DEFAULT_DIFFUSE_MAX_MS
     # Default sleep is the real clock (prod), default rng is a fresh Random.
     assert node._diffuse_sleep is asyncio.sleep
     import random as _r
     assert isinstance(node._diffuse_rng, _r.Random)
+
+
+@pytest.mark.interop
+def test_explicit_zero_keeps_legacy_no_delay_mode():
+    """Operators/tests can still set ``diffuse_max_ms=0`` to model legacy timing."""
+    node = FabricNode(diffuse_max_ms=0)
+    assert node._diffuse_max_ms == 0

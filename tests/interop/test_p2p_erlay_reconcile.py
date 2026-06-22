@@ -108,6 +108,7 @@ class _MemTransport:
 
 def _mem_node(registry: dict, node_id: int, **kw) -> FabricNode:
     tr = _MemTransport(registry, node_id)
+    kw.setdefault("diffuse_max_ms", 0)
     node = FabricNode(transport=tr, **kw)
     tr.bind(node)
     return node

@@ -84,6 +84,8 @@ from ..p2p.transport import Transport
 from ..p2p import wire
 from ..p2p.wire import WireError
 
+DEFAULT_DIFFUSE_MAX_MS = 10
+
 __all__ = ["FabricNode", "FabricNodeError", "WEB_TOPIC"]
 
 # Domain-separation tag: a signature over a broadcast fabric record can never be
@@ -186,7 +188,7 @@ class FabricNode(BaseNode):
         inv_probe_budget: "inventory.ServeBudget | None" = None,
         recon_budget: "inventory.ServeBudget | None" = None,
         max_gossiped_frames: int = 50_000,
-        diffuse_max_ms: int = 0,
+        diffuse_max_ms: int = DEFAULT_DIFFUSE_MAX_MS,
         diffuse_seed: int | None = None,
         diffuse_sleep=None,
     ) -> None:
@@ -321,12 +323,12 @@ class FabricNode(BaseNode):
         # CID (the timing-correlation vector). The draw is INTEGER ms on a runtime
         # RNG — never the canonical byte path — so a fresh Knit CID and the stored
         # signed frame bytes are untouched at any setting. ``diffuse_max_ms == 0``
-        # is exact legacy behaviour (no draw, no sleep). The RNG is injected like
-        # the gossip RNG above so tests replay deterministically; the sleep clock
-        # is injected like start_anti_entropy so a test uses a virtual clock with no
-        # real wall-time. Default is 0 (mechanism present, opt-in): enabling it by
-        # default would add real first-hop latency to every weave; turning it on as
-        # a default is a follow-up once a privacy/latency knob is chosen.
+        # is exact legacy behaviour (no draw, no sleep) for tests/operators that
+        # intentionally model the old path. The RNG is injected like the gossip RNG
+        # above so tests replay deterministically; the sleep clock is injected like
+        # start_anti_entropy so a test uses a virtual clock with no real wall-time.
+        # The production default is non-zero: source privacy must be active unless
+        # an operator explicitly disables it.
         self._diffuse_max_ms = max(0, int(diffuse_max_ms))
         self._diffuse_rng = _random_mod.Random(diffuse_seed)
         self._diffuse_sleep = diffuse_sleep if diffuse_sleep is not None else asyncio.sleep
