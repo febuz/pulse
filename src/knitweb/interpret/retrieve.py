@@ -18,6 +18,7 @@ from typing import Iterable, Mapping
 from ..fabric import provenance
 from ..fabric.items import web_state_root
 from ..fabric.spatial_index import SpatialIndex
+from ..fabric.subscription import in_subscription_scope
 from ..fabric.web import Web
 
 __all__ = ["CandidateSet", "Candidate", "retrieve"]
@@ -34,19 +35,6 @@ def _require_iterable(name: str, value: Iterable[str] | None) -> tuple[str, ...]
             raise TypeError(f"{name} entries must be non-empty str")
         out.append(item)
     return tuple(out)
-
-
-def _in_scope(record: dict, scope: tuple[str, ...] | None) -> bool:
-    if scope is None:
-        return True
-    values = {record.get("kind"), record.get("scope"), record.get("domain"), record.get("namespace")}
-    if any(v in scope for v in values if isinstance(v, str)):
-        return True
-    tags = record.get("tags")
-    if isinstance(tags, (list, tuple, set)):
-        if any(str(tag) in scope for tag in tags):
-            return True
-    return False
 
 
 def _to_query_dict(query: str | Mapping[str, object]) -> Mapping[str, object]:
@@ -193,7 +181,7 @@ def retrieve(
             if cid not in discovered:
                 discovered.append(cid)
 
-    scoped = [cid for cid in discovered if _in_scope(web.nodes[cid], scope)]
+    scoped = [cid for cid in discovered if in_subscription_scope(web.nodes[cid], scope)]
 
     def _candidate_reputation(cid: str) -> int:
         score = 0
@@ -233,3 +221,4 @@ def retrieve(
         candidates=tuple(candidate_records),
         source_ancestries=tuple(ancestor_records),
     )
+
