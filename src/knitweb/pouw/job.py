@@ -44,6 +44,10 @@ __all__ = [
     "bundle_cid",
     "split_settles",
     "SplitVerdict",
+    # IL-108: per-class metering config for distill PoUW jobs
+    "DistillJobConfig",
+    "METERED_DISTILL_CONFIG",
+    "UNMETERED_RECURSE_FLAG",
 ]
 
 
@@ -349,3 +353,69 @@ def split_settles(
     single failing signal withholds the reward.
     """
     return bool(deterministic_ok) and bool(window_closed) and not bool(dispute_upheld)
+
+
+# --------------------------------------------------------------------------- #
+# IL-108 — Bounded self-reflective iteration as the metered PoUW default.     #
+#                                                                               #
+# A distill PoUW job that runs under the metered path MUST use mode="reflect" #
+# (bounded, no sub-spawns) so step and token costs are predictable and can be  #
+# settled deterministically.  mode="recurse" doubles max_iters internally and  #
+# is valid for local/unmetered exploration but MUST NOT be submitted as a PoUW  #
+# job — a verifier that re-executes the job would get a different budget.      #
+#                                                                               #
+# DistillJobConfig captures the metered defaults per job class so pouw/job.py  #
+# is the single source of truth for what a metered distill job looks like.     #
+# --------------------------------------------------------------------------- #
+
+_METERED_MODE = "reflect"
+_UNMETERED_MODE = "recurse"
+
+#: Sentinel that a mode string is the local-only, unmetered recursion mode.
+#: Callers MUST NOT submit a PoUW job with this mode.
+UNMETERED_RECURSE_FLAG: str = _UNMETERED_MODE
+
+
+@dataclass(frozen=True)
+class DistillJobConfig:
+    """Metering configuration for a distill PoUW job (IL-108 AC1+AC2).
+
+    ``mode``        — ``"reflect"`` for metered PoUW (default); ``"recurse"``
+                      is local/unmetered only and must not be submitted.
+    ``max_iters``   — hard step budget; the distill loop returns early with
+                      ``budget_exhausted=True`` when candidates exceed this.
+    ``max_tokens``  — advisory token budget passed to ``distill()``; exceeding
+                      it ends the run deterministically with best-so-far.
+    ``metered``     — True iff this config is valid for PoUW submission.
+    """
+
+    mode: str = _METERED_MODE
+    max_iters: int = 8
+    max_tokens: int = 2048
+    metered: bool = True
+
+    def __post_init__(self) -> None:
+        if self.mode not in {"reflect", "recurse"}:
+            raise ValueError(f"mode must be 'reflect' or 'recurse' (got {self.mode!r})")
+        if not isinstance(self.max_iters, int) or self.max_iters < 1:
+            raise ValueError("max_iters must be a positive int")
+        if not isinstance(self.max_tokens, int) or self.max_tokens < 1:
+            raise ValueError("max_tokens must be a positive int")
+        if self.mode == _UNMETERED_MODE and self.metered:
+            raise ValueError(
+                "mode='recurse' is unmetered/local-only; set metered=False explicitly"
+            )
+
+    @property
+    def is_metered(self) -> bool:
+        return self.metered and self.mode == _METERED_MODE
+
+
+#: The canonical metered config for a distill PoUW job (IL-108 AC1).
+#: This is what a spider MUST use when submitting work to the network.
+METERED_DISTILL_CONFIG: DistillJobConfig = DistillJobConfig(
+    mode="reflect",
+    max_iters=8,
+    max_tokens=2048,
+    metered=True,
+)
