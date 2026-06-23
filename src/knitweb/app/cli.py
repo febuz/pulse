@@ -35,13 +35,16 @@ from urllib.request import urlopen
 from .. import sdk, store
 from ..core import canonical
 from ..edge.runtime import EdgeBundle
+from ..fabric.web import Web, Edge
+from ..core.pulse import Pulse, Beat
+from ..lens import KnitwebLensAdapter
 from ..ledger.node import AccountNode
 from ..p2p.node import AsyncioP2PNode, PeerAddress
 
 __all__ = [
     "main", "cmd_wallet_new", "cmd_address", "cmd_balance", "cmd_pay", "run_node",
     "cmd_identity_create", "cmd_page_publish", "cmd_peer_status", "cmd_host_status",
-    "cmd_compile", "cmd_verify_bundle", "cmd_edge_load",
+    "cmd_compile", "cmd_verify_bundle", "cmd_edge_load", "cmd_lens_digest",
 ]
 
 
@@ -327,6 +330,75 @@ async def run_node(
     return p2p
 
 
+def _load_web_from_json(path: str) -> Web:
+    """Load a Web from a simple JSON snapshot (nodes + edges)."""
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+    web = Web()
+    for record in data.get("nodes", []):
+        web.weave(record)
+    for edge in data.get("edges", []):
+        web.link(
+            src=edge["src"],
+            dst=edge["dst"],
+            rel=edge["rel"],
+            weight=int(edge.get("weight", 1)),
+        )
+    return web
+
+
+def _load_pulse_from_json(path: str) -> Pulse:
+    """Load a Pulse from a JSON snapshot of its constructor and beats."""
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+    pulse = Pulse(
+        interval_s=int(data["interval_s"]),
+        genesis_ts=int(data["genesis_ts"]),
+    )
+    for beat in data.get("beats", []):
+        pulse.beats.append(
+            Beat(
+                epoch=int(beat["epoch"]),
+                timestamp=int(beat["timestamp"]),
+                state_root=str(beat["state_root"]),
+                prev_beat=beat.get("prev_beat"),
+                epoch_mint_cap=beat.get("epoch_mint_cap"),
+            )
+        )
+    if pulse.beats:
+        pulse._last = pulse.beats[-1]
+    return pulse
+
+
+def cmd_lens_digest(
+    *,
+    bundle_path: str | None = None,
+    web_path: str | None = None,
+    pulse_path: str | None = None,
+    max_atoms: int = 64,
+) -> str:
+    """Build a Knitweb Lens digest from a bundle, Web snapshot, or Pulse snapshot.
+
+    Exactly one of ``bundle_path``, ``web_path``, or ``pulse_path`` must be given.
+    Returns the rendered digest string, ready for an LLM context window or for
+    virtualpc agent ingestion.
+    """
+    sources = [bundle_path, web_path, pulse_path]
+    if sum(s is not None for s in sources) != 1:
+        raise SystemExit("lens digest requires exactly one of --bundle, --web, --pulse")
+
+    adapter = KnitwebLensAdapter()
+    if bundle_path is not None:
+        with open(bundle_path, "rb") as fh:
+            adapter.ingest_bundle(fh.read())
+    elif web_path is not None:
+        adapter.ingest_web(_load_web_from_json(web_path))
+    elif pulse_path is not None:
+        adapter.ingest_pulse(_load_pulse_from_json(pulse_path))
+
+    return adapter.digest(max_atoms=max_atoms)
+
+
 # ---------------------------------------------------------------------------
 # argparse wiring
 # ---------------------------------------------------------------------------
@@ -452,6 +524,14 @@ def _build_parser() -> argparse.ArgumentParser:
     el.add_argument("--bundle", required=True)
     el.add_argument("--originator", help="originator public-key hex (omit to load unverified)")
     el.add_argument("--sig", help="originator signature hex (omit to load unverified)")
+
+    lens = sub.add_parser("lens", help="LLM digest over Knitweb fabric state")
+    lens_sub = lens.add_subparsers(dest="lens_cmd", required=True)
+    lens_digest = lens_sub.add_parser("digest", help="render a digest from a bundle, web, or pulse snapshot")
+    lens_digest.add_argument("--bundle", help="path to a signed bytecode bundle")
+    lens_digest.add_argument("--web", help="path to a Web snapshot JSON")
+    lens_digest.add_argument("--pulse", help="path to a Pulse snapshot JSON")
+    lens_digest.add_argument("--max-atoms", type=int, default=64, help="context window cap")
     return p
 
 
@@ -518,6 +598,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"loaded {info['asset_cid']} from {info['originator']} [{tag}], "
               f"{info['relations']} relations")
         print(json.dumps(info["features"], indent=2, sort_keys=True))
+    elif args.cmd == "lens":
+        if args.lens_cmd == "digest":
+            print(cmd_lens_digest(
+                bundle_path=args.bundle,
+                web_path=args.web,
+                pulse_path=args.pulse,
+                max_atoms=args.max_atoms,
+            ))
     return 0
 
 
