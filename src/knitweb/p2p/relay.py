@@ -56,6 +56,7 @@ from .wire import MAX_FRAME_BYTES, WireError, read_frame_bytes, write_frame_byte
 
 __all__ = [
     "RelayTransport",
+    "RelayPool",
     "RelayError",
     "HttpPoster",
     "ENVELOPE_PEER_KEY",
@@ -386,6 +387,96 @@ class RelayTransport:
             transport="relay",
             params={"mailbox": self.mailbox, "base_url": self.base_url},
         )
+
+
+_BACKOFF_S: int = 30
+
+
+class RelayPool:
+    """Multi-relay fanout pool with per-relay health tracking and failover.
+
+    ``dial`` fans out to all healthy relays concurrently and returns the first
+    successful reply.  ``listen`` starts all relay pollers and merges inbound
+    frames through a shared handler.  A relay is marked unhealthy on
+    :class:`RelayError` and restored after :data:`_BACKOFF_S` seconds.
+
+    Parameters
+    ----------
+    relays:
+        One or more :class:`RelayTransport` instances.  Must be non-empty.
+    """
+
+    def __init__(self, relays: list[RelayTransport]) -> None:
+        if not relays:
+            raise ValueError("RelayPool requires at least one relay")
+        self._relays = list(relays)
+        self._healthy: set[str] = {r.base_url for r in self._relays}
+        self._unhealthy_until: dict[str, int] = {}
+
+    def _is_healthy(self, relay: RelayTransport) -> bool:
+        if relay.base_url in self._unhealthy_until:
+            import time
+            if int(time.monotonic()) < self._unhealthy_until[relay.base_url]:
+                return False
+            self._healthy.add(relay.base_url)
+            del self._unhealthy_until[relay.base_url]
+        return relay.base_url in self._healthy
+
+    def _mark_unhealthy(self, relay: RelayTransport) -> None:
+        import time
+        self._healthy.discard(relay.base_url)
+        self._unhealthy_until[relay.base_url] = int(time.monotonic()) + _BACKOFF_S
+
+    async def dial(self, peer: "PeerAddress", request: dict) -> dict:
+        """Fan-out dial to all healthy relays; return first success.
+
+        Falls back to all relays (including temporarily-unhealthy ones) if none
+        are currently healthy, so the pool never fully stalls after a blip.
+        """
+        candidates = [r for r in self._relays if self._is_healthy(r)] or self._relays
+        tasks: list[asyncio.Task] = []
+        loop = asyncio.get_running_loop()
+
+        async def _try(relay: RelayTransport) -> tuple[RelayTransport, dict]:
+            result = await relay.dial(peer, dict(request))
+            return relay, result
+
+        for relay in candidates:
+            tasks.append(loop.create_task(_try(relay)))
+
+        errors: list[Exception] = []
+        pending = set(tasks)
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                exc = task.exception()
+                if exc is None:
+                    relay, result = task.result()
+                    for t in pending:
+                        t.cancel()
+                    return result
+                else:
+                    errors.append(exc)
+                    # find which relay raised and mark unhealthy
+                    for t in tasks:
+                        if t is task:
+                            idx = tasks.index(t)
+                            if idx < len(candidates):
+                                self._mark_unhealthy(candidates[idx])
+                            break
+        raise RelayError(f"all relays failed: {errors[0]}") from errors[0]
+
+    async def listen(
+        self, handler: "FrameHandler", on_frame_fault: "FrameFaultHandler | None" = None
+    ) -> None:
+        """Start all relay pollers; all inbound frames are dispatched to ``handler``."""
+        for relay in self._relays:
+            await relay.listen(handler, on_frame_fault)
+
+    async def close(self) -> None:
+        """Close all relay transports."""
+        for relay in self._relays:
+            await relay.close()
 
 
 def _strip_envelope(decoded: dict) -> dict:

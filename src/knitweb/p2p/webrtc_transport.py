@@ -165,6 +165,9 @@ class WorkerBridge:
     def local_params(self) -> dict:
         raise NotImplementedError
 
+    def configure(self, msg: dict) -> None:
+        pass
+
 
 class WebRtcTransport:
     """WebRTC ``RTCDataChannel`` carrier satisfying the :class:`Transport` Protocol.
@@ -312,7 +315,13 @@ class WebRtcTransport:
 # ---------------------------------------------------------------------------
 
 
-def pyodide_bridge(post_to_shell, self_key: str, mailbox: str) -> WorkerBridge:
+def pyodide_bridge(
+    post_to_shell,
+    self_key: str,
+    mailbox: str,
+    *,
+    stun_servers: tuple[str, ...] = ("stun:stun.l.google.com:19302",),
+) -> WorkerBridge:
     """Build the real :class:`WorkerBridge` for a Pyodide module-Worker.
 
     ``post_to_shell`` is the worker's ``postMessage`` (a JS function proxied
@@ -334,6 +343,8 @@ def pyodide_bridge(post_to_shell, self_key: str, mailbox: str) -> WorkerBridge:
             self._post = post_to_shell
             self._self_key = self_key
             self._mailbox = mailbox
+            self._stun_servers: list[str] = list(stun_servers)
+            self._stun_configured = False
             self._inbound: Optional[
                 Callable[[str, int, bytes], Awaitable[None]]
             ] = None
@@ -371,7 +382,13 @@ def pyodide_bridge(post_to_shell, self_key: str, mailbox: str) -> WorkerBridge:
         def respond_frame(self, peer_key: str, rid: int, frame: bytes) -> None:
             self._post({"op": "webrtc_respond", "peerKey": peer_key, "rid": rid, "frame": frame})
 
+        def configure(self, msg: dict) -> None:
+            self._post(msg)
+
         def set_inbound(self, callback: Callable[[str, int, bytes], Awaitable[None]]) -> None:
+            if not self._stun_configured:
+                self._stun_configured = True
+                self._post({"op": "webrtc_configure", "stunServers": self._stun_servers})
             self._inbound = callback
 
         def set_frame_fault(self, callback: Callable[[str, str], None]) -> None:
