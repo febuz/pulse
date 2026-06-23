@@ -1,0 +1,317 @@
+<!--
+  Knitweb Chemistry Lens Agent — homepage demo widget
+  Drop this <section> block into knitweb.art's index.html.
+  Zero external deps. Pure HTML + CSS + JS.
+-->
+<style>
+/* ── widget root ────────────────────────────────────────────────────────── */
+#lens-demo {
+  --bg:    #0b0e14;
+  --bg2:   #11151f;
+  --line:  #1f2737;
+  --a:     #17BEBB;
+  --b:     #2E6CF6;
+  --c:     #B8F35A;
+  --mut:   #9aa6bd;
+  --fg:    #e8ecf4;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, sans-serif;
+}
+.demo-wrap {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  margin: 28px 0;
+  align-items: start;
+}
+@media (max-width: 720px) { .demo-wrap { grid-template-columns: 1fr; } }
+
+/* ── terminal ───────────────────────────────────────────────────────────── */
+.term {
+  background: #060a10;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.term-bar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 14px;
+  background: #0d1117;
+  border-bottom: 1px solid var(--line);
+}
+.dot { width: 11px; height: 11px; border-radius: 50%; }
+.dot-r { background: #ff5f56; } .dot-y { background: #ffbd2e; } .dot-g { background: #27c93f; }
+.term-title { margin-left: auto; font-size: 11px; color: var(--mut); }
+.term-body { padding: 14px 16px; min-height: 300px; }
+.tl { display: block; white-space: pre; }
+.tl-step  { color: var(--a); font-weight: 700; }
+.tl-ok    { color: var(--c); }
+.tl-cid   { color: #555e72; }
+.tl-eq    { color: #c5a3ff; }
+.tl-note  { color: var(--mut); }
+.tl-push  { color: var(--b); }
+.tl-save  { color: var(--c); font-weight: 700; }
+.cursor   { display: inline-block; width: 8px; height: 13px; background: var(--a); vertical-align: middle; animation: blink .9s step-start infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+/* ── right panel ─────────────────────────────────────────────────────────── */
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.stat-card {
+  background: linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.01));
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 16px 18px;
+}
+.stat-label { font-size: 11px; letter-spacing: 1.4px; text-transform: uppercase; color: var(--mut); font-weight: 600; }
+.stat-value { font-size: 32px; font-weight: 800; margin: 4px 0 2px; color: var(--fg); }
+.stat-sub   { font-size: 12px; color: var(--mut); }
+.savings-bar-wrap { margin: 10px 0 4px; height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
+.savings-bar { height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--a), var(--b)); width: 0%; transition: width 1.4s cubic-bezier(.22,.61,.36,1); }
+.reactions-list { list-style: none; padding: 0; margin: 0; }
+.reactions-list li {
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 12.5px;
+  color: var(--mut);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity .4s, transform .4s;
+}
+.reactions-list li.visible { opacity: 1; transform: none; }
+.reactions-list li:last-child { border-bottom: none; }
+.rx-icon { color: var(--c); font-size: 14px; flex-shrink: 0; }
+.rx-eq   { font-family: 'SF Mono', monospace; font-size: 11px; color: #c5a3ff; }
+.rx-cid  { font-size: 10px; color: #555e72; margin-left: auto; }
+
+/* ── CTA bar ─────────────────────────────────────────────────────────────── */
+.demo-cta {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 6px;
+}
+.btn-run {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 10px 18px; border-radius: 10px; font-size: 13.5px; font-weight: 600;
+  background: linear-gradient(100deg, var(--a), var(--b));
+  color: #06121a; border: none; cursor: pointer;
+  transition: opacity .2s;
+}
+.btn-run:hover { opacity: .85; }
+.btn-run svg { width: 15px; height: 15px; }
+.code-cmd {
+  font-family: 'SF Mono', monospace; font-size: 12px;
+  background: #0d1117; border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 12px; color: var(--mut); flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+</style>
+
+<section id="lens-demo">
+  <h2>Live: LLM Agent on the P2P Knowledge Graph</h2>
+  <p class="lead">
+    The Chemistry Lens Agent queries balanced reactions from the knitweb fabric via
+    <strong>Lens</strong>, distils 93 % of tokens before the LLM call, and pushes
+    generated code straight to GitHub.
+  </p>
+
+  <div class="demo-wrap">
+
+    <!-- ── Terminal ── -->
+    <div class="term">
+      <div class="term-bar">
+        <span class="dot dot-r"></span>
+        <span class="dot dot-y"></span>
+        <span class="dot dot-g"></span>
+        <span class="term-title">chemistry_lens_agent_demo.py</span>
+      </div>
+      <div class="term-body" id="term-body">
+        <span class="tl tl-note">  ╔════════════════════════════════════════╗</span>
+        <span class="tl tl-note">  ║  Knitweb · Chemistry Lens Agent        ║</span>
+        <span class="tl tl-note">  ╚════════════════════════════════════════╝</span>
+        <span class="tl"> </span>
+        <span class="cursor" id="cursor"></span>
+      </div>
+    </div>
+
+    <!-- ── Right panel ── -->
+    <div class="panel">
+
+      <!-- Token savings card -->
+      <div class="stat-card">
+        <div class="stat-label">Token savings</div>
+        <div class="stat-value" id="savings-pct">0%</div>
+        <div class="savings-bar-wrap"><div class="savings-bar" id="savings-bar"></div></div>
+        <div class="stat-sub">
+          Naive: <span id="tok-naive">—</span> tokens → Lens: <span id="tok-lens">—</span> tokens
+        </div>
+      </div>
+
+      <!-- Reactions card -->
+      <div class="stat-card">
+        <div class="stat-label">Reactions retrieved via Lens</div>
+        <ul class="reactions-list" id="rx-list">
+          <li data-idx="0">
+            <span class="rx-icon">⚗</span>
+            <div><div>Haber-Bosch NH₃ synthesis</div><div class="rx-eq">N2 + 3 H2 → 2 NH3</div></div>
+            <span class="rx-cid" id="cid-0">pending…</span>
+          </li>
+          <li data-idx="1">
+            <span class="rx-icon">⚗</span>
+            <div><div>CO₂ hydrogenation → acetic acid</div><div class="rx-eq">2 CO2 + 4 H2 → CH3COOH + 2 H2O</div></div>
+            <span class="rx-cid" id="cid-1">pending…</span>
+          </li>
+          <li data-idx="2">
+            <span class="rx-icon">⚗</span>
+            <div><div>V₂O₅ reduction (VRFB)</div><div class="rx-eq">V2O5 + H2 → V2O4 + H2O</div></div>
+            <span class="rx-cid" id="cid-2">pending…</span>
+          </li>
+          <li data-idx="3">
+            <span class="rx-icon">⚗</span>
+            <div><div>Vanadyl sulfate preparation</div><div class="rx-eq">V2O4 + 2 H2SO4 → 2 VOSO4 + 2 H2O</div></div>
+            <span class="rx-cid" id="cid-3">pending…</span>
+          </li>
+        </ul>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="demo-cta">
+    <button class="btn-run" id="btn-restart">
+      <svg viewBox="0 0 16 16" fill="currentColor">
+        <path d="M2.5 8a5.5 5.5 0 0 1 9.15-4.13l-1.2 1.2A3.5 3.5 0 1 0 11.5 8H13a5.5 5.5 0 1 1-10.5 0z"/>
+        <path d="M10.5 1v4h-4l4-4z"/>
+      </svg>
+      Replay demo
+    </button>
+    <code class="code-cmd">PYTHONPATH=src python examples/chemistry_lens_agent_demo.py</code>
+  </div>
+</section>
+
+<script>
+(function () {
+  const CIDS = [
+    "bafyreihpnhqnjugewd3…",
+    "bafyreihvh2j7r4huix5…",
+    "bafyreiaab7ftdtdldq2…",
+    "bafyreiefkpzvvpamkj7…",
+  ];
+
+  const STEPS = [
+    { delay: 400,  cls: "tl-step", text: "[1] Seeding chemistry knowledge graph" },
+    { delay: 700,  cls: "tl-ok",   text: "    ✓ Haber-Bosch NH3 synthesis        cid=bafyreihpnh…", rx: 0 },
+    { delay: 1000, cls: "tl-ok",   text: "    ✓ CO2 hydrogenation to acetic acid cid=bafyreihvh2…", rx: 1 },
+    { delay: 1300, cls: "tl-ok",   text: "    ✓ V2O5 reduction to V2O4           cid=bafyreiaab7…", rx: 2 },
+    { delay: 1600, cls: "tl-ok",   text: "    ✓ Vanadyl sulfate preparation       cid=bafyreiefkp…", rx: 3 },
+    { delay: 1900, cls: "tl-note", text: "    › 4 reactions woven (5mart.ml relay)" },
+    { delay: 2300, cls: "tl-step", text: "[2] Lens retrieval — querying P2P fabric" },
+    { delay: 2600, cls: "tl-ok",   text: "    › 1 records ← 'VOSO4' [VRFB vanadyl sulfate]" },
+    { delay: 2900, cls: "tl-ok",   text: "    › 1 records ← 'V2O5'  [VRFB V₂O₅ reduction]" },
+    { delay: 3200, cls: "tl-ok",   text: "    › 1 records ← 'NH3'   [NH BLOOM synthesis]" },
+    { delay: 3500, cls: "tl-ok",   text: "    › 1 records ← 'CH3COOH' [CO₂ → acetic acid]" },
+    { delay: 3800, cls: "tl-note", text: "    › Total unique: 4 records" },
+    { delay: 4100, cls: "tl-step", text: "[3] Token savings — Lens distillation",  savings: true },
+    { delay: 4500, cls: "tl-note", text: "    › Naive  : 1066 tokens  █████████████████████" },
+    { delay: 4900, cls: "tl-save", text: "    › Lens   :   74 tokens  █" },
+    { delay: 5300, cls: "tl-save", text: "    › Saved  : 93%  (992 tokens eliminated)" },
+    { delay: 5700, cls: "tl-step", text: "[4] Synthesising Python module (80 lines)" },
+    { delay: 6000, cls: "tl-eq",   text: "    › def reaction_n2___3_h2____2_nh3() → Reaction: …" },
+    { delay: 6200, cls: "tl-eq",   text: "    › def reaction_2_co2___4_h2_____() → Reaction: …" },
+    { delay: 6500, cls: "tl-step", text: "[5] Pushing to GitHub" },
+    { delay: 6800, cls: "tl-push", text: "    › Pushed → github.com/knitweb/pulse/generated/chemistry_reactions.py" },
+    { delay: 7200, cls: "tl-save", text: "  ✓ Done  in 0.04s  |  reactions=4  saved=93%" },
+  ];
+
+  function addLine(cls, text) {
+    const body = document.getElementById("term-body");
+    const cursor = document.getElementById("cursor");
+    const span = document.createElement("span");
+    span.className = "tl " + cls;
+    span.textContent = text;
+    body.insertBefore(span, cursor);
+    body.scrollTop = body.scrollHeight;
+  }
+
+  function animateSavings() {
+    document.getElementById("tok-naive").textContent = "1 066";
+    document.getElementById("tok-lens").textContent  = "74";
+    let pct = 0;
+    const bar = document.getElementById("savings-bar");
+    const label = document.getElementById("savings-pct");
+    bar.style.width = "93%";
+    const iv = setInterval(() => {
+      pct = Math.min(93, pct + 3);
+      label.textContent = pct + "%";
+      if (pct >= 93) clearInterval(iv);
+    }, 40);
+  }
+
+  function showReaction(idx) {
+    const li = document.querySelector(`[data-idx="${idx}"]`);
+    if (li) {
+      li.classList.add("visible");
+      const cidEl = document.getElementById("cid-" + idx);
+      if (cidEl) cidEl.textContent = CIDS[idx];
+    }
+  }
+
+  function runDemo() {
+    // Reset
+    const body = document.getElementById("term-body");
+    const cursor = document.getElementById("cursor");
+    body.innerHTML = '';
+    body.appendChild(cursor);
+    ["tl-note", "tl-step"].forEach(c => {});
+    ["  ╔════════════════════════════════════════╗",
+     "  ║  Knitweb · Chemistry Lens Agent        ║",
+     "  ╚════════════════════════════════════════╝",
+     " "].forEach(t => addLine("tl-note", t));
+
+    document.getElementById("savings-pct").textContent = "0%";
+    document.getElementById("savings-bar").style.width = "0%";
+    document.getElementById("tok-naive").textContent = "—";
+    document.getElementById("tok-lens").textContent = "—";
+    document.querySelectorAll(".reactions-list li").forEach(li => {
+      li.classList.remove("visible");
+    });
+    document.querySelectorAll("[id^='cid-']").forEach(el => el.textContent = "pending…");
+
+    STEPS.forEach(s => {
+      setTimeout(() => {
+        addLine(s.cls, s.text);
+        if (s.savings) animateSavings();
+        if (s.rx !== undefined) showReaction(s.rx);
+      }, s.delay);
+    });
+  }
+
+  document.getElementById("btn-restart").addEventListener("click", runDemo);
+
+  // Auto-start on first intersection
+  if ("IntersectionObserver" in window) {
+    let started = false;
+    const obs = new IntersectionObserver(entries => {
+      if (entries[0].isIntersecting && !started) {
+        started = true;
+        runDemo();
+      }
+    }, { threshold: 0.25 });
+    obs.observe(document.getElementById("lens-demo"));
+  } else {
+    runDemo();
+  }
+})();
+</script>
