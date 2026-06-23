@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import List
+from typing import Any, List
 
 from . import challenge
 from .committee import select_committee
@@ -37,6 +37,9 @@ __all__ = [
     "plan_verification",
     "verifier_verdict",
     "run_committee",
+    # IL-106 — distill re-execution check
+    "DistillReexecResult",
+    "verify_distill",
 ]
 
 
@@ -113,3 +116,131 @@ def run_committee(
         reveals = challenge.respond(worker_blocks, salt, k)
         verdicts.append(verifier_verdict(commitment, salt, k, reveals, recomputed_blocks))
     return verdicts
+
+
+# ---------------------------------------------------------------------------
+# IL-106 — deterministic re-execution of retrieve + gate for distill jobs.
+#
+# Model-guided distillation is NOT byte-reproducible, so verifiers cannot
+# byte-compare its output.  They CAN deterministically re-run the two halves
+# that ARE reproducible:
+#
+#   1. retrieve(query, subscription, web, web_state_cid=...) → candidate set
+#   2. gate: every relation in the bundle must (a) have all three CIDs in the
+#      candidate set AND (b) pass the attestation/provenance gate
+#
+# A mismatch in either half means the worker fabricated evidence — the
+# bundle contains relations that were not reachable from the input query or
+# that would have been dropped by the gate.  This is a slash-worthy offence.
+#
+# The function injects both the retrieve callable and the gate callable so the
+# pouw layer stays import-free of the interpret layer at module load time.
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class DistillReexecResult:
+    """Outcome of a deterministic re-execution check for one distill bundle.
+
+    ``deterministic_ok`` is the signal :data:`~knitweb.pouw.job.split_settles`
+    consumes.  The remaining fields expose which relation failed so callers can
+    log a targeted slash reason.
+    """
+
+    deterministic_ok: bool
+    candidate_mismatch: bool
+    gate_failure: bool
+    first_bad_relation: object | None
+
+
+def verify_distill(
+    manifest,                 # DistillManifest — duck-typed to avoid circular import
+    bundle_relations,         # tuple/list of synaptic.Relation objects
+    web,                      # knitweb.fabric.web.Web pinned at manifest.web_state_cid
+    *,
+    retrieve_fn,              # callable matching retrieve(query, subscription, web, *, web_state_cid)
+    gate_fn,                  # callable matching gate_relations(relations, candidates, web)
+    original_query,           # the pre-image of manifest.query (needed to re-run retrieve)
+) -> DistillReexecResult:
+    """Re-run the deterministic halves of a distill job and return a recheck verdict.
+
+    The two deterministic checks (AC1 and AC2 of IL-106):
+
+    1. **Candidate check**: re-run ``retrieve`` against the pinned ``web_state_cid``.
+       Every relation's subject/predicate/obj must be a CID in the re-derived
+       candidate set.  A relation whose CIDs are absent from the candidate set was
+       fabricated — the worker could not have encountered it through an honest
+       retrieve run.
+
+    2. **Gate check**: re-run the provenance gate on every relation.  Any relation
+       that passes the candidate check but fails the gate was emitted in defiance
+       of the gate rules — also fraudulent.
+
+    ``deterministic_ok = True`` iff BOTH checks pass for ALL relations.
+
+    Parameters
+    ----------
+    manifest
+        A ``DistillManifest``-like object with ``.subscription``,
+        ``.web_state_cid``, and ``.query`` attributes.
+    bundle_relations
+        The relations the worker claims are in the signed bundle.
+    web
+        The ``Web`` snapshot at ``manifest.web_state_cid`` (caller is responsible
+        for pinning the correct epoch; this function does not re-fetch the web).
+    retrieve_fn
+        The retrieve callable (injected so pouw does not import interpret at load
+        time): ``retrieve_fn(query, subscription, web, *, web_state_cid) → CandidateSet``.
+    gate_fn
+        The gate callable: ``gate_fn(relations, candidates, web) → tuple[Relation, ...]``.
+    original_query
+        The pre-image query.  A verifier confirms it fingerprints to ``manifest.query``
+        before calling this function.
+    """
+    # Re-derive the candidate set deterministically.
+    try:
+        candidate_set = retrieve_fn(
+            original_query,
+            manifest.subscription or None,
+            web,
+            web_state_cid=manifest.web_state_cid,
+        )
+    except Exception:
+        # If retrieve fails against the pinned web state the manifest is invalid.
+        return DistillReexecResult(
+            deterministic_ok=False,
+            candidate_mismatch=True,
+            gate_failure=False,
+            first_bad_relation=None,
+        )
+
+    candidate_cids: frozenset[str] = frozenset(candidate_set.cids)
+
+    # AC1 — every relation's CIDs must be in the re-derived candidate set.
+    for relation in bundle_relations:
+        for cid in (relation.subject, relation.predicate, relation.obj):
+            if cid not in candidate_cids:
+                return DistillReexecResult(
+                    deterministic_ok=False,
+                    candidate_mismatch=True,
+                    gate_failure=False,
+                    first_bad_relation=relation,
+                )
+
+    # AC2 — every relation must also pass the attestation/provenance gate.
+    gated = gate_fn(list(bundle_relations), candidate_set, web)
+    gated_keys = {(r.subject, r.predicate, r.obj) for r in gated}
+    for relation in bundle_relations:
+        if (relation.subject, relation.predicate, relation.obj) not in gated_keys:
+            return DistillReexecResult(
+                deterministic_ok=False,
+                candidate_mismatch=False,
+                gate_failure=True,
+                first_bad_relation=relation,
+            )
+
+    return DistillReexecResult(
+        deterministic_ok=True,
+        candidate_mismatch=False,
+        gate_failure=False,
+        first_bad_relation=None,
+    )

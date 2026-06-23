@@ -25,12 +25,16 @@ neither the canonical/hash path nor any signed record.
 
 from __future__ import annotations
 
+import hashlib
 from fractions import Fraction
 
 __all__ = [
     "miss_probability",
     "catch_probability",
     "required_samples",
+    # IL-106: job-level audit selection for distill jobs
+    "should_audit_job",
+    "sample_distill_jobs",
 ]
 
 
@@ -101,3 +105,69 @@ def required_samples(n: int, corrupt: int, max_miss: Fraction) -> int:
         if miss <= max_miss:
             return k
     return n                                # miss(n, corrupt, n) == 0 ≤ max_miss (unreachable guard)
+
+
+# ---------------------------------------------------------------------------
+# IL-106 — job-level audit selection for distill PoUW jobs.
+#
+# Block-level sampling (above) picks WHICH blocks inside one job to re-check.
+# Job-level sampling answers a different question: WHICH distill jobs across a
+# round should a verifier audit at all?  The mechanism is a deterministic
+# hash-based draw so every verifier reading the same (seed, manifest_cid) pair
+# reaches the same audit/skip decision without coordination.
+# ---------------------------------------------------------------------------
+
+_AUDIT_HASH_BYTES = 8                    # 8 bytes → 64-bit draw, plenty of range
+
+
+def should_audit_job(seed: bytes, manifest_cid: str, *, rate: Fraction) -> bool:
+    """Return True iff this (seed, manifest_cid) pair falls within the audit fraction.
+
+    The draw is deterministic: ``sha256(seed + manifest_cid.encode())`` mapped to
+    a uniform integer in ``[0, 2**64)``, then compared to ``rate * 2**64``.  This
+    gives every verifier the same yes/no without a shared random source.
+
+    ``rate`` must be a :class:`~fractions.Fraction` in ``[0, 1]`` — no floats touch
+    the decision boundary so there are no float-rounding surprises in audit coverage.
+    """
+    if not isinstance(seed, (bytes, bytearray)):
+        raise TypeError("seed must be bytes")
+    if not isinstance(manifest_cid, str) or not manifest_cid:
+        raise ValueError("manifest_cid must be a non-empty str")
+    if not isinstance(rate, Fraction):
+        raise TypeError("rate must be a fractions.Fraction (exact, no float)")
+    if not (Fraction(0) <= rate <= Fraction(1)):
+        raise ValueError("rate must be in [0, 1]")
+    if rate == Fraction(0):
+        return False
+    if rate == Fraction(1):
+        return True
+
+    digest = hashlib.sha256(bytes(seed) + manifest_cid.encode()).digest()
+    draw = int.from_bytes(digest[:_AUDIT_HASH_BYTES], "big")
+    threshold = int(rate * (2 ** (_AUDIT_HASH_BYTES * 8)))
+    return draw < threshold
+
+
+def sample_distill_jobs(
+    manifest_cids: list[str],
+    rate: Fraction,
+    *,
+    seed: bytes,
+) -> list[str]:
+    """Return the subset of ``manifest_cids`` selected for audit at ``rate``.
+
+    Each CID is tested independently via :func:`should_audit_job`; the result is
+    deterministic across all verifiers for the same ``(seed, rate)`` round.
+    ``seed`` is typically the current epoch/block hash so every verifier uses the
+    same global entropy without coordination.
+
+    Returns an empty list when ``rate == 0``; returns ``manifest_cids`` when
+    ``rate == 1``.
+    """
+    if not isinstance(manifest_cids, list):
+        raise TypeError("manifest_cids must be a list")
+    return [
+        cid for cid in manifest_cids
+        if should_audit_job(seed, cid, rate=rate)
+    ]
