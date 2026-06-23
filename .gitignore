@@ -17,3 +17,6 @@ mlruns/
 
 # Generated on demand, not version-controlled (run tools/loc_report.py to view)
 docs/LOC_BY_LANGUAGE.md
+
+# Generated PDF artifacts (run tools/generate_migration_plan.py to regenerate)
+docs/MIGRATION_PLAN_*.pdf
