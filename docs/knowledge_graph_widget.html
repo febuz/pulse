@@ -1,0 +1,486 @@
+<!--
+  Knitweb Chemistry Knowledge Graph — interactive P2P graph widget
+  Drop this <section> block into knitweb.art after the terminal demo section.
+  Uses inline SVG + vanilla JS (fixed-position layout) — zero external deps.
+-->
+<style>
+#kg-demo {
+  --bg:   #0b0e14;
+  --bg2:  #11151f;
+  --line: #1f2737;
+  --a:    #17BEBB;
+  --b:    #2E6CF6;
+  --c:    #B8F35A;
+  --mut:  #9aa6bd;
+  --fg:   #e8ecf4;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, sans-serif;
+}
+#kg-demo h2 { font-size: 26px; margin: 0 0 6px; }
+#kg-demo .lead { color: var(--mut); margin: 0 0 22px; max-width: 740px; }
+
+.kg-wrap {
+  position: relative;
+  background: #060a10;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  overflow: hidden;
+}
+.kg-bar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 14px;
+  background: #0d1117;
+  border-bottom: 1px solid var(--line);
+}
+.kg-dot { width: 10px; height: 10px; border-radius: 50%; }
+.kg-dr{background:#ff5f56}.kg-dy{background:#ffbd2e}.kg-dg{background:#27c93f}
+.kg-title { margin-left: auto; font-size: 11px; color: var(--mut); font-family: 'SF Mono', monospace; }
+
+.kg-canvas-wrap {
+  position: relative;
+  height: 420px;
+}
+#kg-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* Legend */
+.kg-legend {
+  position: absolute;
+  bottom: 14px;
+  left: 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.kg-leg-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--mut);
+}
+.kg-leg-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* Query panel */
+.kg-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--line);
+  align-items: center;
+}
+.kg-query-label { font-size: 12px; color: var(--mut); }
+.kg-pill-btn {
+  display: inline-block;
+  font-size: 12px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--mut);
+  background: transparent;
+  cursor: pointer;
+  transition: all .2s;
+  font-family: 'SF Mono', monospace;
+}
+.kg-pill-btn:hover, .kg-pill-btn.active {
+  border-color: var(--a);
+  color: var(--a);
+  background: rgba(23,190,187,.08);
+}
+.kg-stats {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--mut);
+  font-family: 'SF Mono', monospace;
+}
+.kg-stats span { color: var(--c); font-weight: 700; }
+</style>
+
+<section id="kg-demo">
+  <h2>Interactive Chemistry Knowledge Graph</h2>
+  <p class="lead">
+    The P2P fabric stores reactions as a content-addressed graph. Lens traverses it
+    depth-first from a seed CID — hover a node to inspect its record, click a query
+    to watch the retrieval path animate.
+  </p>
+
+  <div class="kg-wrap">
+    <div class="kg-bar">
+      <span class="kg-dot kg-dr"></span>
+      <span class="kg-dot kg-dy"></span>
+      <span class="kg-dot kg-dg"></span>
+      <span class="kg-title">knitweb · P2P chemistry fabric · 5mart.ml relay</span>
+    </div>
+
+    <div class="kg-canvas-wrap">
+      <svg id="kg-svg" viewBox="0 0 900 420" preserveAspectRatio="xMidYMid meet"></svg>
+      <div class="kg-legend">
+        <div class="kg-leg-item"><div class="kg-leg-dot" style="background:#17BEBB"></div>Reaction node</div>
+        <div class="kg-leg-item"><div class="kg-leg-dot" style="background:#2E6CF6"></div>Element node</div>
+        <div class="kg-leg-item"><div class="kg-leg-dot" style="background:#B8F35A"></div>Retrieved via Lens</div>
+        <div class="kg-leg-item"><div class="kg-leg-dot" style="background:#555e72"></div>Remote (not fetched)</div>
+      </div>
+    </div>
+
+    <div class="kg-controls">
+      <span class="kg-query-label">Lens query:</span>
+      <button class="kg-pill-btn active" data-query="all">all reactions</button>
+      <button class="kg-pill-btn" data-query="NH3">NH3 (biostimulant)</button>
+      <button class="kg-pill-btn" data-query="VOSO4">VOSO4 (VRFB)</button>
+      <button class="kg-pill-btn" data-query="CH3COOH">CH3COOH (CO₂)</button>
+      <div class="kg-stats">retrieved <span id="kg-count">0</span> / <span id="kg-total">0</span> nodes</div>
+    </div>
+  </div>
+</section>
+
+<script>
+(function () {
+  // ── Graph data (mirrors chemistry_lens_agent_demo.py reactions) ──────────
+  const REACTIONS = [
+    {
+      id: "rxn_haber",
+      label: "Haber-Bosch\nNH₃ synthesis",
+      eq: "N2 + 3 H2 → 2 NH3",
+      cid: "bafyreihpnh…",
+      elements: ["N", "H"],
+      color: "#17BEBB",
+    },
+    {
+      id: "rxn_co2",
+      label: "CO₂ → acetic acid\n(EHMAC)",
+      eq: "2 CO2 + 4 H2 → CH3COOH + 2 H2O",
+      cid: "bafyreihvh2…",
+      elements: ["C", "O", "H"],
+      color: "#17BEBB",
+    },
+    {
+      id: "rxn_vred",
+      label: "V₂O₅ → V₂O₄\n(VRFB)",
+      eq: "V2O5 + H2 → V2O4 + H2O",
+      cid: "bafyreiaab7…",
+      elements: ["V", "O", "H"],
+      color: "#17BEBB",
+    },
+    {
+      id: "rxn_voso4",
+      label: "Vanadyl sulfate\npreparation",
+      eq: "V2O4 + 2 H2SO4 → 2 VOSO4 + 2 H2O",
+      cid: "bafyreiefkp…",
+      elements: ["V", "O", "S", "H"],
+      color: "#17BEBB",
+    },
+  ];
+
+  const ELEMENTS_DATA = {
+    H:  { label: "H\nHydrogen",   color: "#2E6CF6", atomic: 1 },
+    N:  { label: "N\nNitrogen",   color: "#2E6CF6", atomic: 7 },
+    C:  { label: "C\nCarbon",     color: "#2E6CF6", atomic: 6 },
+    O:  { label: "O\nOxygen",     color: "#2E6CF6", atomic: 8 },
+    V:  { label: "V\nVanadium",   color: "#9B59B6", atomic: 23 },
+    S:  { label: "S\nSulfur",     color: "#F39C12", atomic: 16 },
+  };
+
+  // ── Build graph nodes + edges ─────────────────────────────────────────────
+  const W = 900, H = 420;
+
+  // Reaction nodes: arrange in a column left-ish
+  const rxnPositions = [
+    { x: 200, y: 100 },
+    { x: 200, y: 200 },
+    { x: 200, y: 300 },
+    { x: 200, y: 370 },
+  ];
+
+  // Element nodes: cluster on the right
+  const elemKeys = Object.keys(ELEMENTS_DATA);
+  const elemPositions = {
+    H: { x: 640, y: 160 },
+    N: { x: 560, y:  90 },
+    C: { x: 720, y:  80 },
+    O: { x: 820, y: 200 },
+    V: { x: 700, y: 310 },
+    S: { x: 820, y: 340 },
+  };
+
+  const nodes = [
+    ...REACTIONS.map((r, i) => ({
+      id: r.id, type: "reaction", label: r.label, eq: r.eq, cid: r.cid,
+      x: rxnPositions[i].x, y: rxnPositions[i].y,
+      r: 32, color: r.color, elements: r.elements,
+    })),
+    ...elemKeys.map(k => ({
+      id: "el_" + k, type: "element", label: ELEMENTS_DATA[k].label,
+      atomic: ELEMENTS_DATA[k].atomic,
+      x: elemPositions[k].x, y: elemPositions[k].y,
+      r: 20, color: ELEMENTS_DATA[k].color,
+    })),
+  ];
+
+  const nodeById = Object.fromEntries(nodes.map(n => [n.id, n]));
+
+  const edges = [];
+  REACTIONS.forEach(r => {
+    r.elements.forEach(el => {
+      edges.push({ src: r.id, dst: "el_" + el });
+    });
+  });
+
+  // Lens query filters
+  const QUERY_FILTER = {
+    all:     () => true,
+    NH3:     n => n.type === "reaction" && n.id === "rxn_haber"  || n.type === "element" && ["N","H"].includes(n.id.slice(3)),
+    VOSO4:   n => n.type === "reaction" && n.id === "rxn_voso4" || n.type === "element" && ["V","O","S","H"].includes(n.id.slice(3)),
+    CH3COOH: n => n.type === "reaction" && n.id === "rxn_co2"   || n.type === "element" && ["C","H","O"].includes(n.id.slice(3)),
+  };
+
+  // ── SVG rendering ──────────────────────────────────────────────────────────
+  const svg = document.getElementById("kg-svg");
+  const ns = "http://www.w3.org/2000/svg";
+
+  function el(tag, attrs = {}) {
+    const e = document.createElementNS(ns, tag);
+    Object.entries(attrs).forEach(([k, v]) => e.setAttribute(k, v));
+    return e;
+  }
+
+  // Defs: arrow marker, glow filter
+  const defs = el("defs");
+  defs.innerHTML = `
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#1f2737"/>
+    </marker>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="glow-strong" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="7" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  `;
+  svg.appendChild(defs);
+
+  // Edge layer
+  const edgeG = el("g", { class: "edges" });
+  svg.appendChild(edgeG);
+
+  // Node layer
+  const nodeG = el("g", { class: "nodes" });
+  svg.appendChild(nodeG);
+
+  // Tooltip
+  const tip = el("g", { id: "kg-tip", opacity: "0" });
+  const tipBg  = el("rect", { rx: 8, ry: 8, fill: "#0d1117", stroke: "#1f2737", "stroke-width": 1 });
+  const tipText = el("text", { fill: "#e8ecf4", "font-size": "11", "font-family": "SF Mono, monospace", "dominant-baseline": "hanging" });
+  tip.appendChild(tipBg);
+  tip.appendChild(tipText);
+  svg.appendChild(tip);
+
+  // Draw edges
+  const edgeEls = {};
+  edges.forEach(e => {
+    const src = nodeById[e.src], dst = nodeById[e.dst];
+    const line = el("line", {
+      x1: src.x, y1: src.y, x2: dst.x, y2: dst.y,
+      stroke: "#1f2737", "stroke-width": 1.5,
+      "marker-end": "url(#arr)",
+    });
+    edgeG.appendChild(line);
+    edgeEls[e.src + ">" + e.dst] = line;
+  });
+
+  // Draw nodes
+  const nodeEls = {};
+  const total = nodes.length;
+  document.getElementById("kg-total").textContent = total;
+
+  nodes.forEach(n => {
+    const g = el("g", { transform: `translate(${n.x},${n.y})`, cursor: "pointer", opacity: "0.35" });
+
+    g.dataset.baseStroke = n.color;
+    if (n.type === "reaction") {
+      // Hexagonal-ish pill for reactions
+      const rect = el("rect", {
+        x: -n.r, y: -14, width: n.r * 2, height: 28,
+        rx: 8, fill: "#11151f", stroke: n.color, "stroke-width": 1.5,
+      });
+      g.appendChild(rect);
+    } else {
+      const circ = el("circle", {
+        cx: 0, cy: 0, r: n.r,
+        fill: "#11151f", stroke: n.color, "stroke-width": 1.5,
+      });
+      g.appendChild(circ);
+    }
+
+    // Label (multiline via tspan)
+    const parts = n.label.split("\n");
+    const txt = el("text", {
+      "text-anchor": "middle", "dominant-baseline": "middle",
+      fill: "#e8ecf4", "font-size": n.type === "reaction" ? "9" : "10",
+      "font-family": n.type === "element" ? "'SF Mono', monospace" : "inherit",
+      "font-weight": "700",
+    });
+    parts.forEach((p, i) => {
+      const ts = el("tspan", { x: 0, dy: i === 0 ? (-(parts.length - 1) * 6) : "12" });
+      ts.textContent = p;
+      txt.appendChild(ts);
+    });
+    g.appendChild(txt);
+
+    // Hover
+    g.addEventListener("mouseenter", () => showTip(n, g));
+    g.addEventListener("mouseleave", hideTip);
+
+    nodeG.appendChild(g);
+    nodeEls[n.id] = g;
+  });
+
+  // ── Tooltip ───────────────────────────────────────────────────────────────
+  function showTip(n, g) {
+    const lines = n.type === "reaction"
+      ? [`reaction-knowledge`, `eq: ${n.eq}`, `cid: ${n.cid}`]
+      : [`element`, `symbol: ${n.id.slice(3)}`, `atomic#: ${n.atomic}`];
+    const maxLen = Math.max(...lines.map(l => l.length));
+    const tw = maxLen * 6.8 + 20, th = lines.length * 16 + 14;
+
+    while (tipText.firstChild) tipText.removeChild(tipText.firstChild);
+    lines.forEach((line, i) => {
+      const ts = el("tspan", { x: 10, dy: i === 0 ? 10 : 15, fill: i === 0 ? "#17BEBB" : "#9aa6bd" });
+      ts.textContent = line;
+      tipText.appendChild(ts);
+    });
+
+    tipBg.setAttribute("width", tw);
+    tipBg.setAttribute("height", th);
+
+    const tx = Math.min(n.x + 36, W - tw - 10);
+    const ty = Math.max(n.y - 28, 10);
+    tip.setAttribute("transform", `translate(${tx},${ty})`);
+    tip.setAttribute("opacity", "1");
+  }
+
+  function hideTip() {
+    tip.setAttribute("opacity", "0");
+  }
+
+  // ── Lens retrieval animation ─────────────────────────────────────────────
+  let currentQuery = "all";
+  let animTimers = [];
+
+  function clearAnim() {
+    animTimers.forEach(clearTimeout);
+    animTimers = [];
+    Object.values(nodeEls).forEach(g => {
+      g.setAttribute("opacity", "0.2");
+      const shape = g.querySelector("rect,circle");
+      if (shape) {
+        shape.setAttribute("filter", "");
+        shape.setAttribute("stroke", g.dataset.baseStroke || "#17BEBB");
+        shape.setAttribute("stroke-width", "1.5");
+      }
+    });
+    Object.values(edgeEls).forEach(l => {
+      l.setAttribute("stroke", "#1f2737");
+      l.setAttribute("stroke-width", 1.5);
+      l.setAttribute("opacity", 1);
+    });
+    document.getElementById("kg-count").textContent = "0";
+  }
+
+  function runLensAnimation(query) {
+    clearAnim();
+    const filter = QUERY_FILTER[query] || QUERY_FILTER.all;
+    const matched = nodes.filter(filter);
+    const matchedIds = new Set(matched.map(n => n.id));
+
+    // Dim everything first
+    Object.values(nodeEls).forEach(g => g.setAttribute("opacity", "0.15"));
+
+    let count = 0;
+    matched.forEach((n, i) => {
+      animTimers.push(setTimeout(() => {
+        const g = nodeEls[n.id];
+        g.setAttribute("opacity", "1");
+
+        // Glow the shape
+        const shape = g.querySelector("rect,circle");
+        if (shape) {
+          shape.setAttribute("stroke", "#B8F35A");
+          shape.setAttribute("filter", "url(#glow)");
+        }
+
+        // Light up edges connected to this node
+        edges.forEach(e => {
+          if ((e.src === n.id && matchedIds.has(e.dst)) ||
+              (e.dst === n.id && matchedIds.has(e.src))) {
+            const le = edgeEls[e.src + ">" + e.dst];
+            if (le) {
+              le.setAttribute("stroke", "#17BEBB");
+              le.setAttribute("stroke-width", 2);
+            }
+          }
+        });
+
+        document.getElementById("kg-count").textContent = ++count;
+      }, 120 + i * 180));
+    });
+
+    // Pulse: highlight a "retrieval path" traveling along edges
+    const rxnMatched = matched.filter(n => n.type === "reaction");
+    rxnMatched.forEach((rxn, ri) => {
+      rxn.elements?.forEach((elSym, ei) => {
+        if (!matchedIds.has("el_" + elSym)) return;
+        const delay = 120 + ri * 180 + ei * 80 + 600;
+        animTimers.push(setTimeout(() => {
+          const edgeKey = rxn.id + ">el_" + elSym;
+          const le = edgeEls[edgeKey];
+          if (!le) return;
+          le.setAttribute("stroke", "#B8F35A");
+          le.setAttribute("stroke-width", 2.5);
+          le.setAttribute("filter", "url(#glow)");
+          // Fade back to teal
+          setTimeout(() => {
+            le.setAttribute("stroke", "#17BEBB");
+            le.setAttribute("stroke-width", 2);
+            le.setAttribute("filter", "");
+          }, 600);
+        }, delay));
+      });
+    });
+  }
+
+  // ── Query button wiring ──────────────────────────────────────────────────
+  document.querySelectorAll(".kg-pill-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".kg-pill-btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      currentQuery = btn.dataset.query;
+      runLensAnimation(currentQuery);
+    });
+  });
+
+  // Auto-start on viewport entry
+  if ("IntersectionObserver" in window) {
+    let started = false;
+    new IntersectionObserver(entries => {
+      if (entries[0].isIntersecting && !started) {
+        started = true;
+        setTimeout(() => runLensAnimation("all"), 400);
+      }
+    }, { threshold: 0.3 }).observe(document.getElementById("kg-demo"));
+  } else {
+    runLensAnimation("all");
+  }
+})();
+</script>
