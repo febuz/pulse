@@ -62,3 +62,32 @@ def test_shortest_form_integer_encoding():
     assert canonical.encode(24) == bytes([0x18, 24])
     assert canonical.encode(0) == bytes([0x00])
     assert canonical.encode(-1) == bytes([0x20])
+
+
+@pytest.mark.property
+def test_string_length_budget_rejects_oversized():
+    """Strings longer than MAX_STRING_LEN raise CanonicalError on decode."""
+    giant = "x" * (canonical.MAX_STRING_LEN + 1)
+    raw = canonical.encode(giant)
+    with pytest.raises(canonical.CanonicalError, match="MAX_STRING_LEN"):
+        canonical.decode(raw)
+
+
+@pytest.mark.property
+def test_string_exactly_at_limit_round_trips():
+    """Strings of exactly MAX_STRING_LEN bytes are accepted."""
+    at_limit = "a" * canonical.MAX_STRING_LEN
+    assert canonical.decode(canonical.encode(at_limit)) == at_limit
+
+
+@pytest.mark.property
+def test_array_length_budget_rejects_claim_larger_than_max():
+    """An array claiming more than MAX_ARRAY_LEN items is rejected before iteration."""
+    # Craft a truncated buffer: header claims MAX_ARRAY_LEN+1 items but provides 0.
+    # The guard must fire on the claimed length, not after draining the items.
+    import struct
+    # CBOR major type 4, 4-byte length argument (minor 26)
+    n = canonical.MAX_ARRAY_LEN + 1
+    bad_buf = bytes([0x9A]) + struct.pack(">I", n)  # array of n items, no items follow
+    with pytest.raises(canonical.CanonicalError, match="MAX_ARRAY_LEN"):
+        canonical.decode(bad_buf)

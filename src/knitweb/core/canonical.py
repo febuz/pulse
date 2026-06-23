@@ -83,6 +83,20 @@ MAX_DEPTH = 64
 # round-trip, so it is NOT hash-critical (#169).
 MAX_ITEMS = 1_048_576
 
+# Maximum byte-length of a single string or bytes value in a decoded record.
+# Prevents a single 8 GiB byte-string claim from allocating unbounded memory
+# before the MAX_ITEMS guard fires (#169 follow-up, ARCHITECTURE.md R4).
+# 1 MiB sits far above any legitimate signed record field while refusing
+# attacker-crafted giant blobs. NOT hash-critical: encode() is unchanged.
+MAX_STRING_LEN = 1_048_576  # 1 MiB
+
+# Maximum number of items in a single array or map.
+# Prevents a shallow-but-wide container from evading the MAX_ITEMS guard via
+# claim-then-truncate (claim 2^32 items, provide 1 — MAX_ITEMS only fires on
+# actually-decoded objects). This rejects the claimed length before iteration.
+# NOT hash-critical: encode() is unchanged.
+MAX_ARRAY_LEN = 4_000_000
+
 
 def _encode(value: Any, depth: int = 0) -> bytes:
     if depth > MAX_DEPTH:
@@ -187,16 +201,28 @@ def _decode(
         return -1 - n, pos
     if major == 2:
         n, pos = read_len(minor, pos)
+        if n > MAX_STRING_LEN:
+            raise CanonicalError(
+                f"byte string length {n} exceeds MAX_STRING_LEN={MAX_STRING_LEN}"
+            )
         if pos + n > len(buf):
             raise CanonicalError("truncated byte string: not enough body bytes")
         return buf[pos:pos + n], pos + n
     if major == 3:
         n, pos = read_len(minor, pos)
+        if n > MAX_STRING_LEN:
+            raise CanonicalError(
+                f"text string length {n} exceeds MAX_STRING_LEN={MAX_STRING_LEN}"
+            )
         if pos + n > len(buf):
             raise CanonicalError("truncated text string: not enough body bytes")
         return buf[pos:pos + n].decode("utf-8"), pos + n
     if major == 4:
         n, pos = read_len(minor, pos)
+        if n > MAX_ARRAY_LEN:
+            raise CanonicalError(
+                f"array length {n} exceeds MAX_ARRAY_LEN={MAX_ARRAY_LEN}"
+            )
         items = []
         for _ in range(n):
             item, pos = _decode(buf, pos, depth + 1, count)
@@ -204,6 +230,10 @@ def _decode(
         return items, pos
     if major == 5:
         n, pos = read_len(minor, pos)
+        if n > MAX_ARRAY_LEN:
+            raise CanonicalError(
+                f"map length {n} exceeds MAX_ARRAY_LEN={MAX_ARRAY_LEN}"
+            )
         out: dict[Any, Any] = {}
         prev_key_bytes: bytes | None = None
         for _ in range(n):

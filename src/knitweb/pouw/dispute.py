@@ -44,6 +44,10 @@ __all__ = [
     "Submission",
     "DisputeWindowLedger",
     "UnderCollateralizedError",
+    # IL-107 — relevance/quality challenge window (separate from fabrication disputes)
+    "DEFAULT_RELEVANCE_WINDOW",
+    "RelevanceChallenge",
+    "RelevanceChallengeWindow",
 ]
 
 
@@ -303,3 +307,167 @@ class DisputeWindowLedger:
             "collateral_slashed": self.collateral_slashed,
             "collateral_returned": self.collateral_returned,
         }
+
+
+# --------------------------------------------------------------------------- #
+# IL-107 — Relevance / quality challenge window.                               #
+#                                                                               #
+# SEPARATION INVARIANT (IL-107 AC3):                                           #
+#   A spider may be penalised ONLY for *irrelevant* selections via this path.  #
+#   Fabricated relations are structurally impossible once the IL-106            #
+#   deterministic re-execution gate passes (verify_distill.deterministic_ok).  #
+#   The two paths are therefore disjoint by design:                            #
+#     - fabrication → pouw.verify.verify_distill + DisputeWindowLedger.dispute #
+#     - irrelevance  → THIS class                                               #
+#                                                                               #
+# This is purely additive: nothing in DisputeWindowLedger or challenge.py is   #
+# modified.  RelevanceChallengeWindow is a completely independent ledger whose  #
+# only shared dependency is pouw.quorum (Verdict, tally, Outcome) which both   #
+# paths legitimately reuse.                                                     #
+# --------------------------------------------------------------------------- #
+
+#: Default challenge window in beats before a relevance dispute closes.
+DEFAULT_RELEVANCE_WINDOW: int = 20
+
+
+@dataclass(frozen=True)
+class RelevanceChallenge:
+    """One open relevance/quality challenge against a distill bundle.
+
+    ``challenger_stake`` is an integer PLS-wei amount the challenger locks
+    up; it is lost if the challenge is overturned, refunded + awarded if upheld.
+    ``open_beat`` marks when the window was opened; the challenge closes at
+    ``open_beat + window_beats``.
+    """
+
+    bundle_cid: str
+    spider: str
+    challenger: str
+    challenger_stake: int
+    open_beat: int
+    window_beats: int
+    status: str = "open"      # "open" | "upheld" | "overturned"
+
+
+class RelevanceChallengeWindow:
+    """Time-boxed quality-challenge ledger for distill PoUW jobs (IL-107).
+
+    A consumer or any network participant who received a distill bundle may
+    challenge the *relevance* of its selections (not their structural validity —
+    that is IL-106's job) within a challenge window.  Resolution is by committee
+    quorum:
+
+    * **Upheld** (``MISMATCH`` majority): the spider delivered irrelevant content;
+      quality reputation is penalised via :class:`~knitweb.pouw.spider_quality.SpiderQualityReputation`.
+    * **Overturned** (``CONFIRM`` majority or inconclusive): the spider's selection
+      was vindicated; the challenger's stake is forfeit (marked as such in the
+      record).
+
+    SEPARATION INVARIANT: this window handles *only* relevance disputes.
+    Fabrication is caught deterministically by ``pouw.verify.verify_distill``
+    and slashed via ``DisputeWindowLedger.dispute`` — those two mechanisms are
+    orthogonal and never interact with this class.
+    """
+
+    def __init__(self, window_beats: int = DEFAULT_RELEVANCE_WINDOW) -> None:
+        if not isinstance(window_beats, int) or window_beats <= 0:
+            raise ValueError("window_beats must be a positive int")
+        self.window_beats = window_beats
+        self._challenges: Dict[str, RelevanceChallenge] = {}
+
+    def open_challenge(
+        self,
+        bundle_cid: str,
+        spider: str,
+        challenger: str,
+        challenger_stake: int,
+        open_beat: int,
+    ) -> RelevanceChallenge:
+        """Open a relevance challenge against a delivered distill bundle.
+
+        Each ``bundle_cid`` may have at most one open challenge; a second
+        ``open_challenge`` call for the same CID raises ``ValueError``.
+        ``challenger_stake`` must be a positive integer PLS-wei amount.
+        """
+        for name, value in (("bundle_cid", bundle_cid), ("spider", spider), ("challenger", challenger)):
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"{name} must be a non-empty str")
+        if not isinstance(challenger_stake, int) or challenger_stake <= 0:
+            raise ValueError("challenger_stake must be a positive int (PLS-wei)")
+        if not isinstance(open_beat, int):
+            raise TypeError("open_beat must be int")
+        if bundle_cid in self._challenges:
+            existing = self._challenges[bundle_cid]
+            if existing.status == "open":
+                raise ValueError(f"challenge already open for bundle {bundle_cid!r}")
+
+        challenge = RelevanceChallenge(
+            bundle_cid=bundle_cid,
+            spider=spider,
+            challenger=challenger,
+            challenger_stake=challenger_stake,
+            open_beat=open_beat,
+            window_beats=self.window_beats,
+        )
+        self._challenges[bundle_cid] = challenge
+        return challenge
+
+    def resolve(
+        self,
+        bundle_cid: str,
+        current_beat: int,
+        verdicts: List[Verdict],
+        quality_rep,           # SpiderQualityReputation — duck-typed to avoid circular dep
+    ) -> Tuple[str, RelevanceChallenge]:
+        """Resolve an open challenge once the window closes.
+
+        Uses :func:`~knitweb.pouw.quorum.tally` on the committee ``verdicts``:
+
+        * ``Outcome.SLASH`` (MISMATCH majority) → **upheld**: spider is penalised via
+          ``quality_rep.penalize(spider_id)``; challenger's stake is retained.
+        * Any other outcome → **overturned**: spider is rewarded via
+          ``quality_rep.reward(spider_id)``; challenger's stake is marked forfeit.
+
+        Returns ``(outcome_str, updated_challenge)`` where ``outcome_str`` is
+        ``"upheld"`` or ``"overturned"``.
+
+        Raises ``KeyError`` if the bundle is unknown, ``ValueError`` if the
+        challenge is not open, or if the window hasn't closed yet.
+        """
+        if bundle_cid not in self._challenges:
+            raise KeyError(f"no challenge for bundle {bundle_cid!r}")
+        ch = self._challenges[bundle_cid]
+        if ch.status != "open":
+            raise ValueError(f"challenge for {bundle_cid!r} is already {ch.status!r}")
+        close_beat = ch.open_beat + ch.window_beats
+        if current_beat < close_beat:
+            raise ValueError(
+                f"window not yet closed: closes at beat {close_beat}, current beat {current_beat}"
+            )
+
+        outcome = tally(verdicts)
+
+        if outcome == Outcome.SLASH:
+            quality_rep.penalize(ch.spider)
+            new_status = "upheld"
+        else:
+            quality_rep.reward(ch.spider)
+            new_status = "overturned"
+
+        updated = RelevanceChallenge(
+            bundle_cid=ch.bundle_cid,
+            spider=ch.spider,
+            challenger=ch.challenger,
+            challenger_stake=ch.challenger_stake,
+            open_beat=ch.open_beat,
+            window_beats=ch.window_beats,
+            status=new_status,
+        )
+        self._challenges[bundle_cid] = updated
+        return new_status, updated
+
+    def get(self, bundle_cid: str) -> RelevanceChallenge | None:
+        return self._challenges.get(bundle_cid)
+
+    def open_count(self) -> int:
+        return sum(1 for c in self._challenges.values() if c.status == "open")
