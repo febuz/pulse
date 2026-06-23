@@ -44,7 +44,7 @@ def _sample_web_with_metadata() -> Web:
         dst,
         "supports",
         weight=1,
-        metadata={"reputation": 9, "deploy-location": "edge-studio", "debug-score": 0.5},
+        metadata={"reputation": 9, "deploy-location": "edge-studio", "debug-score": 500},
     )
     return web
 
@@ -168,7 +168,7 @@ def test_export_and_import_preserve_edge_metadata_annotations():
     edge = source_node["edges"][0]
     assert edge["metadata"]["reputation"] == 9
     assert edge["metadata"]["deploy-location"] == "edge-studio"
-    assert edge["metadata"]["debug-score"] == 0.5
+    assert edge["metadata"]["debug-score"] == 500
 
     rebuilt = import_web(doc)
     first_src = source_node["id"]
@@ -177,7 +177,7 @@ def test_export_and_import_preserve_edge_metadata_annotations():
     assert rebuilt.edge_metadata(first_edge) == {
         "reputation": 9,
         "deploy-location": "edge-studio",
-        "debug-score": 0.5,
+        "debug-score": 500,
     }
 
 

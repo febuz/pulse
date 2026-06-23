@@ -59,7 +59,9 @@ class Web:
 
     @staticmethod
     def _validate_metadata_value(value: object) -> bool:
-        return isinstance(value, (str, int, bool, float))
+        # floats excluded: canonical.encode rejects them (RFC 8949 §4.2,
+        # ARCHITECTURE.md §5 R3). Convert via int(x * 1000) / quantize_weight.
+        return isinstance(value, (str, int, bool))
 
     def _normalize_edge_metadata(self, metadata: object) -> dict[str, object]:
         if metadata is None:
@@ -72,7 +74,8 @@ class Web:
                 raise ValueError("edge metadata keys must be non-empty str")
             if not self._validate_metadata_value(value):
                 raise TypeError(
-                    "edge metadata values must be int, str, bool, or float"
+                    "edge metadata values must be str, int, or bool — floats are not "
+                    "canonical-safe; convert with int(x * 1000) via quantize_weight"
                 )
             out[key] = value
         return out

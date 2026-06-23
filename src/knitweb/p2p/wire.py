@@ -18,7 +18,9 @@ from ..ledger.knit import Knit
 
 __all__ = [
     "MAX_FRAME_BYTES",
+    "WIRE_VERSION",
     "WireError",
+    "WireVersionError",
     "feed_head_to_record",
     "feed_head_from_record",
     "multiproof_to_record",
@@ -39,9 +41,23 @@ __all__ = [
 # serve window would silently starve large-record fetches (see #195 / inventory.py).
 MAX_FRAME_BYTES = 8 * 1024 * 1024
 
+# Current wire protocol version.  Bumping this is a breaking change; peers that
+# only know a lower version will reject frames from this version if they are strict.
+# Version 0 = legacy (no version byte in prefix).
+WIRE_VERSION: int = 1
+
 
 class WireError(ValueError):
     """Raised for malformed or unsafe wire data."""
+
+
+class WireVersionError(WireError):
+    """Raised when a received frame carries an unsupported wire version."""
+
+    def __init__(self, got: int, want: int) -> None:
+        super().__init__(f"unsupported wire version: got {got}, max supported {want}")
+        self.got = got
+        self.want = want
 
 
 def _require_dict(value) -> dict:
@@ -154,7 +170,7 @@ def knit_from_record(record: dict) -> Knit:
     )
 
 
-def write_frame_bytes(message: dict) -> bytes:
+def write_frame_bytes(message: dict, *, version: int = 0) -> bytes:
     """Encode one length-prefixed canonical-CBOR frame to bytes.
 
     This is the single source of truth for the on-the-wire framing: a 4-byte
@@ -162,15 +178,31 @@ def write_frame_bytes(message: dict) -> bytes:
     Both the asyncio stream writer and any alternative carrier (e.g. the HTTP
     relay) emit the *same bytes* from the same map, so signed-record byte-identity
     is preserved regardless of which transport carries the frame.
+
+    When ``version > 0`` a single version byte is prepended *inside* the length
+    prefix (i.e. the 4-byte length covers the version byte + CBOR payload).
+    Version 0 emits no version byte for backward-compatibility with legacy peers.
     """
+    if not isinstance(version, int) or isinstance(version, bool) or version < 0:
+        raise WireError("version must be a non-negative integer")
     raw = canonical.encode(message)
-    if len(raw) > MAX_FRAME_BYTES:
-        raise WireError(f"frame too large: {len(raw)} > {MAX_FRAME_BYTES}")
-    return len(raw).to_bytes(4, "big") + raw
+    if version > 0:
+        body = bytes([version]) + raw
+    else:
+        body = raw
+    if len(body) > MAX_FRAME_BYTES:
+        raise WireError(f"frame too large: {len(body)} > {MAX_FRAME_BYTES}")
+    return len(body).to_bytes(4, "big") + body
 
 
-def read_frame_bytes(frame: bytes) -> dict:
-    """Decode one complete length-prefixed canonical-CBOR frame from bytes."""
+def read_frame_bytes(frame: bytes, *, max_version: int = 0) -> dict:
+    """Decode one complete length-prefixed canonical-CBOR frame from bytes.
+
+    Reads the optional version byte when the payload starts with a byte value in
+    range [1, ``max_version``].  A version byte > ``max_version`` raises
+    :class:`WireVersionError`.  A frame with a leading byte of 0 is treated as
+    legacy (no version byte) for backward-compatibility.
+    """
     if len(frame) < 4:
         raise WireError("truncated frame")
     n = int.from_bytes(frame[:4], "big")
@@ -178,9 +210,21 @@ def read_frame_bytes(frame: bytes) -> dict:
         raise WireError("empty frame")
     if n > MAX_FRAME_BYTES:
         raise WireError(f"frame too large: {n} > {MAX_FRAME_BYTES}")
-    raw = frame[4:]
-    if len(raw) != n:
+    body = frame[4:]
+    if len(body) != n:
         raise WireError("frame length prefix does not match payload")
+    if body and body[0] != 0 and body[0] <= 127:
+        # Heuristic: first byte is a small positive int → treat as version byte.
+        # CBOR maps start with 0xa0..0xbf; ints > 127 need multi-byte CBOR major.
+        # Version 0 (legacy) has no version byte; skip only for version ∈ [1..127].
+        version = body[0]
+        if version > max_version:
+            raise WireVersionError(got=version, want=max_version)
+        raw = body[1:]
+    else:
+        raw = body
+    if not raw:
+        raise WireError("empty CBOR payload after version byte")
     try:
         msg = canonical.decode(raw)
     except canonical.CanonicalError as exc:
