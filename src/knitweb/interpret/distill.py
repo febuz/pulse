@@ -60,6 +60,7 @@ class DistillIterationLog:
     cache_hits: int
     elapsed_ms: int
     budget_exhausted: bool
+    tokens_used: int = 0  # sum of (len(subject)+len(predicate)+len(obj))//4 per step
 
 
 @dataclass(frozen=True)
@@ -301,14 +302,18 @@ def distill(
     max_iters: int = 8,
     mode: str = "reflect",
     web: Web,
-    max_prompt_bytes: int = 8 * 1024,
+    max_tokens: int = 2048,
+    max_prompt_bytes: int | None = None,  # deprecated: ignored, use max_tokens
 ) -> Selection:
     """Select relations from a deterministic candidate frontier.
 
-    The loop is strictly bounded by ``max_iters`` and emits relation-level metrics
-    so callers can enforce mining budgets.
+    The loop is strictly bounded by ``max_iters`` and ``max_tokens`` (a step/token
+    budget: one token ≈ 4 chars of subject+predicate+obj).  ``max_prompt_bytes``
+    is accepted for backward compat but ignored — it was a broken proxy that always
+    counted 8 bytes per step regardless of content length (issue #134).
     """
     _require_int("max_iters", max_iters, minimum=1)
+    _require_int("max_tokens", max_tokens, minimum=1)
     if mode not in {"reflect", "recurse"}:
         raise ValueError("mode must be 'reflect' or 'recurse'")
 
@@ -324,7 +329,7 @@ def distill(
     collected: dict[tuple, _bc.Relation] = {}
     source_map: dict[tuple, tuple[str, ...]] = {}
     sub_calls = 0
-    prompt_bytes = 0
+    tokens_used = 0
     cache_hits = 0
     intermediate_order: list[str] = []
 
@@ -386,9 +391,9 @@ def distill(
             continue
 
         sub_calls += 1
-        rel_bytes = (len(rel.subject) + len(rel.predicate) + len(rel.obj)).to_bytes(8, "big")
-        prompt_bytes += len(rel_bytes)
-        if prompt_bytes > max_prompt_bytes:
+        step_tokens = (len(rel.subject) + len(rel.predicate) + len(rel.obj)) // 4
+        tokens_used += step_tokens
+        if tokens_used > max_tokens:
             break
 
         if _gate_relation(rel, web):
@@ -407,6 +412,8 @@ def distill(
             cache_hits=cache_hits,
             elapsed_ms=elapsed_ms,
             budget_exhausted=budget_exhausted,
+            tokens_used=tokens_used,
         ),
         query=query,
     )
+
