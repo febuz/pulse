@@ -423,7 +423,7 @@ class RelevanceChallengeWindow:
 
         Uses :func:`~knitweb.pouw.quorum.tally` on the committee ``verdicts``:
 
-        * ``Outcome.SLASH`` (MISMATCH majority) → **upheld**: spider is penalised via
+        * ``Outcome.DETECTED_FAULT`` (MISMATCH majority) → **upheld**: spider is penalised via
           ``quality_rep.penalize(spider_id)``; challenger's stake is retained.
         * Any other outcome → **overturned**: spider is rewarded via
           ``quality_rep.reward(spider_id)``; challenger's stake is marked forfeit.
@@ -445,9 +445,9 @@ class RelevanceChallengeWindow:
                 f"window not yet closed: closes at beat {close_beat}, current beat {current_beat}"
             )
 
-        outcome = tally(verdicts)
+        result = tally(verdicts)
 
-        if outcome == Outcome.SLASH:
+        if result.outcome is Outcome.DETECTED_FAULT:
             quality_rep.penalize(ch.spider)
             new_status = "upheld"
         else:

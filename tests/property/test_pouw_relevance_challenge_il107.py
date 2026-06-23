@@ -220,11 +220,9 @@ def test_separation_invariant_fabrication_uses_different_path():
 
     # Fabrication path (DisputeWindowLedger)
     dwl = DisputeWindowLedger(
-        consumer_escrow=50,
-        worker_collateral=60,
-        margin=Margin(numerator=1, denominator=1),
         dispute_window=5,
         release_delay=6,
+        margin=Margin(num=1, den=1),
     )
     # The fabrication ledger knows nothing about the relevance challenge
     assert dwl.get("bafy-irrelevant") is None
