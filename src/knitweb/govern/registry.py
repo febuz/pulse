@@ -204,6 +204,12 @@ class WorldRegistry:
             return sum(self._births.values())
         return self._births.get(world, 0)
 
+    def subjects(self, world: Optional[str] = None) -> list[str]:
+        """All registered subject digests, optionally filtered to one ``world``."""
+        if world is None:
+            return list(self._subjects)
+        return [s for s, w in self._subjects.items() if w == world]
+
     def worlds(self) -> list[str]:
         """Every world that has either a registered person or a birth projection."""
         return sorted(set(self._subjects.values()) | set(self._births.keys()))
