@@ -3,6 +3,49 @@
 All notable changes to Knitweb. Versions are representative of implemented layers
 (L0–L6), not a release cadence.
 
+## Unreleased
+
+### Added — governance: VoteBank, demographic supply, recency-weighted voting (`govern/`)
+- **Demographic vote supply** (`govern/registry.py`) — one vote per registered person,
+  counted **per world**: `max_vote_supply = Σ_world (registered_persons + expected_births)`.
+  Two registration paths, both counted in the cap: **national identity** and a **freedom
+  freeport** on-ramp (IMEI + email + ad-hoc proof of identity) for the unbanked/stateless.
+  One-vote-per-person dedup worldwide; raw PII never stored (digests only).
+- **VoteBank** (`govern/votebank.py`) — keeps the vote supply in treasury and issues it with
+  **no premine**, bounded by the demographic cap, one-vote-per-person, fully auditable
+  (`VoteIssuance` CIDs). Mirrors the native-PLS `Treasury` discipline.
+- **Recency-weighted tally** (`govern/tally.py`) — when agents vote, **more recent votes
+  weigh exponentially more**, via a float-free integer compound decay
+  (`weight = weight * num // den` per beat of age, optional `horizon`). Enforces
+  one-vote-per-subject, rejects future-dated votes, deterministic tie-break.
+- **Crowdfunding** (`govern/crowdfund.py`) — the one-person-one-vote rule applied to funding:
+  **one person, one backing**. A `Campaign` succeeds only when it clears **both** a capital
+  `goal` and a `min_backers` breadth threshold by the deadline (anti-plutocratic — whales can't
+  manufacture support). All-or-nothing settlement (release to beneficiary, else refund all), no
+  premine, advisory integer accounting. `momentum()` reuses the tally so recent backing weighs
+  exponentially more. Proofs: `tests/property/test_govern_crowdfund.py` (13 tests).
+- **Bluetooth local backers** (`govern/proximity.py`) — a `ProximityProof` (content-addressed BLE
+  co-presence: backer device ↔ campaign beacon, integer `rssi_dbm`) lets a `Campaign` require
+  `min_local_backers` who are *physically present*, an orthogonal gate to capital that can't be
+  faked remotely. Proofs: `tests/property/test_govern_proximity.py` (8 tests).
+- **Settlement seam** (`govern/settle.py`) — the Knitweb half of the outbound seam: takes an
+  integer `SettlementOrder` (COUPON / REDEMPTION / CONVERSION, amount already quantised by the
+  float analytics layer) and executes it as a dual-signed `Knit` via `AccountNode.transfer_to`.
+  Float amounts are rejected at the boundary before they can touch canonical encoding.
+  Proofs: `tests/property/test_govern_settle.py` (11 tests).
+- Docs: `docs/GOVERNANCE_VOTEBANK.md`. Proofs: `tests/property/test_govern_votebank.py`
+  (20 tests). Full property suite: 457 green.
+
+### Research — time, relevance, and value as one geometric law
+- `docs/research/09-time-value-and-relevance.md` — generalises the governance recency-decay
+  into a single geometric time-value primitive that also expresses fiat inflation
+  (purchasing-power decay), declining-balance depreciation, discounting, and crypto emission
+  (BTC halving/stock-to-flow, ETH EIP-1559 burn + staking, PLS demand-gated mint). Shows why
+  constant growth + inflation is linear in **log space** (additive log returns), and how
+  Knitweb keeps it float-free: the canonical artifact is an exact integer ratio per Pulse beat;
+  logarithms stay an analytics/edge lens only. Proposes a shared `econ` primitive (no
+  speculative code yet) reusable by governance, token emission, and L5 finance.
+
 ## 0.6.0 — L0–L6 implemented
 
 The crypto is built and operable end to end. Highlights:
@@ -10,7 +53,7 @@ The crypto is built and operable end to end. Highlights:
 - **L0 core** — secp256k1 ECDSA + SHA-256; strict float-free canonical CBOR + CIDv1
   (decode rejects non-canonical/truncated input); Pulse heartbeat; versioned `pls1`
   address scheme (PQ-migration-ready).
-- **L1 ledger** — integer settlement core (blob/fiber/loom/knit/braid/node); PLS-wei
+- **L1 ledger** — integer settlement core (blob/fiber/knitweb/knit/braid/node); PLS-wei
   balances; nonce + EIP-155-style `network`-id replay protection; conservation.
 - **L2 p2p** — stdlib-`asyncio` signed-feed replication, conflict quarantine, two-party
   Knit handshakes, and peer-exchange discovery. (py-libp2p/DHT remain optional backends.)
@@ -18,14 +61,14 @@ The crypto is built and operable end to end. Highlights:
   spatial index; **provenance queries** (origin→processing closure traversal).
 - **L4 pouw** — sampled re-execution, commit-before-sample challenge, tolerance digests,
   escrow, and a compute guardrail (`pouw/scheduler.py`).
-- **L5 looms** — four domain looms: chemistry, supply-chain, operational, finance.
+- **L5 knitwebs** — four domain knitwebs: chemistry, supply-chain, operational, finance.
 - **L6 token** — native PLS demand-gated bounded mint (no premine, anti-replay); user
   tokens; OriginTrail anchor backend + checkpoint anchoring.
 - **App** — `knitweb` CLI (wallet/node/pay/compile/verify-bundle/edge-load) with durable,
   restart-safe persistence and daemon auto-persist.
 - **USP** — the OriginTrail read↔write symbiosis proven end to end.
 
-273 property/interop/loom proofs green.
+273 property/interop/knitweb proofs green.
 
 ### Consistency pass
 - PoUW digest rule documented exactly as implemented: deterministic round-half-up
@@ -49,8 +92,8 @@ The crypto is built and operable end to end. Highlights:
 - Repository home moving to `github.com/knitweb/pulse` (org `knitweb`, package `knitweb`);
   the `pulse` repo name is retained.
 - The active token is **PLS**; the ticker **FBR is reserved and not active**.
-- A repo-wide `loom → knitweb` rename is scheduled as a dedicated follow-up PR (see
-  `docs/ROADMAP.md`); it is identifier/docs-only with no signed-record impact.
+- The repo-wide validator/plugin → `knitweb` rename has landed (see `docs/ROADMAP.md`);
+  it was identifier/docs-only with no signed-record impact (parity suite byte-identical).
 
 ## 0.0.x — pre-history
 
