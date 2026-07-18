@@ -10,7 +10,7 @@ The crypto is built and operable end to end. Highlights:
 - **L0 core** — secp256k1 ECDSA + SHA-256; strict float-free canonical CBOR + CIDv1
   (decode rejects non-canonical/truncated input); Pulse heartbeat; versioned `pls1`
   address scheme (PQ-migration-ready).
-- **L1 ledger** — integer settlement core (blob/fiber/loom/knit/braid/node); PLS-wei
+- **L1 ledger** — integer settlement core (blob/fiber/knitweb/knit/braid/node); PLS-wei
   balances; nonce + EIP-155-style `network`-id replay protection; conservation.
 - **L2 p2p** — stdlib-`asyncio` signed-feed replication, conflict quarantine, two-party
   Knit handshakes, and peer-exchange discovery. (py-libp2p/DHT remain optional backends.)
@@ -18,14 +18,20 @@ The crypto is built and operable end to end. Highlights:
   spatial index; **provenance queries** (origin→processing closure traversal).
 - **L4 pouw** — sampled re-execution, commit-before-sample challenge, tolerance digests,
   escrow, and a compute guardrail (`pouw/scheduler.py`).
-- **L5 looms** — four domain looms: chemistry, supply-chain, operational, finance.
+- **L5 knitwebs** — four domain knitwebs: chemistry, supply-chain, operational, finance.
 - **L6 token** — native PLS demand-gated bounded mint (no premine, anti-replay); user
   tokens; OriginTrail anchor backend + checkpoint anchoring.
 - **App** — `knitweb` CLI (wallet/node/pay/compile/verify-bundle/edge-load) with durable,
   restart-safe persistence and daemon auto-persist.
+- **Gateway `/interpret`** — a strictly read-only delegation hook that forwards a query, a
+  deep-copied `web_snapshot`, and the caller's `params` to a host-registered external Lens
+  (`App.set_lens`), with no write path and **no** LLM/vector/graph-DB dependency added to Pulse.
+  Answers `501` deterministically when no Lens is installed, and **contains any Lens exception**
+  into a deterministic `502` `interpreter-error` contract (no leaked detail) — so the gateway
+  keeps serving regardless of host-interpreter faults (see `docs/LENS_INTERPRET_ENDPOINT.md`).
 - **USP** — the OriginTrail read↔write symbiosis proven end to end.
 
-273 property/interop/loom proofs green.
+273 property/interop/knitweb proofs green.
 
 ### Consistency pass
 - PoUW digest rule documented exactly as implemented: deterministic round-half-up
@@ -49,8 +55,27 @@ The crypto is built and operable end to end. Highlights:
 - Repository home moving to `github.com/knitweb/pulse` (org `knitweb`, package `knitweb`);
   the `pulse` repo name is retained.
 - The active token is **PLS**; the ticker **FBR is reserved and not active**.
-- A repo-wide `loom → knitweb` rename is scheduled as a dedicated follow-up PR (see
-  `docs/ROADMAP.md`); it is identifier/docs-only with no signed-record impact.
+- The repo-wide validator/plugin → `knitweb` rename has landed (see `docs/ROADMAP.md`);
+  it was identifier/docs-only with no signed-record impact (parity suite byte-identical).
+
+### Edge · Pulse AR — augmented reality over the bitchat BLE mesh
+- New `knitweb.edge.pulse_ar` subpackage: smartglasses turn a camera frame into
+  signed, content-addressed **object observations** and exchange them with nearby
+  wearers over a **bitchat** Bluetooth Low Energy mesh — no infrastructure.
+- Each observation answers **WHAT** (YOLO→CNN class + taxonomy + confidence),
+  **WHO** (owner + maker PLS addresses), **WHERE** (geohash + alt band), **HOW**
+  (integer-mm dimensions), and which **DEVICE** saw it — all integer/float-free,
+  canonical CBOR, CIDv1, secp256k1-signed.
+- `VisionPipeline` couples pluggable YOLO / CNN / LLM stages behind tiny protocols
+  (deterministic dependency-free stubs ship; real weights drop in unchanged).
+- `bitchat` mesh: BLE-MTU fragmentation + reassembly, TTL-bounded store-and-forward
+  flood, `(msg_id, index)` dedup (no broadcast storms in cyclic topologies).
+- `PulseARGlass` closes the loop: see + sign + share, then **verify-before-trust**,
+  spatial-filter, and fuse peers' observations into field-of-view overlays and a
+  deterministic feature set that augments the inner world-model. Complements the
+  `edge.recognize` resolver (which maps inputs → CIDs) with the exchange layer.
+- Proofs in `tests/property/test_pulse_ar.py`; demo in `examples/pulse_ar_demo.py`;
+  design note in `docs/PULSE_AR.md`.
 
 ## 0.0.x — pre-history
 
