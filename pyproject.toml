@@ -33,6 +33,9 @@ p2p = ["py-libp2p"]
 compute = ["wgpu", "juliacall"]
 data = ["polars", "pyarrow"]
 experiments = ["mlflow"]
+# Edge vision for Pulse AR: real YOLO detection behind the Detector protocol.
+# Only the edge/spider node needs these; the core stays dependency-free.
+vision = ["ultralytics>=8.3", "pillow>=10"]
 dev = ["pytest>=8"]
 
 [tool.hatch.build.targets.wheel]
