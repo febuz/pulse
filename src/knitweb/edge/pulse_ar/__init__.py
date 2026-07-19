@@ -25,6 +25,7 @@ from __future__ import annotations
 from .bitchat import DEFAULT_MTU, MAX_TTL, BitchatFrame, MeshNode, fragment
 from .glass import PulseARGlass
 from .observation import CONF_FULL, Detection, ObjectObservation, SignedObservation
+from .service import ObservationService, observation_view
 from .vision import (
     Classifier,
     Detector,
@@ -33,6 +34,13 @@ from .vision import (
     StubYOLODetector,
     TaxonomyCNN,
     VisionPipeline,
+)
+# Real YOLO lives in its own module so its lazy torch/pillow imports never load
+# unless a caller actually constructs the detector.
+from .vision_ultralytics import (
+    COCO_TO_TAXONOMY,
+    UltralyticsYOLODetector,
+    detections_from_result,
 )
 
 __all__ = [
@@ -49,12 +57,18 @@ __all__ = [
     "StubYOLODetector",
     "TaxonomyCNN",
     "PriorsLLM",
+    # real YOLO (optional 'vision' extra)
+    "UltralyticsYOLODetector",
+    "detections_from_result",
+    "COCO_TO_TAXONOMY",
     # bitchat mesh
     "BitchatFrame",
     "MeshNode",
     "fragment",
     "MAX_TTL",
     "DEFAULT_MTU",
-    # orchestrator
+    # orchestrator + service
     "PulseARGlass",
+    "ObservationService",
+    "observation_view",
 ]

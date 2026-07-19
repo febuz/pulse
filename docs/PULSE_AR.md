@@ -102,9 +102,25 @@ verify. Sharing observations over BLE is free and infrastructure-less; paying fo
 the verified knowledge that enriches them (maker provenance, canonical dimensions)
 is the metered, demand-gated work the token settles. No premine; value tracks use.
 
+## Real YOLO + a headset
+
+The `Detector` protocol takes a real model with no other change:
+`knitweb.edge.pulse_ar.vision_ultralytics.UltralyticsYOLODetector` wraps
+`ultralytics` YOLO (optional `vision` extra) and returns the same `Detection`s the
+stub does, quantising YOLO's float confidence/box to basis points and integer
+pixels at the boundary. `service.ObservationService` wraps a `PulseARGlass` in a
+JSON request/response, and `examples/pulse_ar_server.py` serves it over HTTP for a
+thin headset client. See [`QUEST3S_AR.md`](QUEST3S_AR.md) for the full Meta Quest 3S
+case (Passthrough Camera API → node → world-anchored labels) and the browser webcam
+demo at `examples/pulse_ar_web/`.
+
 ## Run it
 
 ```bash
-PYTHONPATH=src python3 -m pytest tests/property/test_pulse_ar.py -q   # proofs
-PYTHONPATH=src python3 examples/pulse_ar_demo.py                      # two-glass demo
+PYTHONPATH=src python3 -m pytest tests/property/test_pulse_ar.py tests/property/test_pulse_ar_ultralytics.py -q
+PYTHONPATH=src python3 examples/pulse_ar_demo.py                      # two-glass mesh demo
+
+pip install 'knitweb[vision]'                                        # real YOLO
+PYTHONPATH=src python3 examples/pulse_ar_server.py --host 0.0.0.0 --port 8008
+# then open http://<ip>:8008 in a browser, or point clients/quest3s/ at it
 ```

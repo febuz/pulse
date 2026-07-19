@@ -77,6 +77,23 @@ The crypto is built and operable end to end. Highlights:
 - Proofs in `tests/property/test_pulse_ar.py`; demo in `examples/pulse_ar_demo.py`;
   design note in `docs/PULSE_AR.md`.
 
+### Edge · Pulse AR — real YOLO + a Meta Quest 3S case
+- `pulse_ar.vision_ultralytics.UltralyticsYOLODetector` wires real **ultralytics
+  YOLO** behind the `Detector` protocol (optional `vision` extra); float confidence
+  and boxes are quantised to basis points + integer pixels at the boundary, so the
+  signed observation stays float-free. Heavy imports are lazy — the core never loads
+  torch.
+- `pulse_ar.service.ObservationService` wraps a `PulseARGlass` in a transport-
+  agnostic JSON request/response (frame → sign → publish → detections).
+- `examples/pulse_ar_server.py` — a stdlib-HTTP edge/spider node running real YOLO
+  (graceful stub fallback); `examples/pulse_ar_web/` — a webcam browser client that
+  runs the full loop immediately.
+- `clients/quest3s/` — a native Unity client using Meta's **Passthrough Camera API**
+  to feed the headset cameras to the node and render world-anchored WHAT/WHO/WHERE/
+  HOW/DEVICE labels; architecture + deploy in `docs/QUEST3S_AR.md`.
+- Proofs in `tests/property/test_pulse_ar_ultralytics.py` (result→Detection
+  quantisation, confidence gating, missing-dep error, service schema).
+
 ## 0.0.x — pre-history
 
 Initial scaffolding and the phased L0–L3 build (see git history / merged PRs).
