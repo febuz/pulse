@@ -93,6 +93,11 @@ The crypto is built and operable end to end. Highlights:
   HOW/DEVICE labels; architecture + deploy in `docs/QUEST3S_AR.md`.
 - Proofs in `tests/property/test_pulse_ar_ultralytics.py` (result→Detection
   quantisation, confidence gating, missing-dep error, service schema).
+- `docs/PULSE_AR_SETUP_MANUAL.md` — hands-on preparation manual: node/spider setup,
+  Meta Quest 3S prep (quick browser path + native PCA build), other AR glasses
+  (phone, tethered display glasses, standalone Android glasses, fixed cameras), the
+  device-agnostic `/observe` contract, calibration, a verification checklist,
+  privacy/trust notes, and a troubleshooting table.
 
 ## 0.0.x — pre-history
 

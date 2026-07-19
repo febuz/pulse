@@ -5,6 +5,11 @@ This is the working AR case for Pulse AR: a Meta Quest 3S sees the room, a real
 **WHAT / WHO / WHERE / HOW / DEVICE** anchored in passthrough — every observation
 signed, content-addressed, and shared on the bitchat mesh.
 
+> **Setting it up hands-on?** Follow the step-by-step
+> [`PULSE_AR_SETUP_MANUAL.md`](PULSE_AR_SETUP_MANUAL.md) — node prep, Quest 3S prep,
+> other AR glasses, verification checklist, and troubleshooting. This page is the
+> architecture; that one is the checklist.
+
 ## The split, and why it is the honest one
 
 ```
